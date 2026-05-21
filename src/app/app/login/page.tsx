@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import * as z from "zod"
@@ -108,9 +109,11 @@ export default function LabLoginPage() {
                     </Form>
                 </CardContent>
                 <CardFooter className="flex flex-col space-y-2">
-                    <Button variant="link" className="text-xs text-muted-foreground">
-                        ¿Olvidaste tu contraseña?
-                    </Button>
+                    <Link href="/app/forgot-password" passHref>
+                        <Button variant="link" className="text-xs text-muted-foreground">
+                            ¿Olvidaste tu contraseña?
+                        </Button>
+                    </Link>
                 </CardFooter>
             </Card>
         </div>
