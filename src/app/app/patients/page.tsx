@@ -36,7 +36,7 @@ export default function PatientsPage() {
         queryFn: async () => {
             let query = supabase
                 .from("patients")
-                .select("*")
+                .select("*, patient_accounts(id)")
                 .order("created_at", { ascending: false })
 
             if (searchTerm) {
@@ -48,6 +48,30 @@ export default function PatientsPage() {
             return data
         }
     })
+
+    const handleCreatePortalAccount = async (patientId: string, email: string) => {
+        if (!email) {
+            alert("El paciente debe tener un correo electrónico registrado para crearle una cuenta de portal.")
+            return
+        }
+        
+        try {
+            const res = await fetch("/api/patients/create-account", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ patientId, email })
+            })
+            
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error)
+            
+            alert("Cuenta creada y link enviado al paciente.")
+            // Ideally trigger query refetch here, assuming a refresh function or reload
+            window.location.reload()
+        } catch (error: any) {
+            alert(error.message)
+        }
+    }
 
     return (
         <AdminLayout>
@@ -103,9 +127,15 @@ export default function PatientsPage() {
                                             <TableCell className="text-muted-foreground">{patient.email || "N/A"}</TableCell>
                                             <TableCell>{patient.phone || "N/A"}</TableCell>
                                             <TableCell>
-                                                <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
-                                                    Activo
-                                                </Badge>
+                                                {patient.patient_accounts && patient.patient_accounts.length > 0 ? (
+                                                    <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
+                                                        Con Acceso
+                                                    </Badge>
+                                                ) : (
+                                                    <Badge variant="outline" className="bg-slate-50 text-slate-600 border-slate-200">
+                                                        Sin Acceso
+                                                    </Badge>
+                                                )}
                                             </TableCell>
                                             <TableCell className="text-right">
                                                 <DropdownMenu>
@@ -122,6 +152,14 @@ export default function PatientsPage() {
                                                         <DropdownMenuItem className="gap-2">
                                                             <History className="h-4 w-4" /> Ver Historial
                                                         </DropdownMenuItem>
+                                                        {(!patient.patient_accounts || patient.patient_accounts.length === 0) && (
+                                                            <DropdownMenuItem 
+                                                                className="gap-2 text-violet-600"
+                                                                onClick={() => handleCreatePortalAccount(patient.id, patient.email)}
+                                                            >
+                                                                <UserPlus className="h-4 w-4" /> Crear Cuenta Portal
+                                                            </DropdownMenuItem>
+                                                        )}
                                                         <DropdownMenuSeparator />
                                                         <DropdownMenuItem className="text-destructive gap-2">
                                                             Eliminar

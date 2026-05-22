@@ -56,50 +56,26 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
         setProgress(10)
 
         try {
-            const { data: { session } } = await supabase.auth.getSession()
-            const year = new Date().getFullYear()
-            const month = String(new Date().getMonth() + 1).padStart(2, '0')
             const version = currentVersion + (isSuccess ? 0 : (currentVersion > 0 ? 1 : 1))
 
-            const fileName = `${orderId}_v${version}.pdf`
-            const storagePath = `${labId}/${patientId}/${year}/${month}/${fileName}`
-            const fileHash = await calculateSHA256(file)
+            // Subir usando FormData a la API Route de MinIO
+            const formData = new FormData()
+            formData.append("file", file)
+            formData.append("orderId", orderId)
+            formData.append("patientId", patientId)
+            formData.append("labId", labId)
+            formData.append("version", version.toString())
 
-            setProgress(30)
+            setProgress(50)
 
-            // 1. Upload to Storage
-            const { data: storageData, error: storageError } = await supabase.storage
-                .from('diagnostiq-results')
-                .upload(storagePath, file, {
-                    cacheControl: '3600',
-                    upsert: true
-                })
-
-            if (storageError) throw storageError
-            setProgress(70)
-
-            // 2. Finalize Metadata via Edge Function (to ensure consistency and audit)
-            const finalizeResponse = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/upload-finalize`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${session?.access_token}`
-                },
-                body: JSON.stringify({
-                    order_id: orderId,
-                    patient_id: patientId,
-                    lab_id: labId,
-                    storage_path: storagePath,
-                    file_name: file.name,
-                    size_bytes: file.size,
-                    sha256: fileHash,
-                    version: version
-                })
+            const uploadResponse = await fetch("/api/results/upload", {
+                method: "POST",
+                body: formData,
             })
 
-            if (!finalizeResponse.ok) {
-                const err = await finalizeResponse.json()
-                throw new Error(err.error || 'Error al finalizar el registro')
+            if (!uploadResponse.ok) {
+                const err = await uploadResponse.json()
+                throw new Error(err.error || "Error al subir el archivo")
             }
 
             setProgress(100)

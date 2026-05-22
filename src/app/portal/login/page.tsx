@@ -75,7 +75,7 @@ export default function PatientLoginPage() {
                     <CardDescription>
                         {isSent
                             ? "Hemos enviado un link de acceso a tu correo."
-                            : "Ingresa tu correo para recibir un link de acceso seguro."}
+                            : "Ingresa el correo electrónico que tu laboratorio registró para recibir un link de acceso seguro."}
                     </CardDescription>
                 </CardHeader>
                 <CardContent>

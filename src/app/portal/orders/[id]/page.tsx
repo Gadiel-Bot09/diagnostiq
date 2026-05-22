@@ -60,20 +60,15 @@ export default function OrderDetailsPage() {
     const handleDownload = async (fileId: string) => {
         setIsDownloading(true)
         try {
-            const { data: { session } } = await supabase.auth.getSession()
-
-            const response = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/create-signed-url`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${session?.access_token}`,
-                },
-                body: JSON.stringify({ result_file_id: fileId }),
-            })
-
+            const response = await fetch(`/api/results/download?fileId=${fileId}`)
             const data = await response.json()
-            if (data.signedUrl) {
-                window.open(data.signedUrl, "_blank")
+            
+            if (!response.ok) {
+                throw new Error(data.error || "Error al descargar el archivo")
+            }
+            
+            if (data.url) {
+                window.open(data.url, "_blank")
             } else {
                 throw new Error("No se pudo generar el link de descarga")
             }
