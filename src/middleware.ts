@@ -22,9 +22,8 @@ export async function middleware(req: NextRequest) {
         }
     )
 
-    const {
-        data: { session },
-    } = await supabase.auth.getSession()
+    // Use getUser for reliable auth in Edge middleware
+    const { data: { user } } = await supabase.auth.getUser()
 
     const url = req.nextUrl.clone()
     const isSuperAdminRoute = url.pathname.startsWith('/superadmin')
@@ -32,7 +31,7 @@ export async function middleware(req: NextRequest) {
     const isPortalRoute = url.pathname.startsWith('/portal') && url.pathname !== '/portal/login'
 
     // --- Not logged in ---
-    if (!session) {
+    if (!user) {
         if (isAppRoute) {
             url.pathname = '/app/login'
             return NextResponse.redirect(url)
@@ -50,14 +49,17 @@ export async function middleware(req: NextRequest) {
 
     // --- Logged in: protect /superadmin/* by role ---
     if (isSuperAdminRoute) {
+        // 1st try: read role from profiles table
         const { data: profile } = await supabase
             .from('profiles')
             .select('role')
-            .eq('id', session.user.id)
+            .eq('id', user.id)
             .single()
 
-        if (!profile || profile.role !== 'SUPER_ADMIN') {
-            // Non-superadmin tries to access superadmin panel → redirect to their dashboard
+        // 2nd try: fallback to user_metadata (set when profile was manually created)
+        const role = profile?.role ?? user.user_metadata?.role
+
+        if (role !== 'SUPER_ADMIN') {
             url.pathname = '/app/dashboard'
             return NextResponse.redirect(url)
         }
