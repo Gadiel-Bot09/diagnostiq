@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { uploadToMinio } from "@/lib/minio"
 import { createServerClient } from "@supabase/ssr"
+import { sendNewResultsEmail } from "@/lib/email"
 
 export async function POST(req: NextRequest) {
     try {
@@ -65,10 +66,23 @@ export async function POST(req: NextRequest) {
         if (dbError) throw dbError
 
         // Update order status to COMPLETED
-        await supabase
+        const { data: updatedOrder, error: orderError } = await supabase
             .from("orders")
             .update({ status: "COMPLETED" })
             .eq("id", orderId)
+            .select("order_number, patients(email, full_name), labs(name)")
+            .single()
+
+        if (!orderError && updatedOrder) {
+            const patientEmail = (updatedOrder.patients as any)?.email
+            const patientName = (updatedOrder.patients as any)?.full_name
+            const labName = (updatedOrder.labs as any)?.name
+            
+            // Si el paciente tiene correo, enviamos notificación
+            if (patientEmail) {
+                await sendNewResultsEmail(patientEmail, patientName, labName, updatedOrder.order_number)
+            }
+        }
 
         // Log audit event
         await supabase.from("audit_events").insert({

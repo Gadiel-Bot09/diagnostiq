@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { createServerClient } from "@supabase/ssr"
+import { sendWelcomeEmail } from "@/lib/email"
 
 export async function POST(req: NextRequest) {
     try {
@@ -25,10 +26,10 @@ export async function POST(req: NextRequest) {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) return NextResponse.json({ error: "No autorizado" }, { status: 401 })
 
-        // Get patient info
+        // Get patient info and lab info
         const { data: patient, error: patientError } = await supabaseAdmin
             .from("patients")
-            .select("*")
+            .select("*, labs(name)")
             .eq("id", patientId)
             .single()
 
@@ -78,6 +79,10 @@ export async function POST(req: NextRequest) {
         if (!patient.email) {
             await supabaseAdmin.from("patients").update({ email }).eq("id", patientId)
         }
+
+        // 4. Send Welcome Email via Resend
+        const labName = (patient.labs as any)?.name || "DiagnostiQ"
+        await sendWelcomeEmail(email, patient.full_name, labName)
 
         return NextResponse.json({ success: true, message: "Cuenta de portal creada exitosamente." })
 
