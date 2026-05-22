@@ -48,10 +48,12 @@ export async function POST(req: NextRequest) {
             // Create new auth user
             const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
                 email,
-                email_confirm: true, // auto-confirm since we send OTP to login
+                password: patient.document_number,
+                email_confirm: true,
                 user_metadata: {
                     role: "PATIENT",
                     full_name: patient.full_name,
+                    password_changed: false
                 }
             })
 

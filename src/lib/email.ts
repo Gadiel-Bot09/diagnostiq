@@ -32,7 +32,7 @@ export async function sendWelcomeEmail(toEmail: string, patientName: string, lab
             </div>
             
             <p style="color: #334155; font-size: 15px; line-height: 1.6;">
-                Para ingresar, solo necesitas escribir este correo electrónico (<strong>${toEmail}</strong>) y te enviaremos un enlace mágico de acceso directo sin necesidad de contraseñas.
+                Para ingresar, utiliza este correo electrónico (<strong>${toEmail}</strong>) y tu <strong>Número de Documento</strong> de identidad como contraseña inicial.
             </p>
             
             <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;" />

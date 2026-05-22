@@ -18,7 +18,7 @@ interface ResultUploaderProps {
 }
 
 export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }: ResultUploaderProps) {
-    const [file, setFile] = useState<File | null>(null)
+    const [files, setFiles] = useState<File[]>([])
     const [isUploading, setIsUploading] = useState(false)
     const [progress, setProgress] = useState(0)
     const [isSuccess, setIsSuccess] = useState(false)
@@ -28,7 +28,7 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
 
     const onDrop = useCallback((acceptedFiles: File[]) => {
         if (acceptedFiles.length > 0) {
-            setFile(acceptedFiles[0])
+            setFiles(prev => [...prev, ...acceptedFiles])
             setIsSuccess(false)
             setProgress(0)
         }
@@ -37,9 +37,12 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
     const { getRootProps, getInputProps, isDragActive } = useDropzone({
         onDrop,
         accept: { 'application/pdf': ['.pdf'] },
-        maxFiles: 1,
         disabled: isUploading || isSuccess
     })
+
+    const removeFile = (index: number) => {
+        setFiles(prev => prev.filter((_, i) => i !== index))
+    }
 
     const calculateSHA256 = async (file: File) => {
         const buffer = await file.arrayBuffer()
@@ -50,39 +53,45 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
     }
 
     const handleUpload = async () => {
-        if (!file) return
+        if (files.length === 0) return
 
         setIsUploading(true)
-        setProgress(10)
+        setProgress(5)
 
         try {
-            const version = currentVersion + (isSuccess ? 0 : (currentVersion > 0 ? 1 : 1))
+            let successCount = 0
+            
+            for (let i = 0; i < files.length; i++) {
+                const fileToUpload = files[i]
+                const version = currentVersion + i + (isSuccess ? 0 : (currentVersion > 0 ? 1 : 1))
 
-            // Subir usando FormData a la API Route de MinIO
-            const formData = new FormData()
-            formData.append("file", file)
-            formData.append("orderId", orderId)
-            formData.append("patientId", patientId)
-            formData.append("labId", labId)
-            formData.append("version", version.toString())
+                // Subir usando FormData a la API Route de MinIO
+                const formData = new FormData()
+                formData.append("file", fileToUpload)
+                formData.append("orderId", orderId)
+                formData.append("patientId", patientId)
+                formData.append("labId", labId)
+                formData.append("version", version.toString())
 
-            setProgress(50)
+                const uploadResponse = await fetch("/api/results/upload", {
+                    method: "POST",
+                    body: formData,
+                })
 
-            const uploadResponse = await fetch("/api/results/upload", {
-                method: "POST",
-                body: formData,
-            })
-
-            if (!uploadResponse.ok) {
-                const err = await uploadResponse.json()
-                throw new Error(err.error || "Error al subir el archivo")
+                if (!uploadResponse.ok) {
+                    const err = await uploadResponse.json()
+                    throw new Error(err.error || `Error al subir el archivo ${fileToUpload.name}`)
+                }
+                
+                successCount++
+                setProgress(Math.round(((i + 1) / files.length) * 100))
             }
 
             setProgress(100)
             setIsSuccess(true)
             toast({
                 title: "¡Éxito!",
-                description: `Resultado v${version} cargado correctamente.`,
+                description: `Se han cargado ${successCount} archivo(s) correctamente.`,
             })
 
             router.refresh()
@@ -122,20 +131,30 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
 
                     <div>
                         <p className="text-lg font-semibold">
-                            {file ? file.name : (isDragActive ? "Suelta el archivo aquí" : "Arrastra el reporte PDF")}
+                            {files.length > 0 ? `${files.length} archivo(s) seleccionado(s)` : (isDragActive ? "Suelta los archivos aquí" : "Arrastra los reportes PDF")}
                         </p>
                         <p className="text-sm text-muted-foreground">
-                            {file ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : "O haz clic para seleccionar"}
+                            {files.length > 0 ? `Tamaño total: ${(files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)} MB` : "O haz clic para seleccionar"}
                         </p>
                     </div>
-
-                    {file && !isUploading && !isSuccess && (
-                        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); setFile(null); }} className="text-destructive">
-                            <X className="h-4 w-4 mr-1" /> Quitar
-                        </Button>
-                    )}
                 </div>
             </div>
+
+            {files.length > 0 && !isUploading && !isSuccess && (
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                    {files.map((f, idx) => (
+                        <div key={idx} className="flex items-center justify-between p-2 border rounded text-sm bg-muted/30">
+                            <div className="flex items-center gap-2 truncate">
+                                <FileText className="h-4 w-4 text-rose-500 shrink-0" />
+                                <span className="truncate">{f.name}</span>
+                            </div>
+                            <Button variant="ghost" size="icon" onClick={() => removeFile(idx)} className="h-6 w-6 text-destructive shrink-0">
+                                <X className="h-4 w-4" />
+                            </Button>
+                        </div>
+                    ))}
+                </div>
+            )}
 
             {isUploading && (
                 <div className="space-y-2">
@@ -144,15 +163,15 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
                 </div>
             )}
 
-            {file && !isUploading && !isSuccess && (
+            {files.length > 0 && !isUploading && !isSuccess && (
                 <Button className="w-full py-6 text-lg" onClick={handleUpload}>
                     Subir como Versión Oficial
                 </Button>
             )}
 
             {isSuccess && (
-                <Button variant="outline" className="w-full" onClick={() => { setFile(null); setIsSuccess(false); }}>
-                    Cargar otro archivo
+                <Button variant="outline" className="w-full" onClick={() => { setFiles([]); setIsSuccess(false); }}>
+                    Cargar más archivos
                 </Button>
             )}
         </div>

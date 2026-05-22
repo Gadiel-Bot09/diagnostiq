@@ -22,6 +22,7 @@ import { useToast } from "@/components/ui/use-toast"
 
 const patientLoginSchema = z.object({
     email: z.string().email({ message: "Email inválido" }),
+    password: z.string().min(4, { message: "La contraseña/documento es muy corta" }),
 })
 
 export default function PatientLoginPage() {
@@ -34,34 +35,34 @@ export default function PatientLoginPage() {
         resolver: zodResolver(patientLoginSchema),
         defaultValues: {
             email: "",
+            password: "",
         },
     })
 
     async function onSubmit(values: z.infer<typeof patientLoginSchema>) {
         setIsLoading(true)
-        const { error } = await supabase.auth.signInWithOtp({
+        const { error } = await supabase.auth.signInWithPassword({
             email: values.email,
-            options: {
-                emailRedirectTo: `${window.location.origin}/portal`,
-            },
+            password: values.password,
         })
 
         if (error) {
             toast({
                 variant: "destructive",
-                title: "Error",
-                description: "No se pudo enviar el link de acceso. Intenta de nuevo.",
+                title: "Error de credenciales",
+                description: "Correo o contraseña incorrectos. Verifica que la contraseña sea tu número de documento si es la primera vez que ingresas.",
             })
             setIsLoading(false)
             return
         }
 
-        setIsSent(true)
-        setIsLoading(false)
         toast({
-            title: "Link enviado",
-            description: "Revisa tu correo electrónico para acceder al portal.",
+            title: "Acceso exitoso",
+            description: "Cargando tu portal de resultados...",
         })
+        
+        // Redirect to portal home
+        window.location.href = "/portal"
     }
 
     return (
@@ -73,43 +74,43 @@ export default function PatientLoginPage() {
                     </div>
                     <CardTitle className="text-2xl font-bold">Portal de Pacientes</CardTitle>
                     <CardDescription>
-                        {isSent
-                            ? "Hemos enviado un link de acceso a tu correo."
-                            : "Ingresa el correo electrónico que tu laboratorio registró para recibir un link de acceso seguro."}
+                        Ingresa con tu correo y contraseña. Si es tu primera vez, tu contraseña es tu número de documento.
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
-                    {!isSent ? (
-                        <Form {...form}>
-                            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                                <FormField
-                                    control={form.control}
-                                    name="email"
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>Correo Electrónico</FormLabel>
-                                            <FormControl>
-                                                <Input placeholder="tu@email.com" {...field} />
-                                            </FormControl>
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
-                                <Button type="submit" className="w-full text-lg py-6" disabled={isLoading}>
-                                    {isLoading ? "Enviando..." : "Enviar Link de Acceso"}
-                                </Button>
-                            </form>
-                        </Form>
-                    ) : (
-                        <div className="text-center py-4 space-y-4">
-                            <div className="bg-primary/10 p-4 rounded-lg text-primary text-sm font-medium">
-                                Si no recibes el correo en un par de minutos, revisa tu carpeta de SPAM.
-                            </div>
-                            <Button variant="outline" className="w-full" onClick={() => setIsSent(false)}>
-                                Intentar con otro correo
+                    <Form {...form}>
+                        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+                            <FormField
+                                control={form.control}
+                                name="email"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Correo Electrónico</FormLabel>
+                                        <FormControl>
+                                            <Input placeholder="tu@email.com" {...field} />
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
+                            <FormField
+                                control={form.control}
+                                name="password"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Contraseña (o N° de Documento)</FormLabel>
+                                        <FormControl>
+                                            <Input type="password" placeholder="Tu contraseña o documento" {...field} />
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
+                            <Button type="submit" className="w-full text-lg py-6" disabled={isLoading}>
+                                {isLoading ? "Ingresando..." : "Ingresar a mis Resultados"}
                             </Button>
-                        </div>
-                    )}
+                        </form>
+                    </Form>
                 </CardContent>
                 <CardFooter className="justify-center">
                     <p className="text-xs text-muted-foreground text-center">

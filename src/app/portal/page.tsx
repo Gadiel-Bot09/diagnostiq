@@ -8,6 +8,7 @@ import { FileText, Download, Microscope, Clock, CheckCircle2 } from "lucide-reac
 import Link from "next/link"
 
 import { createClient } from "@/lib/supabase/client"
+import { PasswordChangeBanner } from "@/components/portal/PasswordChangeBanner"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -52,6 +53,8 @@ export default function PatientDashboard() {
                     </Button>
                 </div>
             </header>
+
+            <PasswordChangeBanner />
 
             <div className="grid gap-6">
                 <Card className="shadow-md">
