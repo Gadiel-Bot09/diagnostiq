@@ -27,29 +27,45 @@ export async function middleware(req: NextRequest) {
     } = await supabase.auth.getSession()
 
     const url = req.nextUrl.clone()
+    const isSuperAdminRoute = url.pathname.startsWith('/superadmin')
+    const isAppRoute = url.pathname.startsWith('/app') && url.pathname !== '/app/login'
+    const isPortalRoute = url.pathname.startsWith('/portal') && url.pathname !== '/portal/login'
 
-    // 1. If not logged in and trying to access protected routes
+    // --- Not logged in ---
     if (!session) {
-        if (url.pathname.startsWith('/app') && url.pathname !== '/app/login') {
+        if (isAppRoute) {
             url.pathname = '/app/login'
             return NextResponse.redirect(url)
         }
-        if (url.pathname.startsWith('/portal') && url.pathname !== '/portal/login') {
+        if (isPortalRoute) {
             url.pathname = '/portal/login'
+            return NextResponse.redirect(url)
+        }
+        if (isSuperAdminRoute) {
+            url.pathname = '/app/login'
             return NextResponse.redirect(url)
         }
         return res
     }
 
-    // Optional: Redirect from root to appropriate dashboard
-    if (url.pathname === '/') {
-        return res
+    // --- Logged in: protect /superadmin/* by role ---
+    if (isSuperAdminRoute) {
+        const { data: profile } = await supabase
+            .from('profiles')
+            .select('role')
+            .eq('id', session.user.id)
+            .single()
+
+        if (!profile || profile.role !== 'SUPER_ADMIN') {
+            // Non-superadmin tries to access superadmin panel → redirect to their dashboard
+            url.pathname = '/app/dashboard'
+            return NextResponse.redirect(url)
+        }
     }
 
     return res
 }
 
 export const config = {
-    matcher: ['/app/:path*', '/portal/:path*', '/'],
+    matcher: ['/app/:path*', '/portal/:path*', '/superadmin/:path*', '/'],
 }
-
