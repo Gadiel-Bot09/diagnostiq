@@ -66,22 +66,23 @@ export async function POST(req: NextRequest) {
 
         const userId = authData.user.id
 
-        // 3. Create the Profile record linking user to lab with LAB_ADMIN role
+        // 3. Upsert the Profile — the on_auth_user_created trigger may have already
+        //    inserted a bare profile row. We UPSERT to set lab_id, role, and full_name.
         const { error: profileError } = await supabaseAdmin
             .from("profiles")
-            .insert({
+            .upsert({
                 id: userId,
                 role: "LAB_ADMIN",
                 lab_id: lab.id,
                 full_name: admin_name,
                 is_active: true,
-            })
+            }, { onConflict: "id" })
 
         if (profileError) {
             // Rollback both
             await supabaseAdmin.auth.admin.deleteUser(userId)
             await supabaseAdmin.from("labs").delete().eq("id", lab.id)
-            return NextResponse.json({ error: `Error creando el perfil: ${profileError.message}` }, { status: 500 })
+            return NextResponse.json({ error: `Error actualizando el perfil: ${profileError.message}` }, { status: 500 })
         }
 
         // 4. Create a default "Administrador" custom role with ALL permissions for this lab
