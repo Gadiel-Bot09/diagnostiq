@@ -45,6 +45,11 @@ export async function POST(req: NextRequest) {
         // Upload to MinIO
         const uploadedPath = await uploadToMinio(filePath, buffer, file.type)
 
+        // Calculate SHA256
+        const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer)
+        const hashArray = Array.from(new Uint8Array(hashBuffer))
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+
         // Insert into result_files in Supabase
         const { data: resultFile, error: dbError } = await supabase
             .from("result_files")
@@ -53,12 +58,13 @@ export async function POST(req: NextRequest) {
                 patient_id: patientId,
                 lab_id: labId,
                 file_name: file.name,
-                file_path: uploadedPath,
-                file_type: file.type,
-                file_size: file.size,
+                storage_path: uploadedPath,
+                mime_type: file.type,
+                size_bytes: file.size,
                 uploaded_by: user.id,
                 version: parseInt(version || "1", 10),
-                storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results"
+                storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
+                sha256: hashHex
             })
             .select()
             .single()
