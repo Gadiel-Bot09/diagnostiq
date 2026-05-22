@@ -18,6 +18,7 @@ import {
 } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
+import { getPatientOrderDetailsAction } from "../actions"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -33,27 +34,7 @@ export default function OrderDetailsPage() {
     const { data: order, isLoading } = useQuery({
         queryKey: ["order", id],
         queryFn: async () => {
-            const { data, error } = await supabase
-                .from("orders")
-                .select(`
-          id,
-          order_number,
-          status,
-          ordered_at,
-          labs (name, phone, address),
-          order_tests (
-            id,
-            tests (name, category, units, reference_range),
-            status,
-            result_summary_json
-          ),
-          result_files (id, file_name, version)
-        `)
-                .eq("id", id)
-                .single()
-
-            if (error) throw error
-            return data
+            return await getPatientOrderDetailsAction(id as string)
         },
     })
 

@@ -8,6 +8,7 @@ import { FileText, Download, Microscope, Clock, CheckCircle2 } from "lucide-reac
 import Link from "next/link"
 
 import { createClient } from "@/lib/supabase/client"
+import { getPatientOrdersAction } from "./actions"
 import { PasswordChangeBanner } from "@/components/portal/PasswordChangeBanner"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -21,34 +22,7 @@ export default function PatientDashboard() {
     const { data: orders, isLoading } = useQuery({
         queryKey: ["patient-orders"],
         queryFn: async () => {
-            const { data: { user } } = await supabase.auth.getUser()
-            if (!user) return []
-
-            // Get the patient IDs associated with this user
-            const { data: accounts, error: accountsError } = await supabase
-                .from("patient_accounts")
-                .select("patient_id")
-                .eq("user_id", user.id)
-
-            if (accountsError) throw accountsError
-            if (!accounts || accounts.length === 0) return []
-
-            const patientIds = accounts.map((acc: any) => acc.patient_id)
-
-            const { data, error } = await supabase
-                .from("orders")
-                .select(`
-          id,
-          order_number,
-          status,
-          ordered_at,
-          labs (name)
-        `)
-                .in("patient_id", patientIds)
-                .order("ordered_at", { ascending: false })
-
-            if (error) throw error
-            return data
+            return await getPatientOrdersAction()
         },
     })
 
