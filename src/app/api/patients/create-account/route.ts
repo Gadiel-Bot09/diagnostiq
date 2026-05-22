@@ -44,6 +44,10 @@ export async function POST(req: NextRequest) {
 
         if (existingUser) {
             authUserId = existingUser.id
+            // Update password for existing users to match the new password flow
+            await supabaseAdmin.auth.admin.updateUserById(authUserId, {
+                password: patient.document_number
+            })
         } else {
             // Create new auth user
             const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
