@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { createServerClient } from "@supabase/ssr"
-import { uploadFileToMinio } from "@/lib/minio"
+import { uploadToMinio } from "@/lib/minio"
 import { sendWelcomeEmail, sendDirectResultsEmail } from "@/lib/email"
 import crypto from "crypto"
 
@@ -152,7 +152,7 @@ export async function POST(req: NextRequest) {
             const ext = file.name.split(".").pop() || "pdf"
             const storagePath = `labs/${labId}/direct/${order.id}/${Date.now()}-${file.name}`
 
-            await uploadFileToMinio(buffer, storagePath, file.type || "application/pdf")
+            await uploadToMinio(buffer, storagePath, file.type || "application/pdf")
 
             const sha256 = crypto.createHash("sha256").update(buffer).digest("hex")
 
