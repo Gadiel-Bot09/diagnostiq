@@ -18,7 +18,6 @@ import {
 } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
-import { getPatientOrderDetailsAction } from "../../actions"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -34,7 +33,9 @@ export default function OrderDetailsPage() {
     const { data: order, isLoading } = useQuery({
         queryKey: ["order", id],
         queryFn: async () => {
-            return await getPatientOrderDetailsAction(id as string)
+            const res = await fetch(`/api/portal/orders/${id}`)
+            if (!res.ok) throw new Error("Error al cargar la orden")
+            return res.json()
         },
     })
 

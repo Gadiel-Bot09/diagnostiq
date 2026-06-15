@@ -8,7 +8,6 @@ import { FileText, Download, Microscope, Clock, CheckCircle2 } from "lucide-reac
 import Link from "next/link"
 
 import { createClient } from "@/lib/supabase/client"
-import { getPatientOrdersAction } from "./actions"
 import { PasswordChangeBanner } from "@/components/portal/PasswordChangeBanner"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,7 +21,9 @@ export default function PatientDashboard() {
     const { data: orders, isLoading } = useQuery({
         queryKey: ["patient-orders"],
         queryFn: async () => {
-            return await getPatientOrdersAction()
+            const res = await fetch("/api/portal/orders")
+            if (!res.ok) throw new Error("Error al cargar órdenes")
+            return res.json()
         },
     })
 
