@@ -152,7 +152,7 @@ export async function POST(req: NextRequest) {
             const ext = file.name.split(".").pop() || "pdf"
             const storagePath = `labs/${labId}/direct/${order.id}/${Date.now()}-${file.name}`
 
-            await uploadToMinio(buffer, storagePath, file.type || "application/pdf")
+            await uploadToMinio(storagePath, buffer, file.type || "application/pdf")
 
             const sha256 = crypto.createHash("sha256").update(buffer).digest("hex")
 
