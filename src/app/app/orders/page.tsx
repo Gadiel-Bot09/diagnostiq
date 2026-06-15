@@ -43,6 +43,8 @@ export default function LabOrdersPage() {
           order_number,
           status,
           ordered_at,
+          is_direct,
+          direct_exam_name,
           patients (full_name, document_number)
         `)
                 .order("ordered_at", { ascending: false })
@@ -107,7 +109,17 @@ export default function LabOrdersPage() {
                                 <TableBody>
                                     {orders.map((order: any) => (
                                         <TableRow key={order.id}>
-                                            <TableCell className="font-bold">#{order.order_number}</TableCell>
+                                            <TableCell className="font-bold">
+                                                <div className="flex items-center gap-2">
+                                                    #{order.order_number}
+                                                    {order.is_direct && (
+                                                        <Badge variant="outline" className="text-xs text-violet-600 border-violet-300 bg-violet-50">Directo</Badge>
+                                                    )}
+                                                </div>
+                                                {order.is_direct && order.direct_exam_name && (
+                                                    <p className="text-xs text-muted-foreground font-normal mt-0.5">{order.direct_exam_name}</p>
+                                                )}
+                                            </TableCell>
                                             <TableCell>
                                                 <div className="flex flex-col">
                                         <span className="font-medium">{(order as any).patients?.full_name}</span>

@@ -11,7 +11,8 @@ import {
     Users,
     FileText,
     LogOut,
-    Microscope
+    Microscope,
+    UploadCloud
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -20,6 +21,7 @@ const sidebarItems = [
     { name: "Dashboard", href: "/app/dashboard", icon: LayoutDashboard },
     { name: "Pacientes", href: "/app/patients", icon: Users },
     { name: "Órdenes", href: "/app/orders", icon: FileText },
+    { name: "Resultados Directos", href: "/app/direct-results", icon: UploadCloud },
     { name: "Catálogo", href: "/app/catalog", icon: TestTube2 },
     { name: "Usuarios", href: "/app/users", icon: Settings },
     { name: "Auditoría", href: "/app/audit", icon: History },
