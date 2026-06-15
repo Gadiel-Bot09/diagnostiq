@@ -5,6 +5,11 @@ import { uploadToMinio } from "@/lib/minio"
 import { sendWelcomeEmail, sendDirectResultsEmail } from "@/lib/email"
 import crypto from "crypto"
 
+// Synthetic email for patients with no real email (allows Supabase Auth account creation)
+function syntheticEmail(documentNumber: string): string {
+    return `${documentNumber.trim()}@portal.diagnostiq`
+}
+
 export async function POST(req: NextRequest) {
     try {
         // 1. Authenticate lab user
@@ -73,46 +78,49 @@ export async function POST(req: NextRequest) {
             isNewPatient = true
         }
 
-        // 5. Ensure patient has portal account (if they have email)
-        if (email || patient.email) {
-            const patientEmail = email || patient.email
-            const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers()
-            const existingAuthUser = existingUsers?.users?.find(u => u.email === patientEmail)
+        // 5. Always create portal account (real email or synthetic)
+        const patientEmail = email || patient.email || syntheticEmail(documentNumber)
+        const hasRealEmail = !!(email || patient.email)
 
-            let authUserId: string
+        const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers()
+        const existingAuthUser = existingUsers?.users?.find(u => u.email === patientEmail)
 
-            if (existingAuthUser) {
-                authUserId = existingAuthUser.id
-                // Sync password to document number
-                await supabaseAdmin.auth.admin.updateUserById(authUserId, {
-                    password: documentNumber
-                })
-            } else {
-                // Create auth user
-                const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-                    email: patientEmail,
-                    password: documentNumber,
-                    email_confirm: true,
-                    user_metadata: { role: "PATIENT", full_name: fullName, password_changed: false }
-                })
-                if (authError) throw authError
-                authUserId = authData.user.id
+        let authUserId: string
 
-                await supabaseAdmin.from("profiles").upsert({
-                    id: authUserId, role: "PATIENT", full_name: fullName, is_active: true
-                }, { onConflict: "id" })
+        if (existingAuthUser) {
+            authUserId = existingAuthUser.id
+            // Always sync password to current document number
+            await supabaseAdmin.auth.admin.updateUserById(authUserId, {
+                password: documentNumber
+            })
+        } else {
+            // Create auth user with real or synthetic email
+            const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+                email: patientEmail,
+                password: documentNumber,
+                email_confirm: true,
+                user_metadata: { role: "PATIENT", full_name: fullName, password_changed: false }
+            })
+            if (authError) throw authError
+            authUserId = authData.user.id
 
-                if (isNewPatient) {
-                    await sendWelcomeEmail(patientEmail, fullName, (await supabaseAdmin.from("labs").select("name").eq("id", labId).single()).data?.name || "DiagnostiQ")
-                }
+            await supabaseAdmin.from("profiles").upsert({
+                id: authUserId, role: "PATIENT", full_name: fullName, is_active: true
+            }, { onConflict: "id" })
+
+            // Only send welcome email if patient has a real email
+            if (isNewPatient && hasRealEmail) {
+                const labRes = await supabaseAdmin.from("labs").select("name").eq("id", labId).single()
+                await sendWelcomeEmail(patientEmail, fullName, labRes.data?.name || "DiagnostiQ")
             }
+        }
 
-            // Link auth user to patient
-            await supabaseAdmin.from("patient_accounts").upsert({
-                user_id: authUserId,
-                patient_id: patient.id,
-                lab_id: labId,
-            }, { onConflict: "user_id, lab_id" })
+        // Link auth user to patient
+        await supabaseAdmin.from("patient_accounts").upsert({
+            user_id: authUserId,
+            patient_id: patient.id,
+            lab_id: labId,
+        }, { onConflict: "user_id, lab_id" })
 
             // Update patient email if missing
             if (!patient.email && email) {

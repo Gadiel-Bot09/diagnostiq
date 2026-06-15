@@ -267,8 +267,8 @@ export default function DirectResultsPage() {
                                     </Label>
                                     <Input id="email" type="email" {...form.register("email")} disabled={!!foundPatient} placeholder="paciente@email.com" />
                                     {!form.watch("email") && !foundPatient?.email && (
-                                        <p className="text-xs text-amber-600 flex items-center gap-1">
-                                            <AlertCircle className="h-3 w-3" /> Sin correo, el paciente no podrá acceder al portal ni recibir notificaciones.
+                                        <p className="text-xs text-muted-foreground flex items-center gap-1">
+                                            ℹ️ Sin correo, el paciente igualmente podrá ingresar al portal con su número de documento. Solo no recibirá notificaciones por email.
                                         </p>
                                     )}
                                 </div>
