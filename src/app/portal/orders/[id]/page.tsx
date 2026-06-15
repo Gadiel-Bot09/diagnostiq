@@ -18,7 +18,7 @@ import {
 } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
-import { getPatientOrderDetailsAction } from "../actions"
+import { getPatientOrderDetailsAction } from "../../actions"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
