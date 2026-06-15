@@ -60,7 +60,6 @@ export async function POST(req: NextRequest) {
         if (existingPatient) {
             patient = existingPatient
         } else {
-            // Create new patient
             const { data: newPatient, error: patientError } = await supabaseAdmin
                 .from("patients")
                 .insert({
@@ -78,25 +77,22 @@ export async function POST(req: NextRequest) {
             isNewPatient = true
         }
 
-        // 5. Always create portal account (real email or synthetic)
-        const patientEmail = email || patient.email || syntheticEmail(documentNumber)
-        const hasRealEmail = !!(email || patient.email)
+        // 5. Always create portal account (real email or synthetic — so all patients can log in)
+        const realEmail = email || patient.email || null
+        const loginEmail = realEmail || syntheticEmail(documentNumber)
+        const hasRealEmail = !!realEmail
 
         const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers()
-        const existingAuthUser = existingUsers?.users?.find(u => u.email === patientEmail)
+        const existingAuthUser = existingUsers?.users?.find((u: any) => u.email === loginEmail)
 
         let authUserId: string
 
         if (existingAuthUser) {
             authUserId = existingAuthUser.id
-            // Always sync password to current document number
-            await supabaseAdmin.auth.admin.updateUserById(authUserId, {
-                password: documentNumber
-            })
+            await supabaseAdmin.auth.admin.updateUserById(authUserId, { password: documentNumber })
         } else {
-            // Create auth user with real or synthetic email
             const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-                email: patientEmail,
+                email: loginEmail,
                 password: documentNumber,
                 email_confirm: true,
                 user_metadata: { role: "PATIENT", full_name: fullName, password_changed: false }
@@ -108,24 +104,23 @@ export async function POST(req: NextRequest) {
                 id: authUserId, role: "PATIENT", full_name: fullName, is_active: true
             }, { onConflict: "id" })
 
-            // Only send welcome email if patient has a real email
+            // Only send welcome email if there is a real email address
             if (isNewPatient && hasRealEmail) {
                 const labRes = await supabaseAdmin.from("labs").select("name").eq("id", labId).single()
-                await sendWelcomeEmail(patientEmail, fullName, labRes.data?.name || "DiagnostiQ")
+                await sendWelcomeEmail(loginEmail, fullName, labRes.data?.name || "DiagnostiQ")
             }
         }
 
-        // Link auth user to patient
+        // Link auth user to patient account
         await supabaseAdmin.from("patient_accounts").upsert({
             user_id: authUserId,
             patient_id: patient.id,
             lab_id: labId,
         }, { onConflict: "user_id, lab_id" })
 
-            // Update patient email if missing
-            if (!patient.email && email) {
-                await supabaseAdmin.from("patients").update({ email }).eq("id", patient.id)
-            }
+        // Update patient email if it was missing and provided now
+        if (!patient.email && email) {
+            await supabaseAdmin.from("patients").update({ email }).eq("id", patient.id)
         }
 
         // 6. Generate order number
@@ -134,7 +129,7 @@ export async function POST(req: NextRequest) {
         const timePart = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`
         const orderNumber = `${datePart}-D${timePart}`
 
-        // 7. Create direct order (is_direct = true, status = COMPLETED)
+        // 7. Create direct order
         const { data: order, error: orderError } = await supabaseAdmin
             .from("orders")
             .insert({
@@ -157,7 +152,6 @@ export async function POST(req: NextRequest) {
 
         for (const file of files) {
             const buffer = Buffer.from(await file.arrayBuffer())
-            const ext = file.name.split(".").pop() || "pdf"
             const storagePath = `labs/${labId}/direct/${order.id}/${Date.now()}-${file.name}`
 
             await uploadToMinio(storagePath, buffer, file.type || "application/pdf")
@@ -176,10 +170,9 @@ export async function POST(req: NextRequest) {
             })
         }
 
-        // 9. Send "results ready" email to patient
-        const patientEmail = email || patient.email
-        if (patientEmail) {
-            await sendDirectResultsEmail(patientEmail, fullName, labName, examName, isNewPatient && !existingPatient)
+        // 9. Send "results ready" email only if patient has a real email
+        if (hasRealEmail) {
+            await sendDirectResultsEmail(loginEmail, fullName, labName, examName, isNewPatient)
         }
 
         return NextResponse.json({
