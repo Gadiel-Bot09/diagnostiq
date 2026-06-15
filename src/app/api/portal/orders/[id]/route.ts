@@ -4,9 +4,10 @@ import { createServerClient } from "@supabase/ssr"
 
 export async function GET(
     req: NextRequest,
-    { params }: { params: { id: string } }
+    { params }: { params: Promise<{ id: string }> }
 ) {
     try {
+        const { id } = await params
         const supabase = createServerClient(
             process.env.NEXT_PUBLIC_SUPABASE_URL!,
             process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -53,7 +54,7 @@ export async function GET(
                 ),
                 result_files (id, file_name, version)
             `)
-            .eq("id", params.id)
+            .eq("id", id)
             .single()
 
         if (error) throw error
