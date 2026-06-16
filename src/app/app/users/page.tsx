@@ -1,28 +1,39 @@
 // @ts-nocheck
 "use client"
 
+import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
-import { Users, UserCheck, UserX, Mail, Phone, ShieldCheck, Shield } from "lucide-react"
+import { Users, UserCheck, UserX, Mail, Phone, ShieldCheck, Shield, Stethoscope, Loader2 } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
 import { AdminLayout } from "@/components/layout/AdminLayout"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import { useToast } from "@/components/ui/use-toast"
 
 const roleLabels: any = {
     LAB_ADMIN: { label: "Administrador", color: "bg-violet-100 text-violet-700 border-violet-200" },
     LAB_STAFF: { label: "Personal", color: "bg-blue-100 text-blue-700 border-blue-200" },
     PATIENT: { label: "Paciente", color: "bg-slate-100 text-slate-600 border-slate-200" },
     SUPER_ADMIN: { label: "Super Admin", color: "bg-amber-100 text-amber-700 border-amber-200" },
+    DOCTOR: { label: "Médico", color: "bg-teal-100 text-teal-700 border-teal-200" },
 }
 
 export default function UsersPage() {
     const supabase = createClient()
+    const { toast } = useToast()
+    
+    const [isCreating, setIsCreating] = useState(false)
+    const [isOpen, setIsOpen] = useState(false)
 
-    const { data: users, isLoading } = useQuery({
+    const { data: users, isLoading, refetch } = useQuery({
         queryKey: ["lab-users"],
         queryFn: async () => {
             const { data: profile } = await supabase.from("profiles").select("lab_id").single()
@@ -39,6 +50,34 @@ export default function UsersPage() {
         }
     })
 
+    const handleCreateDoctor = async (e: React.FormEvent<HTMLFormElement>) => {
+        e.preventDefault()
+        setIsCreating(true)
+        const formData = new FormData(e.currentTarget)
+        try {
+            const res = await fetch("/api/users/create-doctor", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    full_name: formData.get("full_name"),
+                    email: formData.get("email"),
+                    password: formData.get("password"),
+                    specialty: formData.get("specialty"),
+                })
+            })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error)
+            
+            toast({ title: "Médico creado", description: "El usuario médico fue creado exitosamente." })
+            setIsOpen(false)
+            refetch()
+        } catch (err: any) {
+            toast({ variant: "destructive", title: "Error", description: err.message })
+        } finally {
+            setIsCreating(false)
+        }
+    }
+
     const active = users?.filter((u: any) => u.is_active).length || 0
     const total = users?.length || 0
 
@@ -50,6 +89,47 @@ export default function UsersPage() {
                         <h1 className="text-3xl font-bold tracking-tight">Usuarios del Laboratorio</h1>
                         <p className="text-muted-foreground mt-1">Personal registrado y sus roles</p>
                     </div>
+                    
+                    <Dialog open={isOpen} onOpenChange={setIsOpen}>
+                        <DialogTrigger asChild>
+                            <Button className="gap-2 bg-teal-600 hover:bg-teal-700 text-white">
+                                <Stethoscope className="h-4 w-4" /> Crear Médico
+                            </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                            <DialogHeader>
+                                <DialogTitle>Crear usuario médico</DialogTitle>
+                                <DialogDescription>
+                                    Crea un acceso para que un médico pueda consultar los resultados de los pacientes en su portal dedicado.
+                                </DialogDescription>
+                            </DialogHeader>
+                            <form onSubmit={handleCreateDoctor} className="space-y-4 py-2">
+                                <div className="space-y-2">
+                                    <Label htmlFor="full_name">Nombre completo</Label>
+                                    <Input id="full_name" name="full_name" placeholder="Dr. Juan Pérez" required />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="email">Correo electrónico (Usuario)</Label>
+                                    <Input id="email" name="email" type="email" placeholder="doctor@ejemplo.com" required />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="password">Contraseña temporal</Label>
+                                    <Input id="password" name="password" type="password" required />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="specialty">Especialidad (Opcional)</Label>
+                                    <Input id="specialty" name="specialty" placeholder="Medicina General" />
+                                </div>
+                                <DialogFooter>
+                                    <Button type="button" variant="outline" onClick={() => setIsOpen(false)}>Cancelar</Button>
+                                    <Button type="submit" className="bg-teal-600 hover:bg-teal-700 text-white" disabled={isCreating}>
+                                        {isCreating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                                        Crear Médico
+                                    </Button>
+                                </DialogFooter>
+                            </form>
+                        </DialogContent>
+                    </Dialog>
                 </div>
 
                 {/* Stats */}
@@ -79,7 +159,7 @@ export default function UsersPage() {
                         <CardTitle className="text-base flex items-center gap-2">
                             <Shield className="h-4 w-4 text-primary" /> Personal Registrado
                         </CardTitle>
-                        <CardDescription>Para invitar nuevos miembros o cambiar roles, usa el módulo de Gestión de Roles (próximamente).</CardDescription>
+                        <CardDescription>Para invitar otros miembros o cambiar roles, usa el módulo de Gestión de Roles (próximamente).</CardDescription>
                     </CardHeader>
                     <CardContent className="p-0">
                         {isLoading ? (

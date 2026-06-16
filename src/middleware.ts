@@ -47,20 +47,27 @@ export async function middleware(req: NextRequest) {
         return res
     }
 
-    // --- Logged in: protect /superadmin/* by role ---
+    // --- Logged in: protect routes by role ---
+    // 1st try: read role from profiles table
+    const { data: profile } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single()
+
+    // 2nd try: fallback to user_metadata
+    const role = profile?.role ?? user.user_metadata?.role
+
     if (isSuperAdminRoute) {
-        // 1st try: read role from profiles table
-        const { data: profile } = await supabase
-            .from('profiles')
-            .select('role')
-            .eq('id', user.id)
-            .single()
-
-        // 2nd try: fallback to user_metadata (set when profile was manually created)
-        const role = profile?.role ?? user.user_metadata?.role
-
         if (role !== 'SUPER_ADMIN') {
             url.pathname = '/app/dashboard'
+            return NextResponse.redirect(url)
+        }
+    }
+
+    if (isAppRoute) {
+        if (role === 'DOCTOR') {
+            url.pathname = '/doctor'
             return NextResponse.redirect(url)
         }
     }

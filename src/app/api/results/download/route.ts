@@ -42,7 +42,7 @@ export async function GET(req: NextRequest) {
         // Security: check if user is lab staff or patient with access
         const { data: profile } = await supabaseAdmin
             .from("profiles")
-            .select("role")
+            .select("role, lab_id")
             .eq("id", user.id)
             .single()
 
@@ -60,6 +60,11 @@ export async function GET(req: NextRequest) {
 
             if (!orderPatientId || !patientIds.includes(orderPatientId)) {
                 return NextResponse.json({ error: "Acceso denegado a este archivo" }, { status: 403 })
+            }
+        } else {
+            // For lab users (including DOCTORS): ensure they belong to the file's lab
+            if (profile.role !== "SUPER_ADMIN" && profile.lab_id !== file.lab_id) {
+                return NextResponse.json({ error: "Acceso denegado a archivos de otro laboratorio" }, { status: 403 })
             }
         }
 
