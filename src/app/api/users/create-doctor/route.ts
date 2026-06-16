@@ -53,6 +53,12 @@ export async function POST(req: NextRequest) {
 
     } catch (error: any) {
         console.error("Create doctor error:", error)
-        return NextResponse.json({ error: error.message }, { status: 500 })
+
+        let errorMessage = error.message
+        if (errorMessage.includes("already been registered") || errorMessage.includes("already exists")) {
+            errorMessage = "Ya existe un usuario registrado con este correo electrónico."
+        }
+
+        return NextResponse.json({ error: errorMessage }, { status: 500 })
     }
 }
