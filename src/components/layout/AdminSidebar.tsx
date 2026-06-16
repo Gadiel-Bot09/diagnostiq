@@ -16,19 +16,28 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { usePermissions } from "@/contexts/PermissionsContext"
+import { Skeleton } from "@/components/ui/skeleton"
 
 const sidebarItems = [
-    { name: "Dashboard", href: "/app/dashboard", icon: LayoutDashboard },
-    { name: "Pacientes", href: "/app/patients", icon: Users },
-    { name: "Órdenes", href: "/app/orders", icon: FileText },
-    { name: "Resultados Directos", href: "/app/direct-results", icon: UploadCloud },
-    { name: "Catálogo", href: "/app/catalog", icon: TestTube2 },
-    { name: "Usuarios", href: "/app/users", icon: Settings },
-    { name: "Auditoría", href: "/app/audit", icon: History },
+    { name: "Dashboard", href: "/app/dashboard", icon: LayoutDashboard, module: "dashboard" },
+    { name: "Pacientes", href: "/app/patients", icon: Users, module: "patients" },
+    { name: "Órdenes", href: "/app/orders", icon: FileText, module: "orders" },
+    { name: "Resultados Directos", href: "/app/direct-results", icon: UploadCloud, module: "results" },
+    { name: "Catálogo", href: "/app/catalog", icon: TestTube2, module: "settings" }, // Reusing settings or catalog module
+    { name: "Usuarios", href: "/app/users", icon: Settings, module: "staff" },
+    { name: "Auditoría", href: "/app/audit", icon: History, module: "audit" },
 ]
 
 export function AdminSidebar() {
     const pathname = usePathname()
+    const { hasPermission, isLoading } = usePermissions()
+
+    // Filter items based on permissions
+    const visibleItems = sidebarItems.filter(item => {
+        if (item.module === "dashboard") return true // Dashboard is always visible
+        return hasPermission(item.module, "view")
+    })
 
     return (
         <div className="flex h-screen w-64 flex-col border-r bg-card shadow-sm">
@@ -40,23 +49,31 @@ export function AdminSidebar() {
             </div>
 
             <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
-                {sidebarItems.map((item) => {
-                    const isActive = pathname.startsWith(item.href)
-                    return (
-                        <Link key={item.name} href={item.href}>
-                            <Button
-                                variant={isActive ? "secondary" : "ghost"}
-                                className={cn(
-                                    "w-full justify-start gap-3 px-3 py-6",
-                                    isActive ? "bg-secondary text-primary font-medium" : "text-muted-foreground"
-                                )}
-                            >
-                                <item.icon className={cn("h-5 w-5", isActive ? "text-primary" : "text-muted-foreground")} />
-                                {item.name}
-                            </Button>
-                        </Link>
-                    )
-                })}
+                {isLoading ? (
+                    <div className="space-y-3">
+                        {[1, 2, 3, 4, 5].map(i => (
+                            <Skeleton key={i} className="h-12 w-full" />
+                        ))}
+                    </div>
+                ) : (
+                    visibleItems.map((item) => {
+                        const isActive = pathname.startsWith(item.href)
+                        return (
+                            <Link key={item.name} href={item.href}>
+                                <Button
+                                    variant={isActive ? "secondary" : "ghost"}
+                                    className={cn(
+                                        "w-full justify-start gap-3 px-3 py-6",
+                                        isActive ? "bg-secondary text-primary font-medium" : "text-muted-foreground"
+                                    )}
+                                >
+                                    <item.icon className={cn("h-5 w-5", isActive ? "text-primary" : "text-muted-foreground")} />
+                                    {item.name}
+                                </Button>
+                            </Link>
+                        )
+                    })
+                )}
             </div>
 
             <div className="p-4 border-t">
