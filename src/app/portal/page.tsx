@@ -9,6 +9,7 @@ import Link from "next/link"
 
 import { createClient } from "@/lib/supabase/client"
 import { PasswordChangeBanner } from "@/components/portal/PasswordChangeBanner"
+import { ChangePasswordModal } from "@/components/auth/ChangePasswordModal"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -42,7 +43,24 @@ export default function PatientDashboard() {
                 .eq("id", user.id)
                 .single()
 
-            return profile as any
+            let labName = (profile?.labs as any)?.name
+
+            if (!labName) {
+                const { data: accounts } = await supabase
+                    .from("patient_accounts")
+                    .select("labs (name)")
+                    .eq("user_id", user.id)
+                    .limit(1)
+                
+                if (accounts && accounts.length > 0) {
+                    labName = (accounts[0].labs as any)?.name
+                }
+            }
+
+            return {
+                ...profile,
+                labName: labName || "Laboratorio Clínico"
+            } as any
         }
     })
 
@@ -65,7 +83,7 @@ export default function PatientDashboard() {
                         ) : userProfile && (
                             <div className="flex flex-col items-end mr-2">
                                 <span className="text-sm font-semibold text-primary">
-                                    {userProfile.labs?.name || "Laboratorio"}
+                                    {userProfile.labName}
                                 </span>
                                 <span className="text-xs text-muted-foreground font-medium">
                                     {userProfile.full_name}
@@ -78,9 +96,12 @@ export default function PatientDashboard() {
                             </div>
                         )}
                     </div>
-                    <Button variant="outline" size="sm" onClick={handleSignOut} className="ml-2">
-                        Cerrar Sesión
-                    </Button>
+                    <div className="flex items-center gap-2 border-l pl-4 border-muted">
+                        <ChangePasswordModal />
+                        <Button variant="outline" size="sm" onClick={handleSignOut}>
+                            Cerrar Sesión
+                        </Button>
+                    </div>
                 </div>
             </header>
 

@@ -12,7 +12,8 @@ import {
     FileText,
     LogOut,
     Microscope,
-    UploadCloud
+    UploadCloud,
+    Lock
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -29,6 +30,8 @@ const sidebarItems = [
     { name: "Usuarios", href: "/app/users", icon: Settings, module: "staff" },
     { name: "Auditoría", href: "/app/audit", icon: History, module: "audit" },
 ]
+
+import { ChangePasswordModal } from "@/components/auth/ChangePasswordModal"
 
 export function AdminSidebar() {
     const pathname = usePathname()
@@ -83,7 +86,16 @@ export function AdminSidebar() {
                 )}
             </div>
 
-            <div className="p-4 border-t">
+            <div className="p-4 border-t space-y-2">
+                <ChangePasswordModal>
+                    <Button 
+                        variant="ghost" 
+                        className="w-full justify-start gap-3 px-3 py-6 text-muted-foreground hover:text-foreground hover:bg-muted"
+                    >
+                        <Lock className="h-5 w-5" />
+                        <span>Cambiar Contraseña</span>
+                    </Button>
+                </ChangePasswordModal>
                 <Button 
                     variant="ghost" 
                     className="w-full justify-start gap-3 px-3 py-6 text-destructive hover:text-destructive hover:bg-destructive/10"
