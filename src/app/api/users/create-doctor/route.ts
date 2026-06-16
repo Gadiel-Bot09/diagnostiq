@@ -38,8 +38,8 @@ export async function POST(req: NextRequest) {
         })
         if (authError) throw authError
 
-        // Create profile
-        const { error: profileError } = await supabaseAdmin.from("profiles").insert({
+        // Upsert profile (Supabase auth triggers might already create a partial profile row)
+        const { error: profileError } = await supabaseAdmin.from("profiles").upsert({
             id: authData.user.id,
             full_name,
             role: "DOCTOR",

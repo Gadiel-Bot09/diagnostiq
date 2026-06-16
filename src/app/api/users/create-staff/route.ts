@@ -40,8 +40,8 @@ export async function POST(req: NextRequest) {
 
         const newUserId = authData.user.id
 
-        // Create profile
-        const { error: profileError } = await supabaseAdmin.from("profiles").insert({
+        // Upsert profile to handle trigger-generated records safely
+        const { error: profileError } = await supabaseAdmin.from("profiles").upsert({
             id: newUserId,
             full_name,
             role: "LAB_STAFF",
