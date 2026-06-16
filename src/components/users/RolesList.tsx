@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Shield, Plus, Loader2, Check, X, Info } from "lucide-react"
+import { Shield, Plus, Loader2, Check, X, Info, MoreHorizontal, Pencil, Trash } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { useToast } from "@/components/ui/use-toast"
 import { Checkbox } from "@/components/ui/checkbox"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 
 type ModuleKey = "orders" | "patients" | "results" | "reports" | "staff" | "settings" | "audit"
 type ActionKey = "view" | "create" | "edit" | "delete"
@@ -32,6 +33,8 @@ export function RolesList() {
     
     const [isCreating, setIsCreating] = useState(false)
     const [isOpen, setIsOpen] = useState(false)
+    const [editingRoleId, setEditingRoleId] = useState<string | null>(null)
+    const [isDeleting, setIsDeleting] = useState<string | null>(null)
     
     // Permission Matrix State
     // Format: { "orders": { view: true, create: false, ... } }
@@ -47,7 +50,7 @@ export function RolesList() {
 
             const { data, error } = await supabase
                 .from("custom_roles")
-                .select("id, name, description, is_default")
+                .select("id, name, description, is_default, role_permissions(module, action)")
                 .eq("lab_id", profile.lab_id)
                 .order("created_at", { ascending: true })
 
@@ -66,7 +69,7 @@ export function RolesList() {
         }))
     }
 
-    const handleCreateRole = async (e: React.FormEvent<HTMLFormElement>) => {
+    const handleCreateOrUpdateRole = async (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault()
         setIsCreating(true)
         const formData = new FormData(e.currentTarget)
@@ -82,8 +85,11 @@ export function RolesList() {
                 })
             })
 
-            const res = await fetch("/api/roles", {
-                method: "POST",
+            const url = editingRoleId ? `/api/roles/${editingRoleId}` : "/api/roles"
+            const method = editingRoleId ? "PUT" : "POST"
+
+            const res = await fetch(url, {
+                method: method,
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     name: formData.get("name"),
@@ -94,15 +100,61 @@ export function RolesList() {
             const data = await res.json()
             if (!res.ok) throw new Error(data.error)
             
-            toast({ title: "Rol creado", description: "El rol fue guardado exitosamente." })
+            toast({ title: editingRoleId ? "Rol actualizado" : "Rol creado", description: "El rol fue guardado exitosamente." })
             setIsOpen(false)
             setPermissions({})
+            setEditingRoleId(null)
             refetch()
         } catch (err: any) {
             toast({ variant: "destructive", title: "Error", description: err.message })
         } finally {
             setIsCreating(false)
         }
+    }
+
+    const handleEditRole = (role: any) => {
+        setEditingRoleId(role.id)
+        
+        // Reconstruct permissions matrix
+        const newPerms: Record<string, Record<string, boolean>> = {}
+        if (role.role_permissions) {
+            role.role_permissions.forEach((p: any) => {
+                if (!newPerms[p.module]) newPerms[p.module] = {}
+                newPerms[p.module][p.action] = true
+            })
+        }
+        setPermissions(newPerms)
+        
+        // Timeout to ensure DOM has time to update if we are setting input values
+        // But better is to let the Dialog handle it via uncontrolled inputs with defaultValue,
+        // which we will do below in the JSX.
+        setIsOpen(true)
+    }
+
+    const handleDeleteRole = async (roleId: string) => {
+        if (!confirm("¿Estás seguro de que deseas eliminar este rol? Esta acción no se puede deshacer.")) return
+
+        setIsDeleting(roleId)
+        try {
+            const res = await fetch(`/api/roles/${roleId}`, {
+                method: "DELETE"
+            })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error)
+
+            toast({ title: "Rol eliminado", description: "El rol fue eliminado exitosamente." })
+            refetch()
+        } catch (err: any) {
+            toast({ variant: "destructive", title: "Error", description: err.message })
+        } finally {
+            setIsDeleting(null)
+        }
+    }
+
+    const handleOpenNewRole = () => {
+        setEditingRoleId(null)
+        setPermissions({})
+        setIsOpen(true)
     }
 
     return (
@@ -113,28 +165,47 @@ export function RolesList() {
                     <p className="text-sm text-muted-foreground">Define perfiles de acceso con permisos específicos</p>
                 </div>
                 
-                <Dialog open={isOpen} onOpenChange={setIsOpen}>
+                <Dialog open={isOpen} onOpenChange={(open) => {
+                    setIsOpen(open)
+                    if (!open) {
+                        setEditingRoleId(null)
+                        setPermissions({})
+                    }
+                }}>
                     <DialogTrigger asChild>
-                        <Button className="gap-2">
+                        <Button className="gap-2" onClick={handleOpenNewRole}>
                             <Plus className="h-4 w-4" /> Nuevo Rol
                         </Button>
                     </DialogTrigger>
                     <DialogContent className="max-w-3xl">
                         <DialogHeader>
-                            <DialogTitle>Crear Rol Personalizado</DialogTitle>
+                            <DialogTitle>{editingRoleId ? "Editar Rol" : "Crear Rol Personalizado"}</DialogTitle>
                             <DialogDescription>
-                                Asigna un nombre al rol y configura exactamente qué puede hacer en el sistema.
+                                {editingRoleId 
+                                    ? "Modifica el nombre y la configuración de permisos de este rol." 
+                                    : "Asigna un nombre al rol y configura exactamente qué puede hacer en el sistema."}
                             </DialogDescription>
                         </DialogHeader>
-                        <form onSubmit={handleCreateRole} className="space-y-6 py-2">
+                        <form onSubmit={handleCreateOrUpdateRole} className="space-y-6 py-2">
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2">
                                     <Label htmlFor="name">Nombre del Rol</Label>
-                                    <Input id="name" name="name" placeholder="Ej: Recepcionista" required />
+                                    <Input 
+                                        id="name" 
+                                        name="name" 
+                                        placeholder="Ej: Recepcionista" 
+                                        defaultValue={editingRoleId ? customRoles?.find(r => r.id === editingRoleId)?.name : ""} 
+                                        required 
+                                    />
                                 </div>
                                 <div className="space-y-2">
                                     <Label htmlFor="description">Descripción</Label>
-                                    <Input id="description" name="description" placeholder="Atención a pacientes y creación de órdenes" />
+                                    <Input 
+                                        id="description" 
+                                        name="description" 
+                                        placeholder="Atención a pacientes y creación de órdenes" 
+                                        defaultValue={editingRoleId ? customRoles?.find(r => r.id === editingRoleId)?.description : ""} 
+                                    />
                                 </div>
                             </div>
 
@@ -207,11 +278,30 @@ export function RolesList() {
                         <Card key={role.id}>
                             <CardHeader className="pb-2">
                                 <div className="flex justify-between items-start">
-                                    <CardTitle className="text-lg flex items-center gap-2">
-                                        <Shield className="h-5 w-5 text-slate-400" />
-                                        {role.name}
-                                    </CardTitle>
-                                    {role.is_default && <Badge variant="secondary">Por defecto</Badge>}
+                                    <div className="flex items-center gap-2">
+                                        <CardTitle className="text-lg flex items-center gap-2">
+                                            <Shield className="h-5 w-5 text-slate-400" />
+                                            {role.name}
+                                        </CardTitle>
+                                        {role.is_default && <Badge variant="secondary">Por defecto</Badge>}
+                                    </div>
+                                    {!role.is_default && (
+                                        <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button variant="ghost" size="icon" className="-mt-2 -mr-2 h-8 w-8 text-muted-foreground" disabled={isDeleting === role.id}>
+                                                    {isDeleting === role.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent align="end">
+                                                <DropdownMenuItem onClick={() => handleEditRole(role)} className="gap-2">
+                                                    <Pencil className="h-4 w-4" /> Editar Rol
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem onClick={() => handleDeleteRole(role.id)} className="gap-2 text-destructive focus:bg-destructive/10 focus:text-destructive">
+                                                    <Trash className="h-4 w-4" /> Eliminar Rol
+                                                </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
+                                    )}
                                 </div>
                                 <CardDescription>{role.description || "Sin descripción"}</CardDescription>
                             </CardHeader>

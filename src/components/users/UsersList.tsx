@@ -4,7 +4,7 @@ import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
-import { Users, UserCheck, UserX, Phone, Shield, Stethoscope, Loader2, UserPlus } from "lucide-react"
+import { Users, UserCheck, UserX, Phone, Shield, Stethoscope, Loader2, UserPlus, MoreHorizontal, Pencil, Ban, Trash2 } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/components/ui/use-toast"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 
 const baseRoleLabels: any = {
     LAB_ADMIN: { label: "Administrador", color: "bg-violet-100 text-violet-700 border-violet-200" },
@@ -36,6 +37,11 @@ export function UsersList() {
     const [isCreatingStaff, setIsCreatingStaff] = useState(false)
     const [isStaffOpen, setIsStaffOpen] = useState(false)
 
+    // Edit user states
+    const [editingUser, setEditingUser] = useState<any>(null)
+    const [isUpdatingUser, setIsUpdatingUser] = useState(false)
+    const [isTogglingActive, setIsTogglingActive] = useState<string | null>(null)
+
     // Data fetching
     const { data: users, isLoading, refetch } = useQuery({
         queryKey: ["lab-users-extended"],
@@ -48,7 +54,7 @@ export function UsersList() {
             // Fetch users
             const { data: profilesData, error } = await supabase
                 .from("profiles")
-                .select("id, full_name, role, is_active, phone, created_at")
+                .select("id, full_name, role, is_active, phone, created_at, staff_profiles(specialty)")
                 .eq("lab_id", profile.lab_id)
                 .order("role", { ascending: true })
 
@@ -57,7 +63,7 @@ export function UsersList() {
             // Fetch their custom role assignments
             const { data: assignments } = await supabase
                 .from("staff_role_assignments")
-                .select("profile_id, custom_roles(name)")
+                .select("profile_id, custom_role_id, custom_roles(name)")
                 .eq("lab_id", profile.lab_id)
 
             // Merge custom roles into profiles
@@ -65,7 +71,9 @@ export function UsersList() {
                 const assignment = assignments?.find(a => a.profile_id === user.id)
                 return {
                     ...user,
-                    custom_role_name: (assignment?.custom_roles as any)?.name
+                    custom_role_id: assignment?.custom_role_id,
+                    custom_role_name: (assignment?.custom_roles as any)?.name,
+                    specialty: (user.staff_profiles as any)?.specialty
                 }
             })
 
@@ -139,6 +147,65 @@ export function UsersList() {
             toast({ variant: "destructive", title: "Error", description: err.message })
         } finally {
             setIsCreatingStaff(false)
+        }
+    }
+
+    const handleUpdateUser = async (e: React.FormEvent<HTMLFormElement>) => {
+        e.preventDefault()
+        if (!editingUser) return
+        
+        setIsUpdatingUser(true)
+        const formData = new FormData(e.currentTarget)
+        try {
+            const body: any = {
+                full_name: formData.get("full_name"),
+            }
+            if (editingUser.role === "DOCTOR") {
+                body.specialty = formData.get("specialty")
+            } else if (editingUser.role === "LAB_STAFF") {
+                body.custom_role_id = formData.get("custom_role_id")
+            }
+
+            const res = await fetch(`/api/users/${editingUser.id}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error)
+            
+            toast({ title: "Usuario actualizado", description: "Los datos del usuario fueron actualizados." })
+            setEditingUser(null)
+            refetch()
+        } catch (err: any) {
+            toast({ variant: "destructive", title: "Error", description: err.message })
+        } finally {
+            setIsUpdatingUser(false)
+        }
+    }
+
+    const handleToggleActive = async (user: any) => {
+        const newStatus = !user.is_active
+        if (!newStatus) {
+            if (!confirm(`¿Estás seguro de que deseas inactivar a ${user.full_name}? Perderá el acceso al sistema.`)) return
+        }
+
+        setIsTogglingActive(user.id)
+        try {
+            const res = await fetch(`/api/users/${user.id}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ is_active: newStatus })
+            })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error)
+            
+            toast({ title: newStatus ? "Usuario activado" : "Usuario inactivado", description: "El estado del usuario fue actualizado." })
+            refetch()
+        } catch (err: any) {
+            toast({ variant: "destructive", title: "Error", description: err.message })
+        } finally {
+            setIsTogglingActive(null)
         }
     }
 
@@ -244,6 +311,56 @@ export function UsersList() {
                             </form>
                         </DialogContent>
                     </Dialog>
+                    
+                    {/* Editar Usuario Modal */}
+                    <Dialog open={!!editingUser} onOpenChange={(open) => !open && setEditingUser(null)}>
+                        <DialogContent>
+                            <DialogHeader>
+                                <DialogTitle>Editar Usuario</DialogTitle>
+                                <DialogDescription>
+                                    Actualiza los datos del usuario.
+                                </DialogDescription>
+                            </DialogHeader>
+                            {editingUser && (
+                                <form onSubmit={handleUpdateUser} className="space-y-4 py-2">
+                                    <div className="space-y-2">
+                                        <Label>Nombre completo</Label>
+                                        <Input name="full_name" defaultValue={editingUser.full_name} required />
+                                    </div>
+                                    
+                                    {editingUser.role === "DOCTOR" && (
+                                        <div className="space-y-2">
+                                            <Label>Especialidad</Label>
+                                            <Input name="specialty" defaultValue={editingUser.specialty} />
+                                        </div>
+                                    )}
+
+                                    {editingUser.role === "LAB_STAFF" && (
+                                        <div className="space-y-2">
+                                            <Label>Rol Personalizado</Label>
+                                            <Select name="custom_role_id" defaultValue={editingUser.custom_role_id} required>
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Selecciona un rol..." />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {customRoles?.map(role => (
+                                                        <SelectItem key={role.id} value={role.id}>{role.name}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    )}
+
+                                    <DialogFooter>
+                                        <Button type="button" variant="outline" onClick={() => setEditingUser(null)}>Cancelar</Button>
+                                        <Button type="submit" disabled={isUpdatingUser}>
+                                            {isUpdatingUser ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null} Guardar Cambios
+                                        </Button>
+                                    </DialogFooter>
+                                </form>
+                            )}
+                        </DialogContent>
+                    </Dialog>
                 </div>
             </div>
 
@@ -327,11 +444,37 @@ export function UsersList() {
                                                 </div>
                                             </div>
                                         </div>
-                                        <div>
+                                        <div className="flex items-center gap-2">
                                             {user.is_active
                                                 ? <UserCheck className="h-4 w-4 text-emerald-500" />
                                                 : <UserX className="h-4 w-4 text-red-400" />
                                             }
+                                            
+                                            {user.role !== "SUPER_ADMIN" && (
+                                                <DropdownMenu>
+                                                    <DropdownMenuTrigger asChild>
+                                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground" disabled={isTogglingActive === user.id}>
+                                                            {isTogglingActive === user.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+                                                        </Button>
+                                                    </DropdownMenuTrigger>
+                                                    <DropdownMenuContent align="end">
+                                                        {(user.role === "DOCTOR" || user.role === "LAB_STAFF") && (
+                                                            <DropdownMenuItem onClick={() => setEditingUser(user)} className="gap-2">
+                                                                <Pencil className="h-4 w-4" /> Editar Usuario
+                                                            </DropdownMenuItem>
+                                                        )}
+                                                        {user.is_active ? (
+                                                            <DropdownMenuItem onClick={() => handleToggleActive(user)} className="gap-2 text-red-600 focus:bg-red-50 focus:text-red-600">
+                                                                <Ban className="h-4 w-4" /> Inactivar
+                                                            </DropdownMenuItem>
+                                                        ) : (
+                                                            <DropdownMenuItem onClick={() => handleToggleActive(user)} className="gap-2 text-emerald-600 focus:bg-emerald-50 focus:text-emerald-600">
+                                                                <UserCheck className="h-4 w-4" /> Activar
+                                                            </DropdownMenuItem>
+                                                        )}
+                                                    </DropdownMenuContent>
+                                                </DropdownMenu>
+                                            )}
                                         </div>
                                     </div>
                                 )
