@@ -42,12 +42,12 @@ export async function uploadToMinio(filePath: string, fileBuffer: Buffer, conten
     return filePath
 }
 
-export async function getPresignedDownloadUrl(filePath: string, expiresIn: number = 3600) {
+export async function getPresignedDownloadUrl(filePath: string, expiresIn: number = 3600, inline: boolean = false) {
     const client = getS3Client()
     const command = new GetObjectCommand({
         Bucket: BUCKET_NAME,
         Key: filePath,
-        ResponseContentDisposition: 'attachment', // Force download
+        ResponseContentDisposition: inline ? 'inline' : 'attachment', // Force download or inline preview
     })
 
     return getSignedUrl(client, command, { expiresIn })

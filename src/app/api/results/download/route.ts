@@ -7,6 +7,7 @@ export async function GET(req: NextRequest) {
     try {
         const url = new URL(req.url)
         const fileId = url.searchParams.get("fileId")
+        const preview = url.searchParams.get("preview") === "true"
 
         if (!fileId) {
             return NextResponse.json({ error: "fileId requerido" }, { status: 400 })
@@ -70,13 +71,13 @@ export async function GET(req: NextRequest) {
 
         // Generate MinIO presigned URL (valid for 1 hour)
         const storagePath = (file as any).storage_path || (file as any).file_path
-        const downloadUrl = await getPresignedDownloadUrl(storagePath, 3600)
+        const downloadUrl = await getPresignedDownloadUrl(storagePath, 3600, preview)
 
         // Log audit event
         await supabaseAdmin.from("audit_events").insert({
             lab_id: file.lab_id,
             actor_id: user.id,
-            action: "DOWNLOAD",
+            action: preview ? "VIEW" : "DOWNLOAD",
             entity_type: "RESULT_FILE",
             entity_id: fileId,
             details: { file_name: file.file_name, order_id: file.order_id }

@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/use-toast"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 
 type Patient = {
     id: string
@@ -49,6 +50,8 @@ export default function DoctorPage() {
     const [orders, setOrders] = useState<Order[]>([])
     const [hasSearched, setHasSearched] = useState(false)
     const [downloadingId, setDownloadingId] = useState<string | null>(null)
+    const [previewFile, setPreviewFile] = useState<{ url: string, name: string, type: string } | null>(null)
+    const [previewingId, setPreviewingId] = useState<string | null>(null)
 
     // ── Search ──
     const handleSearch = async () => {
@@ -94,6 +97,21 @@ export default function DoctorPage() {
             toast({ variant: "destructive", title: "Error de descarga", description: err.message })
         } finally {
             setDownloadingId(null)
+        }
+    }
+
+    // ── Preview file ──
+    const handlePreview = async (fileId: string, fileName: string, mimeType: string) => {
+        setPreviewingId(fileId)
+        try {
+            const res = await fetch(`/api/results/download?fileId=${fileId}&preview=true`)
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error)
+            setPreviewFile({ url: data.url, name: fileName, type: mimeType })
+        } catch (err: any) {
+            toast({ variant: "destructive", title: "Error de previsualización", description: err.message })
+        } finally {
+            setPreviewingId(null)
         }
     }
 
@@ -248,19 +266,34 @@ export default function DoctorPage() {
                                                                         {(file.size_bytes / 1024).toFixed(0)} KB
                                                                     </span>
                                                                 </div>
-                                                                <Button
-                                                                    size="sm"
-                                                                    variant="ghost"
-                                                                    className="h-7 gap-1.5 text-xs text-teal-700 hover:text-teal-800 hover:bg-teal-50 flex-shrink-0"
-                                                                    onClick={() => handleDownload(file.id, file.file_name)}
-                                                                    disabled={downloadingId === file.id}
-                                                                >
-                                                                    {downloadingId === file.id
-                                                                        ? <Loader2 className="h-3 w-3 animate-spin" />
-                                                                        : <Download className="h-3 w-3" />
-                                                                    }
-                                                                    Descargar
-                                                                </Button>
+                                                                <div className="flex items-center gap-1">
+                                                                    <Button
+                                                                        size="sm"
+                                                                        variant="ghost"
+                                                                        className="h-7 gap-1.5 text-xs text-blue-700 hover:text-blue-800 hover:bg-blue-50 flex-shrink-0"
+                                                                        onClick={() => handlePreview(file.id, file.file_name, file.mime_type)}
+                                                                        disabled={previewingId === file.id || downloadingId === file.id}
+                                                                    >
+                                                                        {previewingId === file.id
+                                                                            ? <Loader2 className="h-3 w-3 animate-spin" />
+                                                                            : <Eye className="h-3 w-3" />
+                                                                        }
+                                                                        Ver
+                                                                    </Button>
+                                                                    <Button
+                                                                        size="sm"
+                                                                        variant="ghost"
+                                                                        className="h-7 gap-1.5 text-xs text-teal-700 hover:text-teal-800 hover:bg-teal-50 flex-shrink-0"
+                                                                        onClick={() => handleDownload(file.id, file.file_name)}
+                                                                        disabled={downloadingId === file.id || previewingId === file.id}
+                                                                    >
+                                                                        {downloadingId === file.id
+                                                                            ? <Loader2 className="h-3 w-3 animate-spin" />
+                                                                            : <Download className="h-3 w-3" />
+                                                                        }
+                                                                        Descargar
+                                                                    </Button>
+                                                                </div>
                                                             </div>
                                                         ))}
                                                     </div>
@@ -287,6 +320,37 @@ export default function DoctorPage() {
                     <p className="text-sm mt-1">Los resultados aparecerán aquí ordenados del más reciente al más antiguo</p>
                 </div>
             )}
+            {/* Preview Modal */}
+            <Dialog open={!!previewFile} onOpenChange={(open) => !open && setPreviewFile(null)}>
+                <DialogContent className="max-w-4xl h-[90vh] flex flex-col p-4">
+                    <DialogHeader className="flex flex-row justify-between items-center mb-2">
+                        <div>
+                            <DialogTitle className="text-xl">{previewFile?.name}</DialogTitle>
+                            <DialogDescription>Previsualización del resultado médico</DialogDescription>
+                        </div>
+                        {previewFile && (
+                            <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="gap-2"
+                                onClick={() => {
+                                    window.open(previewFile.url, "_blank")
+                                }}
+                            >
+                                <Download className="h-4 w-4" />
+                                Descargar Original
+                            </Button>
+                        )}
+                    </DialogHeader>
+                    <div className="flex-1 w-full bg-slate-100 rounded-lg overflow-hidden flex items-center justify-center border">
+                        {previewFile?.type.startsWith("image/") ? (
+                            <img src={previewFile.url} alt={previewFile.name} className="max-w-full max-h-full object-contain" />
+                        ) : (
+                            <iframe src={previewFile?.url} className="w-full h-full border-0" title={previewFile?.name} />
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }
