@@ -40,7 +40,9 @@ export function UsersList() {
     const { data: users, isLoading, refetch } = useQuery({
         queryKey: ["lab-users-extended"],
         queryFn: async () => {
-            const { data: profile } = await supabase.from("profiles").select("lab_id").single()
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return []
+            const { data: profile } = await supabase.from("profiles").select("lab_id").eq("id", user.id).single()
             if (!profile?.lab_id) return []
 
             // Fetch users
@@ -74,7 +76,9 @@ export function UsersList() {
     const { data: customRoles } = useQuery({
         queryKey: ["custom-roles-select"],
         queryFn: async () => {
-            const { data: profile } = await supabase.from("profiles").select("lab_id").single()
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return []
+            const { data: profile } = await supabase.from("profiles").select("lab_id").eq("id", user.id).single()
             if (!profile?.lab_id) return []
             const { data } = await supabase.from("custom_roles").select("id, name").eq("lab_id", profile.lab_id)
             return data || []
