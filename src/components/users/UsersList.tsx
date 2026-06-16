@@ -54,11 +54,16 @@ export function UsersList() {
             // Fetch users
             const { data: profilesData, error } = await supabase
                 .from("profiles")
-                .select("id, full_name, role, is_active, phone, created_at, staff_profiles(specialty)")
+                .select("id, full_name, role, is_active, phone, created_at")
                 .eq("lab_id", profile.lab_id)
                 .order("role", { ascending: true })
 
-            if (error) throw error
+            if (error) {
+                console.error("Error fetching profiles:", error)
+                throw error
+            }
+
+            if (!profilesData || profilesData.length === 0) return []
 
             // Fetch their custom role assignments
             const { data: assignments } = await supabase
@@ -66,14 +71,21 @@ export function UsersList() {
                 .select("profile_id, custom_role_id, custom_roles(name)")
                 .eq("lab_id", profile.lab_id)
 
-            // Merge custom roles into profiles
+            // Fetch staff profiles for specialties
+            const { data: staffProfiles } = await supabase
+                .from("staff_profiles")
+                .select("id, specialty")
+                .in("id", profilesData.map(p => p.id))
+
+            // Merge custom roles and specialties into profiles
             const usersWithCustomRoles = profilesData?.map(user => {
                 const assignment = assignments?.find(a => a.profile_id === user.id)
+                const staffProfile = staffProfiles?.find(sp => sp.id === user.id)
                 return {
                     ...user,
                     custom_role_id: assignment?.custom_role_id,
                     custom_role_name: (assignment?.custom_roles as any)?.name,
-                    specialty: (user.staff_profiles as any)?.specialty
+                    specialty: staffProfile?.specialty
                 }
             })
 
