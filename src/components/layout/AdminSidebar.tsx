@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { usePermissions } from "@/contexts/PermissionsContext"
 import { Skeleton } from "@/components/ui/skeleton"
+import { createClient } from "@/lib/supabase/client"
 
 const sidebarItems = [
     { name: "Dashboard", href: "/app/dashboard", icon: LayoutDashboard, module: "dashboard" },
@@ -38,6 +39,12 @@ export function AdminSidebar() {
         if (item.module === "dashboard") return true // Dashboard is always visible
         return hasPermission(item.module, "view")
     })
+
+    const handleSignOut = async () => {
+        const supabase = createClient()
+        await supabase.auth.signOut()
+        window.location.href = "/login"
+    }
 
     return (
         <div className="flex h-screen w-64 flex-col border-r bg-card shadow-sm">
@@ -77,7 +84,11 @@ export function AdminSidebar() {
             </div>
 
             <div className="p-4 border-t">
-                <Button variant="ghost" className="w-full justify-start gap-3 px-3 py-6 text-destructive hover:text-destructive hover:bg-destructive/10">
+                <Button 
+                    variant="ghost" 
+                    className="w-full justify-start gap-3 px-3 py-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                    onClick={handleSignOut}
+                >
                     <LogOut className="h-5 w-5" />
                     <span>Cerrar Sesión</span>
                 </Button>

@@ -27,6 +27,30 @@ export default function PatientDashboard() {
         },
     })
 
+    const { data: userProfile, isLoading: isLoadingUser } = useQuery({
+        queryKey: ["patient-profile"],
+        queryFn: async () => {
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return null
+
+            const { data: profile } = await supabase
+                .from("profiles")
+                .select(`
+                    full_name,
+                    labs (name)
+                `)
+                .eq("id", user.id)
+                .single()
+
+            return profile as any
+        }
+    })
+
+    const handleSignOut = async () => {
+        await supabase.auth.signOut()
+        window.location.href = "/portal/login"
+    }
+
     return (
         <div className="min-h-screen bg-background p-6 lg:p-12 space-y-8">
             <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -34,8 +58,27 @@ export default function PatientDashboard() {
                     <h1 className="text-3xl font-bold tracking-tight">Mis Resultados</h1>
                     <p className="text-muted-foreground">Consulta y descarga tus exámenes médicos.</p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={() => supabase.auth.signOut()}>
+                <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-3">
+                        {isLoadingUser ? (
+                            <Skeleton className="h-6 w-32" />
+                        ) : userProfile && (
+                            <div className="flex flex-col items-end mr-2">
+                                <span className="text-sm font-semibold text-primary">
+                                    {userProfile.labs?.name || "Laboratorio"}
+                                </span>
+                                <span className="text-xs text-muted-foreground font-medium">
+                                    {userProfile.full_name}
+                                </span>
+                            </div>
+                        )}
+                        {userProfile && (
+                            <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary text-sm font-bold uppercase hidden md:flex">
+                                {userProfile.full_name?.substring(0, 2)}
+                            </div>
+                        )}
+                    </div>
+                    <Button variant="outline" size="sm" onClick={handleSignOut} className="ml-2">
                         Cerrar Sesión
                     </Button>
                 </div>
