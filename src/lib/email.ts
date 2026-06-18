@@ -20,7 +20,7 @@ export async function sendWelcomeEmail(toEmail: string, patientName: string, lab
           <a href="https://diagnostiq.sinuhub.com/portal/login" style="background:#4f46e5;color:#fff;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:600;font-size:16px;display:inline-block;">Acceder a mi Portal</a>
         </div>
         <p style="color:#334155;font-size:15px;line-height:1.6;">
-          Para ingresar, utiliza este correo (<strong>${toEmail}</strong>) y tu <strong>Número de Documento</strong> como contraseña inicial.
+          Para ingresar, utiliza tu <strong>Número de Documento</strong> tanto como usuario y como contraseña inicial.
         </p>
         <hr style="border:none;border-top:1px solid #e2e8f0;margin:30px 0;"/>
         <p style="color:#94a3b8;font-size:12px;text-align:center;">Este es un mensaje automático. Protegemos tus datos con cifrado de extremo a extremo.</p>
@@ -69,7 +69,7 @@ export async function sendDirectResultsEmail(
     const credBlock = isNewPatient ? `
         <div style="background:#eef2ff;border-left:4px solid #6366f1;padding:16px 20px;border-radius:8px;margin:20px 0;">
           <p style="margin:0 0 8px 0;font-size:14px;font-weight:700;color:#3730a3;">🔐 Tus Credenciales de Acceso</p>
-          <p style="margin:4px 0;font-size:14px;color:#334155;">📧 <strong>Usuario:</strong> ${toEmail}</p>
+          <p style="margin:4px 0;font-size:14px;color:#334155;">👤 <strong>Usuario:</strong> Tu número de documento</p>
           <p style="margin:4px 0;font-size:14px;color:#334155;">🔑 <strong>Contraseña inicial:</strong> Tu número de documento</p>
           <p style="margin:8px 0 0 0;font-size:12px;color:#64748b;">Podrás cambiar tu contraseña después de iniciar sesión.</p>
         </div>` : '';

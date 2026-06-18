@@ -158,16 +158,23 @@ export async function POST(req: NextRequest) {
 
             const sha256 = crypto.createHash("sha256").update(buffer).digest("hex")
 
-            await supabaseAdmin.from("result_files").insert({
+            const { error: insertError } = await supabaseAdmin.from("result_files").insert({
                 order_id: order.id,
+                patient_id: patient.id,
                 lab_id: labId,
                 file_name: file.name,
                 storage_path: storagePath,
                 mime_type: file.type || "application/pdf",
                 size_bytes: buffer.length,
+                uploaded_by: user.id,
+                storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
                 sha256,
                 version: 1,
             })
+            if (insertError) {
+                console.error("Result file insert error:", insertError)
+                throw insertError
+            }
         }
 
         // 9. Send "results ready" email only if patient has a real email
