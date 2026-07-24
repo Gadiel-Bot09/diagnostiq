@@ -138,9 +138,13 @@ export default function NewOrderPage() {
             if (selectedTests.length === 0) throw new Error("Agrega al menos un examen.")
 
             // Get lab_id from profile
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) throw new Error("No autenticado")
+
             const { data: profile } = await supabase
                 .from("profiles")
                 .select("lab_id")
+                .eq("id", user.id)
                 .single()
 
             if (!profile?.lab_id) throw new Error("No tienes un laboratorio asignado.")

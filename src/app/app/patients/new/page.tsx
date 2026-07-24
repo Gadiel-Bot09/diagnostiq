@@ -61,7 +61,10 @@ export default function NewPatientPage() {
     async function onSubmit(values: z.infer<typeof patientSchema>) {
         setIsLoading(true)
         try {
-            const { data: profile } = await supabase.from('profiles').select('lab_id').single()
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) throw new Error("No autenticado")
+
+            const { data: profile } = await supabase.from('profiles').select('lab_id').eq('id', user.id).single()
             if (!profile?.lab_id) throw new Error("No tienes un laboratorio asignado")
 
             const { error } = await supabase.from("patients").insert({
