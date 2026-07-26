@@ -47,13 +47,13 @@ export default function ReportsPage() {
     const { toast } = useToast()
     const { hasPermission, isLoading: permsLoading } = usePermissions()
 
-    const [dateRange, setDateRange] = useState<string>("30d")
+    const [dateRange, setDateRange] = useState<string>("all")
     const [searchQuery, setSearchQuery] = useState<string>("")
     const [activeTab, setActiveTab] = useState<string>("exams")
     const [statusFilter, setStatusFilter] = useState<string>("ALL")
     const [showPrintModal, setShowPrintModal] = useState<boolean>(false)
 
-    // Fetch Lab ID
+    // Fetch Lab ID (optional reference for tenant-scoped operations if needed)
     const { data: labId } = useQuery({
         queryKey: ["lab-id-reports"],
         queryFn: async () => {
@@ -64,10 +64,9 @@ export default function ReportsPage() {
         }
     })
 
-    // Fetch Orders with Joined Data
+    // Fetch Orders with Joined Data (reads all historical database records)
     const { data: orders = [], isLoading: ordersLoading } = useQuery({
-        queryKey: ["reports-orders", labId],
-        enabled: !!labId,
+        queryKey: ["reports-orders"],
         queryFn: async () => {
             const { data, error } = await supabase
                 .from("orders")
@@ -103,7 +102,6 @@ export default function ReportsPage() {
                         uploaded_at
                     )
                 `)
-                .eq("lab_id", labId)
                 .order("ordered_at", { ascending: false })
 
             if (error) throw error
@@ -113,13 +111,11 @@ export default function ReportsPage() {
 
     // Fetch Profiles (Staff/Users)
     const { data: staffProfiles = [] } = useQuery({
-        queryKey: ["reports-staff", labId],
-        enabled: !!labId,
+        queryKey: ["reports-staff"],
         queryFn: async () => {
             const { data, error } = await supabase
                 .from("profiles")
                 .select("id, full_name, role, email, is_active")
-                .eq("lab_id", labId)
             if (error) throw error
             return data || []
         }
