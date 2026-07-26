@@ -41,7 +41,9 @@ export default function CatalogPage() {
     const { data: labId } = useQuery({
         queryKey: ["lab-id"],
         queryFn: async () => {
-            const { data } = await supabase.from("profiles").select("lab_id").single()
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return null
+            const { data } = await supabase.from("profiles").select("lab_id").eq("id", user.id).single()
             return data?.lab_id
         }
     })

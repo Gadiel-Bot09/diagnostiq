@@ -39,7 +39,9 @@ export default function AuditPage() {
     const { data: events, isLoading } = useQuery({
         queryKey: ["audit-events"],
         queryFn: async () => {
-            const { data: profile } = await supabase.from("profiles").select("lab_id").single()
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return []
+            const { data: profile } = await supabase.from("profiles").select("lab_id").eq("id", user.id).single()
             if (!profile?.lab_id) return []
 
             const { data, error } = await supabase

@@ -28,7 +28,9 @@ export default function LabDashboard() {
     const { data: stats, isLoading } = useQuery({
         queryKey: ["lab-stats"],
         queryFn: async () => {
-            const { data: profile } = await supabase.from('profiles').select('lab_id').single()
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return null
+            const { data: profile } = await supabase.from('profiles').select('lab_id').eq('id', user.id).single()
             if (!profile?.lab_id) return null
 
             const [patientsCount, ordersCount, pendingCount, completedCount] = await Promise.all([
