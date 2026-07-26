@@ -13,7 +13,8 @@ import {
     LogOut,
     Microscope,
     UploadCloud,
-    Lock
+    Lock,
+    BarChart3
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -26,6 +27,7 @@ const sidebarItems = [
     { name: "Pacientes", href: "/app/patients", icon: Users, module: "patients" },
     { name: "Órdenes", href: "/app/orders", icon: FileText, module: "orders" },
     { name: "Resultados Directos", href: "/app/direct-results", icon: UploadCloud, module: "results" },
+    { name: "Reportes", href: "/app/reports", icon: BarChart3, module: "reports" },
     { name: "Catálogo", href: "/app/catalog", icon: TestTube2, module: "settings" }, // Reusing settings or catalog module
     { name: "Usuarios", href: "/app/users", icon: Settings, module: "staff" },
     { name: "Auditoría", href: "/app/audit", icon: History, module: "audit" },
