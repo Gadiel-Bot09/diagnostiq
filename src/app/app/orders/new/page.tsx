@@ -21,6 +21,7 @@ import { format } from "date-fns"
 
 import { createClient } from "@/lib/supabase/client"
 import { AdminLayout } from "@/components/layout/AdminLayout"
+import { usePermissions } from "@/contexts/PermissionsContext"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -59,6 +60,7 @@ export default function NewOrderPage() {
     const router = useRouter()
     const { toast } = useToast()
     const supabase = createClient()
+    const { hasPermission, isLoading: permsLoading } = usePermissions()
 
     // Patient search state
     const [patientSearch, setPatientSearch] = useState("")
@@ -210,6 +212,18 @@ export default function NewOrderPage() {
         setSelectedPatient(patient)
         setPatientSearch("")
         setShowPatientDropdown(false)
+    }
+
+    if (!permsLoading && !hasPermission("orders", "create")) {
+        return (
+            <AdminLayout>
+                <div className="max-w-md mx-auto mt-20 text-center space-y-4 p-8 border rounded-xl bg-card">
+                    <h2 className="text-xl font-bold text-destructive">Acceso Denegado</h2>
+                    <p className="text-sm text-muted-foreground">No tienes permisos para crear nuevas órdenes en este laboratorio.</p>
+                    <Button variant="outline" onClick={() => router.back()}>Volver</Button>
+                </div>
+            </AdminLayout>
+        )
     }
 
     return (

@@ -24,6 +24,7 @@ import {
 
 import { createClient } from "@/lib/supabase/client"
 import { AdminLayout } from "@/components/layout/AdminLayout"
+import { usePermissions } from "@/contexts/PermissionsContext"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -67,6 +68,7 @@ export default function AdminOrderDetailPage() {
     const { toast } = useToast()
     const supabase = createClient()
     const queryClient = useQueryClient()
+    const { hasPermission } = usePermissions()
     const [isDownloading, setIsDownloading] = useState(false)
 
     const { data: order, isLoading } = useQuery({
@@ -185,11 +187,13 @@ export default function AdminOrderDetailPage() {
                     <Button variant="ghost" onClick={() => router.back()} className="gap-2 -ml-4">
                         <ArrowLeft className="h-4 w-4" /> Volver a órdenes
                     </Button>
+                    {(hasPermission("results", "create") || hasPermission("orders", "edit")) && (
                     <Link href={`/app/orders/${id}/upload`}>
                         <Button className="gap-2 bg-blue-600 hover:bg-blue-700">
                             <FileUp className="h-4 w-4" /> Subir / Reemplazar PDF
                         </Button>
                     </Link>
+                    )}
                 </div>
 
                 {/* Title row */}
@@ -304,11 +308,13 @@ export default function AdminOrderDetailPage() {
                                     <div className="border-2 border-dashed rounded-xl p-8 text-center">
                                         <FileUp className="h-10 w-10 mx-auto text-muted-foreground/30 mb-3" />
                                         <p className="text-sm text-muted-foreground">No se han subido PDFs para esta orden aún.</p>
+                                        {(hasPermission("results", "create") || hasPermission("orders", "edit")) && (
                                         <Link href={`/app/orders/${id}/upload`} className="mt-3 inline-block">
                                             <Button variant="outline" size="sm" className="gap-2 mt-2">
                                                 <FileUp className="h-3.5 w-3.5" /> Subir primer PDF
                                             </Button>
                                         </Link>
+                                        )}
                                     </div>
                                 )}
                             </CardContent>
@@ -358,6 +364,7 @@ export default function AdminOrderDetailPage() {
                         </Card>
 
                         {/* Cambiar estado */}
+                        {hasPermission("orders", "edit") && (
                         <Card>
                             <CardHeader className="pb-3">
                                 <CardTitle className="text-sm font-medium flex items-center gap-2 text-muted-foreground uppercase tracking-wider">
@@ -390,6 +397,7 @@ export default function AdminOrderDetailPage() {
                                 )}
                             </CardContent>
                         </Card>
+                        )}
 
                         {/* Info adicional */}
                         <div className="bg-blue-50 border border-blue-100 p-4 rounded-xl text-xs text-blue-700 space-y-1">

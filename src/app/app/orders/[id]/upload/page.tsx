@@ -9,6 +9,7 @@ import { es } from "date-fns/locale"
 
 import { createClient } from "@/lib/supabase/client"
 import { AdminLayout } from "@/components/layout/AdminLayout"
+import { usePermissions } from "@/contexts/PermissionsContext"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { ResultUploader } from "@/components/ResultUploader"
@@ -18,6 +19,7 @@ export default function OrderUploadPage() {
     const { id } = useParams()
     const router = useRouter()
     const supabase = createClient()
+    const { hasPermission, isLoading: permsLoading } = usePermissions()
 
     const { data: order, isLoading } = useQuery({
         queryKey: ["admin-order", id],
@@ -54,6 +56,18 @@ export default function OrderUploadPage() {
 
     const latestVersion = order?.result_files?.reduce((max: number, f: any) => Math.max(max, f.version), 0) || 0
     const patient = order?.patients as any
+
+    if (!permsLoading && !hasPermission("results", "create") && !hasPermission("orders", "edit")) {
+        return (
+            <AdminLayout>
+                <div className="max-w-md mx-auto mt-20 text-center space-y-4 p-8 border rounded-xl bg-card">
+                    <h2 className="text-xl font-bold text-destructive">Acceso Denegado</h2>
+                    <p className="text-sm text-muted-foreground">No tienes permisos para subir resultados para esta orden.</p>
+                    <Button variant="outline" onClick={() => router.back()}>Volver</Button>
+                </div>
+            </AdminLayout>
+        )
+    }
 
     return (
         <AdminLayout>

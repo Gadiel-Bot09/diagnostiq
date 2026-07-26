@@ -10,6 +10,7 @@ import { es } from "date-fns/locale"
 
 import { createClient } from "@/lib/supabase/client"
 import { AdminLayout } from "@/components/layout/AdminLayout"
+import { usePermissions } from "@/contexts/PermissionsContext"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -31,6 +32,7 @@ import {
 
 export default function LabOrdersPage() {
     const supabase = createClient()
+    const { hasPermission } = usePermissions()
     const [searchTerm, setSearchTerm] = useState("")
 
     const { data: orders, isLoading } = useQuery({
@@ -67,11 +69,13 @@ export default function LabOrdersPage() {
                         <h1 className="text-3xl font-bold tracking-tight">Órdenes</h1>
                         <p className="text-muted-foreground">Monitorea y procesa las órdenes de laboratorio.</p>
                     </div>
+                    {hasPermission("orders", "create") && (
                     <Link href="/app/orders/new">
                         <Button className="gap-2">
                             <Microscope className="h-4 w-4" /> Crear Nueva Orden
                         </Button>
                     </Link>
+                    )}
                 </div>
 
                 <Card>
@@ -141,11 +145,13 @@ export default function LabOrdersPage() {
                                                             <Eye className="h-3.5 w-3.5" /> Ver
                                                         </Button>
                                                     </Link>
+                                                    {(hasPermission("results", "create") || hasPermission("orders", "edit")) && (
                                                     <Link href={`/app/orders/${order.id}/upload`}>
                                                         <Button size="sm" className="gap-2 h-8 bg-blue-600 hover:bg-blue-700">
                                                             <FileUp className="h-3.5 w-3.5" /> Subir PDF
                                                         </Button>
                                                     </Link>
+                                                    )}
                                                 </div>
                                             </TableCell>
                                         </TableRow>

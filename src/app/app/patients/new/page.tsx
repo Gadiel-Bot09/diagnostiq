@@ -28,6 +28,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { AdminLayout } from "@/components/layout/AdminLayout"
 import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/components/ui/use-toast"
+import { usePermissions } from "@/contexts/PermissionsContext"
 
 const patientSchema = z.object({
     document_type: z.string().min(1, "Requerido"),
@@ -44,6 +45,7 @@ export default function NewPatientPage() {
     const { toast } = useToast()
     const [isLoading, setIsLoading] = useState(false)
     const supabase = createClient()
+    const { hasPermission, isLoading: permsLoading } = usePermissions()
 
     const form = useForm<z.infer<typeof patientSchema>>({
         resolver: zodResolver(patientSchema),
@@ -90,6 +92,18 @@ export default function NewPatientPage() {
         } finally {
             setIsLoading(false)
         }
+    }
+
+    if (!permsLoading && !hasPermission("patients", "create")) {
+        return (
+            <AdminLayout>
+                <div className="max-w-md mx-auto mt-20 text-center space-y-4 p-8 border rounded-xl bg-card">
+                    <h2 className="text-xl font-bold text-destructive">Acceso Denegado</h2>
+                    <p className="text-sm text-muted-foreground">No tienes permisos para registrar nuevos pacientes.</p>
+                    <Button variant="outline" onClick={() => router.back()}>Volver</Button>
+                </div>
+            </AdminLayout>
+        )
     }
 
     return (

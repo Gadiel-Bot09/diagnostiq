@@ -14,6 +14,7 @@ import {
 } from "lucide-react"
 
 import { AdminLayout } from "@/components/layout/AdminLayout"
+import { usePermissions } from "@/contexts/PermissionsContext"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -54,6 +55,7 @@ export default function DirectResultsPage() {
     const { toast } = useToast()
     const supabase = createClient()
     const queryClient = useQueryClient()
+    const { hasPermission, isLoading: permsLoading } = usePermissions()
 
     const [showManageModal, setShowManageModal] = useState(false)
     const [newExamName, setNewExamName] = useState("")
@@ -250,6 +252,17 @@ export default function DirectResultsPage() {
         setStep("search"); setSearchDoc(""); setFoundPatient(null)
         setPatientNotFound(false); setUploadedFiles([]); setUploadResult(null)
         form.reset()
+    }
+
+    if (!permsLoading && !hasPermission("results", "create")) {
+        return (
+            <AdminLayout>
+                <div className="max-w-md mx-auto mt-20 text-center space-y-4 p-8 border rounded-xl bg-card">
+                    <h2 className="text-xl font-bold text-destructive">Acceso Denegado</h2>
+                    <p className="text-sm text-muted-foreground">No tienes permisos para subir resultados directos.</p>
+                </div>
+            </AdminLayout>
+        )
     }
 
     // ──────────────────── RENDER ────────────────────
@@ -560,6 +573,7 @@ export default function DirectResultsPage() {
                     </DialogHeader>
 
                     {/* Quick Add Form */}
+                    {hasPermission("settings", "create") && (
                     <div className="flex gap-2 pt-2 border-b pb-4">
                         <Input
                             placeholder="Ej: Radiografía panorámica..."
@@ -583,9 +597,10 @@ export default function DirectResultsPage() {
                             <Plus className="h-4 w-4 mr-1" /> Agregar
                         </Button>
                     </div>
+                    )}
 
                     {/* Seed Default Radiology Exams Button (if few or none) */}
-                    {examTypes.length < 7 && (
+                    {hasPermission("settings", "create") && examTypes.length < 7 && (
                         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 my-2 flex items-center justify-between gap-2">
                             <div className="text-xs text-amber-900 space-y-0.5 min-w-0">
                                 <p className="font-semibold flex items-center gap-1 truncate"><Sparkles className="h-3.5 w-3.5 text-amber-600 shrink-0" /> Plantilla Odontológica</p>
@@ -653,6 +668,7 @@ export default function DirectResultsPage() {
                                                 {test.code && <Badge variant="secondary" className="text-[10px] shrink-0">{test.code}</Badge>}
                                             </div>
                                             <div className="flex items-center gap-1 shrink-0">
+                                                {hasPermission("settings", "edit") && (
                                                 <Button
                                                     type="button"
                                                     variant="ghost"
@@ -666,6 +682,8 @@ export default function DirectResultsPage() {
                                                 >
                                                     <Pencil className="h-3.5 w-3.5" />
                                                 </Button>
+                                                )}
+                                                {hasPermission("settings", "delete") && (
                                                 <Button
                                                     type="button"
                                                     variant="ghost"
@@ -681,6 +699,7 @@ export default function DirectResultsPage() {
                                                 >
                                                     <Trash2 className="h-3.5 w-3.5" />
                                                 </Button>
+                                                )}
                                             </div>
                                         </>
                                     )}

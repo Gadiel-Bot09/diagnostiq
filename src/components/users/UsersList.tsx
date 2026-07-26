@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/components/ui/use-toast"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { usePermissions } from "@/contexts/PermissionsContext"
 
 const baseRoleLabels: any = {
     LAB_ADMIN: { label: "Administrador", color: "bg-violet-100 text-violet-700 border-violet-200" },
@@ -29,6 +30,7 @@ const baseRoleLabels: any = {
 export function UsersList() {
     const supabase = createClient()
     const { toast } = useToast()
+    const { hasPermission } = usePermissions()
     
     // States for modals
     const [isCreatingDoctor, setIsCreatingDoctor] = useState(false)
@@ -234,6 +236,7 @@ export function UsersList() {
                 
                 <div className="flex gap-2">
                     {/* Crear Médico Modal */}
+                    {hasPermission("staff", "create") && (
                     <Dialog open={isDoctorOpen} onOpenChange={setIsDoctorOpen}>
                         <DialogTrigger asChild>
                             <Button variant="outline" className="gap-2 text-teal-700 hover:text-teal-800 border-teal-200 bg-teal-50 hover:bg-teal-100">
@@ -273,8 +276,10 @@ export function UsersList() {
                             </form>
                         </DialogContent>
                     </Dialog>
+                    )}
 
                     {/* Invitar Personal Modal */}
+                    {hasPermission("staff", "create") && (
                     <Dialog open={isStaffOpen} onOpenChange={setIsStaffOpen}>
                         <DialogTrigger asChild>
                             <Button className="gap-2 bg-primary text-white">
@@ -323,6 +328,7 @@ export function UsersList() {
                             </form>
                         </DialogContent>
                     </Dialog>
+                    )}
                     
                     {/* Editar Usuario Modal */}
                     <Dialog open={!!editingUser} onOpenChange={(open) => !open && setEditingUser(null)}>
@@ -462,7 +468,7 @@ export function UsersList() {
                                                 : <UserX className="h-4 w-4 text-red-400" />
                                             }
                                             
-                                            {user.role !== "SUPER_ADMIN" && (
+                                            {user.role !== "SUPER_ADMIN" && (hasPermission("staff", "edit") || hasPermission("staff", "delete")) && (
                                                 <DropdownMenu>
                                                     <DropdownMenuTrigger asChild>
                                                         <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground" disabled={isTogglingActive === user.id}>
@@ -470,12 +476,12 @@ export function UsersList() {
                                                         </Button>
                                                     </DropdownMenuTrigger>
                                                     <DropdownMenuContent align="end">
-                                                        {(user.role === "DOCTOR" || user.role === "LAB_STAFF") && (
+                                                        {hasPermission("staff", "edit") && (user.role === "DOCTOR" || user.role === "LAB_STAFF") && (
                                                             <DropdownMenuItem onClick={() => setEditingUser(user)} className="gap-2">
                                                                 <Pencil className="h-4 w-4" /> Editar Usuario
                                                             </DropdownMenuItem>
                                                         )}
-                                                        {user.is_active ? (
+                                                        {hasPermission("staff", "delete") && (user.is_active ? (
                                                             <DropdownMenuItem onClick={() => handleToggleActive(user)} className="gap-2 text-red-600 focus:bg-red-50 focus:text-red-600">
                                                                 <Ban className="h-4 w-4" /> Inactivar
                                                             </DropdownMenuItem>
@@ -483,7 +489,7 @@ export function UsersList() {
                                                             <DropdownMenuItem onClick={() => handleToggleActive(user)} className="gap-2 text-emerald-600 focus:bg-emerald-50 focus:text-emerald-600">
                                                                 <UserCheck className="h-4 w-4" /> Activar
                                                             </DropdownMenuItem>
-                                                        )}
+                                                        ))}
                                                     </DropdownMenuContent>
                                                 </DropdownMenu>
                                             )}

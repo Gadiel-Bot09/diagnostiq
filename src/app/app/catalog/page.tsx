@@ -11,6 +11,7 @@ import { toast } from "sonner"
 
 import { createClient } from "@/lib/supabase/client"
 import { AdminLayout } from "@/components/layout/AdminLayout"
+import { usePermissions } from "@/contexts/PermissionsContext"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -30,6 +31,7 @@ type TestForm = z.infer<typeof testSchema>
 export default function CatalogPage() {
     const supabase = createClient()
     const queryClient = useQueryClient()
+    const { hasPermission } = usePermissions()
     const [search, setSearch] = useState("")
     const [showForm, setShowForm] = useState(false)
     const [editingTest, setEditingTest] = useState<any>(null)
@@ -117,9 +119,11 @@ export default function CatalogPage() {
                         <h1 className="text-3xl font-bold tracking-tight">Catálogo de Exámenes</h1>
                         <p className="text-muted-foreground mt-1">Gestiona los exámenes disponibles en tu laboratorio</p>
                     </div>
+                    {hasPermission("settings", "create") && (
                     <Button className="gap-2" onClick={() => { setEditingTest(null); reset(); setShowForm(true) }}>
                         <Plus className="h-4 w-4" /> Nuevo Examen
                     </Button>
+                    )}
                 </div>
 
                 {/* Form */}
@@ -184,7 +188,7 @@ export default function CatalogPage() {
                                 <p className="font-medium text-muted-foreground">
                                     {search ? "No se encontraron exámenes" : "No hay exámenes en el catálogo"}
                                 </p>
-                                {!search && <Button size="sm" onClick={() => setShowForm(true)} className="gap-2"><Plus className="h-3.5 w-3.5" /> Crear el primero</Button>}
+                                {!search && hasPermission("settings", "create") && <Button size="sm" onClick={() => setShowForm(true)} className="gap-2"><Plus className="h-3.5 w-3.5" /> Crear el primero</Button>}
                             </div>
                         ) : (
                             <div className="divide-y">
@@ -207,9 +211,12 @@ export default function CatalogPage() {
                                             </div>
                                         </div>
                                         <div className="flex items-center gap-1">
+                                            {hasPermission("settings", "edit") && (
                                             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(test)}>
                                                 <Pencil className="h-3.5 w-3.5" />
                                             </Button>
+                                            )}
+                                            {hasPermission("settings", "delete") && (
                                             <Button
                                                 variant="ghost" size="icon"
                                                 className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
@@ -217,6 +224,7 @@ export default function CatalogPage() {
                                             >
                                                 <Trash2 className="h-3.5 w-3.5" />
                                             </Button>
+                                            )}
                                         </div>
                                     </div>
                                 ))}

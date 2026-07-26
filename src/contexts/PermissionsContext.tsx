@@ -84,7 +84,7 @@ export function PermissionsProvider({ children }: { children: React.ReactNode })
                         .select("custom_role_id")
                         .eq("profile_id", user.id)
                         .eq("lab_id", profileData.lab_id)
-                        .single()
+                        .maybeSingle()
 
                     if (assignments?.custom_role_id) {
                         const { data: rolePerms } = await supabase

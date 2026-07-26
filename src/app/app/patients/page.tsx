@@ -6,6 +6,8 @@ import { useState } from "react"
 
 import { createClient } from "@/lib/supabase/client"
 import { AdminLayout } from "@/components/layout/AdminLayout"
+import { usePermissions } from "@/contexts/PermissionsContext"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -29,6 +31,7 @@ import { Badge } from "@/components/ui/badge"
 
 export default function PatientsPage() {
     const supabase = createClient()
+    const { hasPermission } = usePermissions()
     const [searchTerm, setSearchTerm] = useState("")
 
     const { data: patients, isLoading } = useQuery({
@@ -81,9 +84,13 @@ export default function PatientsPage() {
                         <h1 className="text-3xl font-bold tracking-tight">Pacientes</h1>
                         <p className="text-muted-foreground">Gestiona la base de datos de pacientes del laboratorio.</p>
                     </div>
-                    <Button className="gap-2">
-                        <UserPlus className="h-4 w-4" /> Registrar Paciente
-                    </Button>
+                    {hasPermission("patients", "create") && (
+                    <Link href="/app/patients/new">
+                        <Button className="gap-2">
+                            <UserPlus className="h-4 w-4" /> Registrar Paciente
+                        </Button>
+                    </Link>
+                    )}
                 </div>
 
                 <Card>
@@ -146,13 +153,15 @@ export default function PatientsPage() {
                                                     </DropdownMenuTrigger>
                                                     <DropdownMenuContent align="end">
                                                         <DropdownMenuLabel>Acciones</DropdownMenuLabel>
-                                                        <DropdownMenuItem className="gap-2">
-                                                            <FileEdit className="h-4 w-4" /> Editar Datos
-                                                        </DropdownMenuItem>
+                                                        {hasPermission("patients", "edit") && (
+                                                            <DropdownMenuItem className="gap-2">
+                                                                <FileEdit className="h-4 w-4" /> Editar Datos
+                                                            </DropdownMenuItem>
+                                                        )}
                                                         <DropdownMenuItem className="gap-2">
                                                             <History className="h-4 w-4" /> Ver Historial
                                                         </DropdownMenuItem>
-                                                        {(!patient.patient_accounts || patient.patient_accounts.length === 0) && (
+                                                        {hasPermission("patients", "edit") && (!patient.patient_accounts || patient.patient_accounts.length === 0) && (
                                                             <DropdownMenuItem 
                                                                 className="gap-2 text-violet-600"
                                                                 onClick={() => handleCreatePortalAccount(patient.id, patient.email)}
@@ -161,9 +170,11 @@ export default function PatientsPage() {
                                                             </DropdownMenuItem>
                                                         )}
                                                         <DropdownMenuSeparator />
-                                                        <DropdownMenuItem className="text-destructive gap-2">
-                                                            Eliminar
-                                                        </DropdownMenuItem>
+                                                        {hasPermission("patients", "delete") && (
+                                                            <DropdownMenuItem className="text-destructive gap-2">
+                                                                Eliminar
+                                                            </DropdownMenuItem>
+                                                        )}
                                                     </DropdownMenuContent>
                                                 </DropdownMenu>
                                             </TableCell>

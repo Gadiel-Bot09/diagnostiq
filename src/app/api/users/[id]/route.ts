@@ -75,11 +75,15 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
                 .single()
 
             if (roleData) {
-                // Update assignment
+                // Update or create assignment
                 const { error: assignError } = await supabaseAdmin
                     .from("staff_role_assignments")
-                    .update({ custom_role_id })
-                    .eq("profile_id", id)
+                    .upsert({
+                        profile_id: id,
+                        lab_id: adminProfile.lab_id,
+                        custom_role_id: custom_role_id,
+                        assigned_by: user.id
+                    }, { onConflict: "profile_id, lab_id" })
                     
                 if (assignError) throw assignError
             }

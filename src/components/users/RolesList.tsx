@@ -15,6 +15,8 @@ import { useToast } from "@/components/ui/use-toast"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 
+import { usePermissions } from "@/contexts/PermissionsContext"
+
 type ModuleKey = "orders" | "patients" | "results" | "reports" | "staff" | "settings" | "audit"
 type ActionKey = "view" | "create" | "edit" | "delete"
 
@@ -25,11 +27,13 @@ const MODULES: { id: ModuleKey, label: string }[] = [
     { id: "reports", label: "Reportes" },
     { id: "staff", label: "Personal" },
     { id: "settings", label: "Configuración" },
+    { id: "audit", label: "Auditoría" },
 ]
 
 export function RolesList() {
     const supabase = createClient()
     const { toast } = useToast()
+    const { hasPermission } = usePermissions()
     
     const [isCreating, setIsCreating] = useState(false)
     const [isOpen, setIsOpen] = useState(false)
@@ -165,6 +169,7 @@ export function RolesList() {
                     <p className="text-sm text-muted-foreground">Define perfiles de acceso con permisos específicos</p>
                 </div>
                 
+                {hasPermission("staff", "create") && (
                 <Dialog open={isOpen} onOpenChange={(open) => {
                     setIsOpen(open)
                     if (!open) {
@@ -249,6 +254,7 @@ export function RolesList() {
                         </form>
                     </DialogContent>
                 </Dialog>
+                )}
             </div>
 
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -285,7 +291,7 @@ export function RolesList() {
                                         </CardTitle>
                                         {role.is_default && <Badge variant="secondary">Por defecto</Badge>}
                                     </div>
-                                    {!role.is_default && (
+                                    {!role.is_default && (hasPermission("staff", "edit") || hasPermission("staff", "delete")) && (
                                         <DropdownMenu>
                                             <DropdownMenuTrigger asChild>
                                                 <Button variant="ghost" size="icon" className="-mt-2 -mr-2 h-8 w-8 text-muted-foreground" disabled={isDeleting === role.id}>
@@ -293,12 +299,16 @@ export function RolesList() {
                                                 </Button>
                                             </DropdownMenuTrigger>
                                             <DropdownMenuContent align="end">
-                                                <DropdownMenuItem onClick={() => handleEditRole(role)} className="gap-2">
-                                                    <Pencil className="h-4 w-4" /> Editar Rol
-                                                </DropdownMenuItem>
-                                                <DropdownMenuItem onClick={() => handleDeleteRole(role.id)} className="gap-2 text-destructive focus:bg-destructive/10 focus:text-destructive">
-                                                    <Trash className="h-4 w-4" /> Eliminar Rol
-                                                </DropdownMenuItem>
+                                                {hasPermission("staff", "edit") && (
+                                                    <DropdownMenuItem onClick={() => handleEditRole(role)} className="gap-2">
+                                                        <Pencil className="h-4 w-4" /> Editar Rol
+                                                    </DropdownMenuItem>
+                                                )}
+                                                {hasPermission("staff", "delete") && (
+                                                    <DropdownMenuItem onClick={() => handleDeleteRole(role.id)} className="gap-2 text-destructive focus:bg-destructive/10 focus:text-destructive">
+                                                        <Trash className="h-4 w-4" /> Eliminar Rol
+                                                    </DropdownMenuItem>
+                                                )}
                                             </DropdownMenuContent>
                                         </DropdownMenu>
                                     )}
