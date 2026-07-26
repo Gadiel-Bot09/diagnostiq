@@ -17,7 +17,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 
 import { usePermissions } from "@/contexts/PermissionsContext"
 
-type ModuleKey = "orders" | "patients" | "results" | "reports" | "staff" | "settings" | "audit"
+type ModuleKey = "orders" | "patients" | "results" | "reports" | "staff" | "settings" | "audit" | "qr"
 type ActionKey = "view" | "create" | "edit" | "delete"
 
 const MODULES: { id: ModuleKey, label: string }[] = [
@@ -28,6 +28,7 @@ const MODULES: { id: ModuleKey, label: string }[] = [
     { id: "staff", label: "Personal" },
     { id: "settings", label: "Configuración" },
     { id: "audit", label: "Auditoría" },
+    { id: "qr", label: "Códigos QR" },
 ]
 
 export function RolesList() {

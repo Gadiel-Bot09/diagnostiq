@@ -29,6 +29,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/use-toast"
+import { usePermissions } from "@/contexts/PermissionsContext"
 import { cn } from "@/lib/utils"
 
 interface PortalConfig {
@@ -113,6 +114,8 @@ const COLOR_THEMES = [
 
 export default function QrPortalsPage() {
     const { toast } = useToast()
+    const { hasPermission } = usePermissions()
+    const canEditLogo = hasPermission("qr", "edit") || hasPermission("qr", "create") || hasPermission("qr", "upload") || hasPermission("settings", "edit")
     const [origin, setOrigin] = useState<string>("https://diagnostiq.sinuhub.com")
     const [selectedTab, setSelectedTab] = useState<string>("patient")
     const [qrColor, setQrColor] = useState<string>("#0F172A")
@@ -476,7 +479,8 @@ export default function QrPortalsPage() {
                                     size="sm"
                                     className="h-8 text-xs font-bold gap-1.5 bg-background hover:bg-primary hover:text-white transition-colors"
                                     onClick={() => fileInputRef.current?.click()}
-                                    disabled={isUploadingLogo}
+                                    disabled={isUploadingLogo || !canEditLogo}
+                                    title={!canEditLogo ? "No tienes permisos para cambiar el logotipo del laboratorio" : "Subir nuevo logotipo"}
                                 >
                                     {isUploadingLogo ? (
                                         <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />

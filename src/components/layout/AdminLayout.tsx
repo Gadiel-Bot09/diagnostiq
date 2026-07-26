@@ -18,6 +18,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     else if (pathname.startsWith("/app/catalog")) requiredModule = "settings"
     else if (pathname.startsWith("/app/users")) requiredModule = "staff"
     else if (pathname.startsWith("/app/audit")) requiredModule = "audit"
+    else if (pathname.startsWith("/app/qr-portals")) requiredModule = "qr"
 
     const isAuthorized = isLoading || requiredModule === "" || hasPermission(requiredModule, "view")
 

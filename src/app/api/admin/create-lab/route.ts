@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
 
         if (!roleError && customRole) {
             // Add all permissions to the default admin role
-            const modules = ["orders", "patients", "results", "reports", "staff", "settings", "audit"]
+            const modules = ["orders", "patients", "results", "reports", "staff", "settings", "audit", "qr"]
             const actions = ["view", "create", "edit", "delete", "upload", "export", "invite"]
             const permissions = modules.flatMap(m => actions.map(a => ({ role_id: customRole.id, module: m, action: a })))
 

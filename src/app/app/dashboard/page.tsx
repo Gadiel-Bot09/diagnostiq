@@ -22,8 +22,10 @@ import { AdminLayout } from "@/components/layout/AdminLayout"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { usePermissions } from "@/contexts/PermissionsContext"
 
 export default function LabDashboard() {
+    const { hasPermission } = usePermissions()
     const supabase = createClient()
 
     const { data: stats, isLoading } = useQuery({
@@ -67,11 +69,13 @@ export default function LabDashboard() {
                         <p className="text-muted-foreground">Aquí tienes un resumen de la actividad de hoy en el laboratorio.</p>
                     </div>
                     <div className="flex gap-3">
-                        <Link href="/app/qr-portals">
-                            <Button variant="outline" className="gap-2 border-primary/20 hover:bg-primary/5 text-primary font-bold">
-                                <QrCode className="h-4 w-4" /> Códigos QR Portales
-                            </Button>
-                        </Link>
+                        {hasPermission("qr", "view") && (
+                            <Link href="/app/qr-portals">
+                                <Button variant="outline" className="gap-2 border-primary/20 hover:bg-primary/5 text-primary font-bold">
+                                    <QrCode className="h-4 w-4" /> Códigos QR Portales
+                                </Button>
+                            </Link>
+                        )}
                         <Link href="/app/orders/new">
                             <Button className="gap-2">
                                 <Plus className="h-4 w-4" /> Nueva Orden

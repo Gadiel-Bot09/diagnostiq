@@ -29,7 +29,7 @@ const sidebarItems = [
     { name: "Pacientes", href: "/app/patients", icon: Users, module: "patients" },
     { name: "Órdenes", href: "/app/orders", icon: FileText, module: "orders" },
     { name: "Resultados Directos", href: "/app/direct-results", icon: UploadCloud, module: "results" },
-    { name: "Códigos QR Portales", href: "/app/qr-portals", icon: QrCode, module: "dashboard" },
+    { name: "Códigos QR Portales", href: "/app/qr-portals", icon: QrCode, module: "qr" },
     { name: "Reportes", href: "/app/reports", icon: BarChart3, module: "reports" },
     { name: "Catálogo", href: "/app/catalog", icon: TestTube2, module: "settings" }, // Reusing settings or catalog module
     { name: "Usuarios", href: "/app/users", icon: Settings, module: "staff" },
