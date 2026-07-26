@@ -6,6 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import * as z from "zod"
 import { Lock, CheckCircle2 } from "lucide-react"
+import { LogoIcon } from "@/components/common/Logo"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -24,7 +25,7 @@ import { useToast } from "@/components/ui/use-toast"
 const resetSchema = z.object({
     password: z.string().min(6, { message: "La contraseña debe tener al menos 6 caracteres" }),
     confirmPassword: z.string(),
-}).refine((data) => data.password === data.confirmPassword, {
+}).refine((data: any) => data.password === data.confirmPassword, {
     message: "Las contraseñas no coinciden",
     path: ["confirmPassword"],
 })
@@ -76,9 +77,9 @@ export default function ResetPasswordPage() {
     return (
         <div className="min-h-screen flex items-center justify-center bg-muted/40 p-4">
             <Card className="w-full max-w-md shadow-lg border-t-4 border-t-primary">
-                <CardHeader className="space-y-1 text-center">
-                    <div className="flex justify-center mb-4 text-primary">
-                        {isSuccess ? <CheckCircle2 className="h-12 w-12 text-green-500" /> : <Lock className="h-12 w-12" />}
+                <CardHeader className="space-y-2 text-center pb-4">
+                    <div className="flex justify-center mb-2">
+                        {isSuccess ? <CheckCircle2 className="h-14 w-14 text-emerald-500 animate-bounce" /> : <LogoIcon size="xl" />}
                     </div>
                     <CardTitle className="text-2xl font-bold">Nueva Contraseña</CardTitle>
                     <CardDescription>

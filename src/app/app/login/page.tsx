@@ -7,6 +7,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import * as z from "zod"
 import { Microscope } from "lucide-react"
+import { Logo } from "@/components/common/Logo"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -64,13 +65,12 @@ export default function LabLoginPage() {
     return (
         <div className="min-h-screen flex items-center justify-center bg-muted/40 p-4">
             <Card className="w-full max-w-md shadow-lg border-t-4 border-t-primary">
-                <CardHeader className="space-y-1 text-center">
-                    <div className="flex justify-center mb-4 text-primary">
-                        <Microscope className="h-12 w-12" />
+                <CardHeader className="space-y-4 text-center pb-6">
+                    <div className="flex justify-center">
+                        <Logo size="xl" showTagline subtitle="Acceso Administrativo y Laboratorio" />
                     </div>
-                    <CardTitle className="text-2xl font-bold">DiagnostiQ</CardTitle>
-                    <CardDescription>
-                        Ingresa tus credenciales para acceder al panel administrativo.
+                    <CardDescription className="pt-2">
+                        Ingresa tus credenciales para acceder al panel de control.
                     </CardDescription>
                 </CardHeader>
                 <CardContent>

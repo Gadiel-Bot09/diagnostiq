@@ -382,10 +382,18 @@ export default function ReportsPage() {
             </head>
             <body>
                 <div class="header">
-                    <div class="logo-section">
+                    <div class="logo-section" style="display:flex;align-items:center;gap:14px;">
+                        <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:46px;height:46px;flex-shrink:0;">
+                            <rect x="6" y="6" width="88" height="88" rx="22" fill="#4F46E5" fill-opacity="0.1" />
+                            <path d="M 72 44 A 28 28 0 1 0 63.8 63.8" stroke="#4F46E5" stroke-width="7.5" stroke-linecap="round" fill="none" />
+                            <path d="M 52 52 L 82 82" stroke="#4F46E5" stroke-width="8.5" stroke-linecap="round" />
+                            <path d="M 24 44 L 33 44 L 39 28 L 47 62 L 55 36 L 61 44 L 68 44" stroke="#10B981" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+                            <circle cx="39" cy="28" r="2.5" fill="#10B981" />
+                            <circle cx="82" cy="82" r="3.5" fill="#06B6D4" />
+                        </svg>
                         <div>
-                            <h1 class="logo-title">DiagnostiQ</h1>
-                            <p class="logo-subtitle">Portal de Diagnóstico Médico & Laboratorio</p>
+                            <h1 class="logo-title" style="margin:0;font-size:26px;font-weight:900;color:#0F172A;letter-spacing:-0.5px;">Diagnosti<span style="color:#4F46E5;">Q</span></h1>
+                            <p class="logo-subtitle" style="margin:3px 0 0 0;font-size:10px;color:#64748B;letter-spacing:2px;text-transform:uppercase;font-weight:700;">Laboratorio Clínico &amp; Diagnóstico Digital</p>
                         </div>
                     </div>
                     <div class="lab-meta">

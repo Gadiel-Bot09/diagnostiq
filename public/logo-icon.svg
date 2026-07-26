@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <defs>
+    <linearGradient id="dq-primary-icon" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4F46E5" />
+      <stop offset="50%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#06B6D4" />
+    </linearGradient>
+    <linearGradient id="dq-pulse-icon" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#06B6D4" />
+      <stop offset="50%" stop-color="#10B981" />
+      <stop offset="100%" stop-color="#34D399" />
+    </linearGradient>
+    <filter id="dq-glow-icon" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2.5" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  
+  <!-- Background subtle squircle aura -->
+  <rect x="6" y="6" width="88" height="88" rx="22" fill="url(#dq-primary-icon)" opacity="0.08" />
+  
+  <!-- Main Q Loop (Circle with gap at bottom-right) -->
+  <path d="M 72 44 A 28 28 0 1 0 63.8 63.8" stroke="url(#dq-primary-icon)" stroke-width="7.5" stroke-linecap="round" fill="none" />
+  
+  <!-- Q Diagonal Tail (Extending from inside out) -->
+  <path d="M 52 52 L 82 82" stroke="url(#dq-primary-icon)" stroke-width="8.5" stroke-linecap="round" />
+  
+  <!-- Diagnostic Pulse Wave (Inside the Q loop) -->
+  <path d="M 24 44 L 33 44 L 39 28 L 47 62 L 55 36 L 61 44 L 68 44" stroke="url(#dq-pulse-icon)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#dq-glow-icon)" />
+  
+  <!-- Glowing Precision Accent Dots -->
+  <circle cx="39" cy="28" r="2.5" fill="#10B981" />
+  <circle cx="82" cy="82" r="3.5" fill="#06B6D4" filter="url(#dq-glow-icon)" />
+</svg>

@@ -5,6 +5,7 @@ import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
 import { HeartPulse, Hash, Lock, Microscope } from "lucide-react"
+import { Logo } from "@/components/common/Logo"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -100,14 +101,8 @@ export default function PatientLoginPage() {
         <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-sky-50 via-indigo-50 to-blue-100 p-4">
             <div className="w-full max-w-md space-y-6">
                 {/* Logo */}
-                <div className="text-center space-y-2">
-                    <div className="flex justify-center">
-                        <div className="bg-primary rounded-2xl p-4 shadow-lg shadow-primary/30">
-                            <Microscope className="h-10 w-10 text-white" />
-                        </div>
-                    </div>
-                    <h1 className="text-3xl font-extrabold tracking-tight text-gray-900">DiagnostiQ</h1>
-                    <p className="text-sm text-muted-foreground">Portal de Resultados Médicos</p>
+                <div className="flex justify-center pb-2">
+                    <Logo size="2xl" showTagline subtitle="Portal de Resultados Médicos" />
                 </div>
 
                 <Card className="shadow-2xl border-0 bg-white/90 backdrop-blur">

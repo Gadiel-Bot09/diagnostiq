@@ -15,8 +15,16 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: "DiagnostiQ — Laboratorio Clínico",
-  description: "Plataforma SaaS para gestión de laboratorios clínicos",
+  title: "DiagnostiQ — Laboratorio Clínico & Diagnóstico Digital",
+  description: "Plataforma SaaS de alta precisión para gestión de laboratorios clínicos y entrega de resultados",
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/logo-icon.svg", type: "image/svg+xml" },
+    ],
+    shortcut: "/favicon.svg",
+    apple: "/logo-icon.svg",
+  },
 }
 
 export default function RootLayout({

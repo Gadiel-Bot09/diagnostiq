@@ -14,6 +14,7 @@ import {
     ChevronRight,
     Zap,
 } from "lucide-react"
+import { Logo } from "@/components/common/Logo"
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
 
@@ -53,14 +54,8 @@ export function SuperAdminSidebar() {
     return (
         <div className="flex h-screen w-64 flex-col bg-slate-950 text-slate-100 border-r border-slate-800 shadow-2xl shrink-0">
             {/* Logo / Brand */}
-            <div className="flex items-center gap-3 px-5 py-5 border-b border-slate-800">
-                <div className="flex items-center justify-center h-9 w-9 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 shadow-lg">
-                    <Zap className="h-5 w-5 text-white" />
-                </div>
-                <div>
-                    <p className="text-sm font-bold text-white tracking-wide">DiagnostiQ</p>
-                    <p className="text-[10px] text-violet-400 font-semibold uppercase tracking-widest">Super Admin</p>
-                </div>
+            <div className="px-5 py-4 border-b border-slate-800">
+                <Logo size="md" variant="light" subtitle="Super Admin Panel" />
             </div>
 
             {/* Nav */}

@@ -7,6 +7,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import * as z from "zod"
 import { Mail, ArrowLeft, CheckCircle2 } from "lucide-react"
+import { LogoIcon } from "@/components/common/Logo"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -68,9 +69,9 @@ export default function ForgotPasswordPage() {
     return (
         <div className="min-h-screen flex items-center justify-center bg-muted/40 p-4">
             <Card className="w-full max-w-md shadow-lg border-t-4 border-t-primary">
-                <CardHeader className="space-y-1 text-center">
-                    <div className="flex justify-center mb-4 text-primary">
-                        {isSuccess ? <CheckCircle2 className="h-12 w-12 text-green-500" /> : <Mail className="h-12 w-12" />}
+                <CardHeader className="space-y-2 text-center pb-4">
+                    <div className="flex justify-center mb-2">
+                        {isSuccess ? <CheckCircle2 className="h-14 w-14 text-emerald-500 animate-bounce" /> : <LogoIcon size="xl" />}
                     </div>
                     <CardTitle className="text-2xl font-bold">Recuperar Contraseña</CardTitle>
                     <CardDescription>

@@ -12,10 +12,11 @@ import {
     FileText,
     LogOut,
     Microscope,
-    UploadCloud,
     Lock,
-    BarChart3
+    BarChart3,
+    UploadCloud
 } from "lucide-react"
+import { Logo } from "@/components/common/Logo"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { usePermissions } from "@/contexts/PermissionsContext"
@@ -53,10 +54,9 @@ export function AdminSidebar() {
 
     return (
         <div className="flex h-screen w-64 flex-col border-r bg-card shadow-sm">
-            <div className="flex h-16 items-center px-6">
-                <Link href="/app/dashboard" className="flex items-center gap-2 font-bold text-primary text-xl">
-                    <Microscope className="h-6 w-6" />
-                    <span>DiagnostiQ</span>
+            <div className="flex h-16 items-center px-5 border-b">
+                <Link href="/app/dashboard">
+                    <Logo size="md" />
                 </Link>
             </div>
 
