@@ -11,6 +11,7 @@ import {
     ArrowUpRight,
     Plus,
     FlaskConical,
+    QrCode,
 } from "lucide-react"
 import Link from "next/link"
 import { format } from "date-fns"
@@ -66,6 +67,11 @@ export default function LabDashboard() {
                         <p className="text-muted-foreground">Aquí tienes un resumen de la actividad de hoy en el laboratorio.</p>
                     </div>
                     <div className="flex gap-3">
+                        <Link href="/app/qr-portals">
+                            <Button variant="outline" className="gap-2 border-primary/20 hover:bg-primary/5 text-primary font-bold">
+                                <QrCode className="h-4 w-4" /> Códigos QR Portales
+                            </Button>
+                        </Link>
                         <Link href="/app/orders/new">
                             <Button className="gap-2">
                                 <Plus className="h-4 w-4" /> Nueva Orden
