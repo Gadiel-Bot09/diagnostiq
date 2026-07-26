@@ -14,7 +14,12 @@ import {
     ExternalLink, 
     Sparkles, 
     Smartphone, 
-    Share2 
+    Share2, 
+    UploadCloud, 
+    RefreshCw, 
+    Image as ImageIcon, 
+    FileText, 
+    Layers 
 } from "lucide-react"
 import { Logo, LogoIcon } from "@/components/common/Logo"
 import { Button } from "@/components/ui/button"
@@ -32,6 +37,7 @@ interface PortalConfig {
     subtitle: string
     badge: string
     badgeColor: string
+    badgeHex: string
     description: string
     path: string
     icon: React.ElementType
@@ -47,6 +53,7 @@ const PORTALS: PortalConfig[] = [
         subtitle: "Consultas y Descarga de Resultados en Línea",
         badge: "Acceso Público · 24/7",
         badgeColor: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-300",
+        badgeHex: "#059669",
         description: "Permite a los pacientes escanear el código con la cámara de su celular e ingresar con tu número de documento para descargar sus informes en PDF con validez digital.",
         path: "/portal/login",
         icon: HeartPulse,
@@ -64,6 +71,7 @@ const PORTALS: PortalConfig[] = [
         subtitle: "Historial Clínico y Referencias en Tiempo Real",
         badge: "Profesionales de Salud",
         badgeColor: "bg-teal-500/15 text-teal-700 dark:text-teal-400 border-teal-300",
+        badgeHex: "#0D9488",
         description: "Acceso confidencial y cifrado para que médicos aliados y especialistas consulten en tiempo real los resultados de los pacientes que han remitido al laboratorio.",
         path: "/doctor",
         icon: Stethoscope,
@@ -81,6 +89,7 @@ const PORTALS: PortalConfig[] = [
         subtitle: "Sistema Interno LIS & Administración",
         badge: "Acceso Restringido",
         badgeColor: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-400 border-indigo-300",
+        badgeHex: "#4F46E5",
         description: "Ingreso al panel de control para personal operativo de laboratorio, bacteriólogos, administración, facturación y directores técnicos.",
         path: "/app/login",
         icon: ShieldCheck,
@@ -112,14 +121,95 @@ export default function QrPortalsPage() {
     const [isPrinting, setIsPrinting] = useState<boolean>(false)
     const [printPortal, setPrintPortal] = useState<PortalConfig | null>(null)
 
-    // Canvas refs for downloading PNGs
+    // Custom Logo state (defaulting to /favicon.svg)
+    const [customLogoUrl, setCustomLogoUrl] = useState<string>("/favicon.svg")
+    const [isUploadingLogo, setIsUploadingLogo] = useState<boolean>(false)
+    const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+    // Canvas refs for QR canvas grabbing
     const canvasRefs = useRef<{ [key: string]: HTMLDivElement | null }>({})
 
     useEffect(() => {
-        if (typeof window !== "undefined" && window.location.origin) {
-            setOrigin(window.location.origin)
+        if (typeof window !== "undefined") {
+            if (window.location.origin) {
+                setOrigin(window.location.origin)
+            }
+            // Load saved customizations from localStorage
+            const savedLogo = localStorage.getItem("diagnostiq_custom_qr_logo")
+            if (savedLogo) setCustomLogoUrl(savedLogo)
+            const savedLabName = localStorage.getItem("diagnostiq_custom_lab_name")
+            if (savedLabName) setLabName(savedLabName)
         }
     }, [])
+
+    const handleLabNameChange = (val: string) => {
+        setLabName(val)
+        if (typeof window !== "undefined") {
+            localStorage.setItem("diagnostiq_custom_lab_name", val)
+        }
+    }
+
+    const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (!file) return
+
+        if (!file.type.startsWith("image/")) {
+            toast({
+                variant: "destructive",
+                title: "Formato inválido",
+                description: "Por favor sube un archivo de imagen (PNG, JPG, SVG o WEBP).",
+            })
+            return
+        }
+
+        setIsUploadingLogo(true)
+        try {
+            const formData = new FormData()
+            formData.append("file", file)
+
+            const res = await fetch("/api/qr-portals/upload-logo", {
+                method: "POST",
+                body: formData,
+            })
+
+            const data = await res.json()
+            if (!res.ok) {
+                throw new Error(data.error || "Error al subir logotipo")
+            }
+
+            // Use base64Url for immediate CORS-free canvas rendering
+            const targetUrl = data.base64Url || data.url
+            setCustomLogoUrl(targetUrl)
+            if (typeof window !== "undefined") {
+                localStorage.setItem("diagnostiq_custom_qr_logo", targetUrl)
+            }
+
+            toast({
+                title: "Logotipo de Laboratorio Actualizado",
+                description: "El logo ha sido subido a MinIO y se integrará en el centro de todos los códigos QR.",
+            })
+        } catch (err: any) {
+            toast({
+                variant: "destructive",
+                title: "Error al subir imagen",
+                description: err.message || "Ocurrió un error al procesar el logotipo.",
+            })
+        } finally {
+            setIsUploadingLogo(false)
+            if (fileInputRef.current) fileInputRef.current.value = ""
+        }
+    }
+
+    const handleResetLogo = () => {
+        setCustomLogoUrl("/favicon.svg")
+        if (typeof window !== "undefined") {
+            localStorage.removeItem("diagnostiq_custom_qr_logo")
+        }
+        toast({
+            title: "Logotipo Restablecido",
+            description: "Se ha vuelto a aplicar el icono oficial de DiagnostiQ.",
+        })
+    }
 
     const handleCopyLink = (path: string, id: string) => {
         const fullUrl = `${origin}${path}`
@@ -132,32 +222,197 @@ export default function QrPortalsPage() {
         setTimeout(() => setCopiedId(null), 2500)
     }
 
-    const handleDownloadPNG = (portalId: string, title: string) => {
+    // Download JUST the raw square QR code
+    const handleDownloadSimpleQR = (portalId: string, title: string) => {
         const container = canvasRefs.current[portalId]
         if (!container) return
-
         const canvas = container.querySelector("canvas")
-        if (!canvas) {
-            toast({
-                variant: "destructive",
-                title: "Error al generar imagen",
-                description: "No se encontró el lienzo del código QR.",
-            })
-            return
-        }
+        if (!canvas) return
 
         const pngUrl = canvas.toDataURL("image/png")
         const downloadLink = document.createElement("a")
         downloadLink.href = pngUrl
-        downloadLink.download = `QR_DiagnostiQ_${title.replace(/\s+/g, "_")}.png`
+        downloadLink.download = `QR_Simple_${title.replace(/\s+/g, "_")}.png`
         document.body.appendChild(downloadLink)
         downloadLink.click()
         document.body.removeChild(downloadLink)
 
         toast({
-            title: "Código QR Descargado",
-            description: "Imagen PNG generada en alta resolución lista para impresión o redes sociales.",
+            title: "QR Simple Descargado",
+            description: "Imagen cuadrada del código QR generada.",
         })
+    }
+
+    // Generate & Download a Complete Branded Poster / Card in High Resolution (1080x1440)
+    const handleDownloadFullPoster = async (portal: PortalConfig) => {
+        const container = canvasRefs.current[portal.id]
+        if (!container) return
+        const qrCanvas = container.querySelector("canvas")
+        if (!qrCanvas) {
+            toast({ variant: "destructive", title: "Error", description: "No se encontró el lienzo del QR." })
+            return
+        }
+
+        toast({
+            title: "Generando Cartel Completo...",
+            description: "Diseñando imagen en alta resolución (1080x1440 px) con identificación de portal.",
+        })
+
+        try {
+            // Create offscreen canvas 1080x1440 (3:4 ratio)
+            const canvas = document.createElement("canvas")
+            canvas.width = 1080
+            canvas.height = 1440
+            const ctx = canvas.getContext("2d")
+            if (!ctx) return
+
+            // 1. Background
+            ctx.fillStyle = "#FFFFFF"
+            ctx.fillRect(0, 0, 1080, 1440)
+
+            // Top colored banner bar
+            ctx.fillStyle = portal.badgeHex
+            ctx.fillRect(0, 0, 1080, 24)
+
+            // 2. Load custom logo or default logo for top header
+            const logoImg = new Image()
+            logoImg.crossOrigin = "anonymous"
+            logoImg.src = customLogoUrl
+
+            await new Promise((resolve) => {
+                logoImg.onload = resolve
+                logoImg.onerror = resolve
+            })
+
+            // Draw Header Section
+            if (logoImg.complete && logoImg.naturalWidth > 0) {
+                ctx.drawImage(logoImg, 80, 70, 90, 90)
+            }
+
+            ctx.textAlign = "left"
+            ctx.fillStyle = "#0F172A"
+            ctx.font = "bold 44px sans-serif"
+            ctx.fillText("DiagnostiQ", 190, 115)
+
+            ctx.fillStyle = "#64748B"
+            ctx.font = "bold 22px sans-serif"
+            ctx.fillText(labName.toUpperCase(), 190, 150)
+
+            // Horizontal Separator
+            ctx.strokeStyle = "#E2E8F0"
+            ctx.lineWidth = 3
+            ctx.beginPath()
+            ctx.moveTo(80, 200)
+            ctx.lineTo(1000, 200)
+            ctx.stroke()
+
+            // 3. Portal Title & Badge
+            ctx.textAlign = "center"
+            
+            // Badge pill
+            ctx.fillStyle = portal.badgeHex + "20" // 12% opacity
+            ctx.strokeStyle = portal.badgeHex
+            ctx.lineWidth = 2
+            const badgeText = portal.badge.toUpperCase()
+            ctx.font = "bold 20px sans-serif"
+            const badgeWidth = ctx.measureText(badgeText).width + 60
+            const badgeX = (1080 - badgeWidth) / 2
+            
+            ctx.beginPath()
+            ctx.roundRect(badgeX, 240, badgeWidth, 46, 23)
+            ctx.fill()
+            ctx.stroke()
+
+            ctx.fillStyle = portal.badgeHex
+            ctx.fillText(badgeText, 540, 270)
+
+            // Main Portal Title
+            ctx.fillStyle = "#0F172A"
+            ctx.font = "900 62px sans-serif"
+            ctx.fillText(portal.title.toUpperCase(), 540, 360)
+
+            // Subtitle
+            ctx.fillStyle = "#475569"
+            ctx.font = "bold 26px sans-serif"
+            ctx.fillText(portal.subtitle, 540, 405)
+
+            // 4. QR Code Box
+            // Outer decorated box
+            const qrBoxSize = 580
+            const qrBoxX = (1080 - qrBoxSize) / 2
+            const qrBoxY = 450
+            
+            ctx.fillStyle = "#F8FAFC"
+            ctx.strokeStyle = "#CBD5E1"
+            ctx.lineWidth = 4
+            ctx.beginPath()
+            ctx.roundRect(qrBoxX, qrBoxY, qrBoxSize, qrBoxSize, 40)
+            ctx.fill()
+            ctx.stroke()
+
+            // Draw the QR Code image from hidden canvas
+            ctx.drawImage(qrCanvas, qrBoxX + 30, qrBoxY + 30, qrBoxSize - 60, qrBoxSize - 60)
+
+            // 5. Instructions Section
+            ctx.textAlign = "center"
+            ctx.fillStyle = "#0F172A"
+            ctx.font = "bold 26px sans-serif"
+            ctx.fillText("INSTRUCCIONES DE INGRESO RÁPIDO:", 540, 1085)
+
+            ctx.textAlign = "left"
+            ctx.font = "22px sans-serif"
+            let instY = 1145
+            portal.instructions.forEach((inst, idx) => {
+                // Circle number
+                ctx.fillStyle = portal.badgeHex
+                ctx.beginPath()
+                ctx.arc(140, instY - 7, 18, 0, Math.PI * 2)
+                ctx.fill()
+
+                ctx.fillStyle = "#FFFFFF"
+                ctx.font = "bold 20px sans-serif"
+                ctx.textAlign = "center"
+                ctx.fillText(String(idx + 1), 140, instY)
+
+                // Text
+                ctx.textAlign = "left"
+                ctx.fillStyle = "#334155"
+                ctx.font = "medium 22px sans-serif"
+                ctx.fillText(inst, 175, instY)
+                instY += 55
+            })
+
+            // 6. Footer URL bar
+            ctx.fillStyle = "#F1F5F9"
+            ctx.strokeStyle = "#E2E8F0"
+            ctx.lineWidth = 2
+            ctx.beginPath()
+            ctx.roundRect(100, 1315, 880, 60, 15)
+            ctx.fill()
+            ctx.stroke()
+
+            ctx.textAlign = "center"
+            ctx.fillStyle = "#0F172A"
+            ctx.font = "bold 22px monospace"
+            ctx.fillText(`${origin}${portal.path}`, 540, 1353)
+
+            // Trigger Download
+            const pngUrl = canvas.toDataURL("image/png")
+            const downloadLink = document.createElement("a")
+            downloadLink.href = pngUrl
+            downloadLink.download = `Cartel_${portal.title.replace(/\s+/g, "_")}_DiagnostiQ.png`
+            document.body.appendChild(downloadLink)
+            downloadLink.click()
+            document.body.removeChild(downloadLink)
+
+            toast({
+                title: "Cartel Oficial Descargado",
+                description: `Imagen PNG completa con identificación del ${portal.title} lista para compartir.`,
+            })
+        } catch (err: any) {
+            console.error("Error generating poster:", err)
+            toast({ variant: "destructive", title: "Error", description: "No se pudo generar la imagen del cartel." })
+        }
     }
 
     const handlePrintSign = (portal: PortalConfig) => {
@@ -182,26 +437,79 @@ export default function QrPortalsPage() {
                     </div>
                     <h1 className="text-3xl font-extrabold tracking-tight">Códigos QR de Portales</h1>
                     <p className="text-muted-foreground mt-1 max-w-2xl text-sm md:text-base">
-                        Genera, personaliza e imprime habladores de mesa y códigos QR oficiales con el logotipo de DiagnostiQ para facilitar el ingreso instantáneo a tus pacientes y médicos.
+                        Genera carteles completos con identificación clara del portal y logotipo de tu laboratorio (almacenado en MinIO) para colocar en mostradores o redes sociales.
                     </p>
                 </div>
 
-                {/* Quick actions / Customizer Bar */}
-                <Card className="bg-muted/40 border p-4 shrink-0 shadow-sm">
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 text-xs">
-                        <div className="space-y-1">
-                            <Label htmlFor="labName" className="font-bold text-foreground">Nombre en Hablador / Cartel:</Label>
+                {/* Customizer & Logo Upload Bar */}
+                <Card className="bg-muted/40 border p-4 shrink-0 shadow-sm w-full md:w-auto">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6 text-xs">
+                        {/* Lab Name Input */}
+                        <div className="space-y-1 w-full sm:w-auto">
+                            <Label htmlFor="labName" className="font-bold text-foreground">Nombre de Laboratorio en Cartel:</Label>
                             <Input 
                                 id="labName" 
                                 value={labName} 
-                                onChange={(e) => setLabName(e.target.value)} 
-                                className="h-8 w-60 text-xs bg-background"
+                                onChange={(e) => handleLabNameChange(e.target.value)} 
+                                className="h-8 w-full sm:w-64 text-xs bg-background font-medium"
                                 placeholder="Nombre institucional..."
                             />
                         </div>
 
+                        {/* MinIO Custom Logo Uploader */}
                         <div className="space-y-1">
-                            <Label className="font-bold text-foreground">Color del Código QR:</Label>
+                            <Label className="font-bold text-foreground flex items-center gap-1.5">
+                                <span>Logo Central del QR (MinIO):</span>
+                            </Label>
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="file"
+                                    ref={fileInputRef}
+                                    onChange={handleLogoUpload}
+                                    accept="image/*"
+                                    className="hidden"
+                                    id="logo-upload-input"
+                                />
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8 text-xs font-bold gap-1.5 bg-background hover:bg-primary hover:text-white transition-colors"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    disabled={isUploadingLogo}
+                                >
+                                    {isUploadingLogo ? (
+                                        <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />
+                                    ) : (
+                                        <UploadCloud className="h-3.5 w-3.5 text-primary" />
+                                    )}
+                                    <span>{isUploadingLogo ? "Subiendo a MinIO..." : "Subir Logo"}</span>
+                                </Button>
+
+                                {customLogoUrl !== "/favicon.svg" && (
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-8 text-xs text-muted-foreground hover:text-destructive gap-1 px-2"
+                                        onClick={handleResetLogo}
+                                        title="Volver al logo oficial de DiagnostiQ"
+                                    >
+                                        <RefreshCw className="h-3 w-3" />
+                                        <span className="hidden sm:inline">Restablecer</span>
+                                    </Button>
+                                )}
+
+                                {/* Thumbnail indicator */}
+                                <div className="h-8 w-8 rounded-lg border bg-white p-0.5 shadow-inner flex items-center justify-center shrink-0">
+                                    <img src={customLogoUrl} alt="Logo QR" className="max-h-full max-w-full object-contain" />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* QR Color Picker */}
+                        <div className="space-y-1">
+                            <Label className="font-bold text-foreground">Color QR:</Label>
                             <div className="flex items-center gap-1.5 pt-0.5">
                                 {COLOR_THEMES.map((c) => (
                                     <button
@@ -223,17 +531,17 @@ export default function QrPortalsPage() {
 
             {/* Main Tabs */}
             <Tabs defaultValue="patient" value={selectedTab} onValueChange={setSelectedTab} className="space-y-6">
-                <TabsList className="grid grid-cols-3 w-full max-w-xl bg-muted p-1 rounded-xl h-12">
+                <TabsList className="grid grid-cols-3 w-full max-w-2xl bg-muted p-1.5 rounded-2xl h-14 shadow-sm">
                     {PORTALS.map((p) => {
                         const Icon = p.icon
                         return (
                             <TabsTrigger 
                                 key={p.id} 
                                 value={p.id}
-                                className="rounded-lg gap-2 font-bold text-xs md:text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm transition-all"
+                                className="rounded-xl gap-2 font-extrabold text-xs md:text-sm data-[state=active]:bg-background data-[state=active]:shadow-md transition-all py-2"
                             >
-                                <Icon className="h-4 w-4 shrink-0" />
-                                <span className="truncate">{p.title.replace("Portal de ", "").replace("Portal ", "")}</span>
+                                <Icon className="h-4 w-4 shrink-0 text-primary" />
+                                <span className="truncate">{p.title}</span>
                             </TabsTrigger>
                         )
                     })}
@@ -246,50 +554,54 @@ export default function QrPortalsPage() {
                     return (
                         <TabsContent key={portal.id} value={portal.id} className="focus:outline-none">
                             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                                {/* Left: Interactive Preview & QR Card */}
+                                {/* Left: Interactive Branded Preview Card */}
                                 <div className="lg:col-span-7 space-y-6">
-                                    <Card className={cn("overflow-hidden border-2 shadow-xl bg-gradient-to-b from-background to-muted/20 relative")}>
-                                        <div className={cn("absolute inset-0 bg-gradient-to-r opacity-60 pointer-events-none", portal.gradient)} />
+                                    <Card className={cn("overflow-hidden border-2 shadow-2xl bg-gradient-to-b from-background to-muted/20 relative")}>
+                                        <div className={cn("absolute inset-0 bg-gradient-to-r opacity-70 pointer-events-none", portal.gradient)} />
                                         
-                                        <CardHeader className="relative z-10 pb-4 border-b bg-background/80 backdrop-blur-sm">
+                                        {/* Portal Identification Banner inside card */}
+                                        <CardHeader className="relative z-10 pb-4 border-b bg-background/90 backdrop-blur-md">
                                             <div className="flex items-center justify-between gap-4 flex-wrap">
                                                 <div className="flex items-center gap-3">
-                                                    <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0">
-                                                        <Icon className="h-6 w-6" />
+                                                    <div className="h-12 w-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary shrink-0 shadow-sm">
+                                                        <Icon className="h-7 w-7" />
                                                     </div>
                                                     <div>
-                                                        <CardTitle className="text-xl font-extrabold">{portal.title}</CardTitle>
-                                                        <CardDescription className="font-semibold text-xs text-muted-foreground">{portal.subtitle}</CardDescription>
+                                                        <Badge variant="outline" className={cn("font-bold text-[11px] px-2.5 py-0.5 mb-1 uppercase tracking-wider", portal.badgeColor)}>
+                                                            {portal.badge}
+                                                        </Badge>
+                                                        <CardTitle className="text-2xl font-black text-foreground tracking-tight">{portal.title}</CardTitle>
                                                     </div>
                                                 </div>
-                                                <Badge variant="outline" className={cn("font-bold text-xs px-3 py-1", portal.badgeColor)}>
-                                                    {portal.badge}
-                                                </Badge>
+                                                <div className="text-right hidden sm:block">
+                                                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-widest block">Acceso Oficial</span>
+                                                    <span className="text-sm font-extrabold text-primary">{labName}</span>
+                                                </div>
                                             </div>
                                         </CardHeader>
 
                                         <CardContent className="p-6 sm:p-8 relative z-10 flex flex-col items-center justify-center text-center space-y-6">
-                                            {/* Brand Logo Header inside card */}
-                                            <div className="pt-2">
-                                                <Logo size="lg" showTagline subtitle={labName} />
-                                            </div>
+                                            {/* Subtitle */}
+                                            <p className="font-bold text-sm md:text-base text-slate-600 dark:text-slate-300 max-w-md">
+                                                {portal.subtitle}
+                                            </p>
 
-                                            {/* QR Code Container with sleek border */}
+                                            {/* QR Code Container with sleek frame */}
                                             <div 
                                                 ref={(el) => { canvasRefs.current[portal.id] = el }}
-                                                className="p-6 bg-white rounded-3xl shadow-2xl border-4 border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center relative group transform transition-transform duration-300 hover:scale-[1.02]"
+                                                className="p-8 bg-white rounded-[32px] shadow-2xl border-4 border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center relative group transform transition-transform duration-300 hover:scale-[1.02]"
                                             >
-                                                {/* Hidden canvas for PNG export, and visible SVG for rendering sharpness */}
+                                                {/* Hidden canvas for super high resolution 1024x1024 grabbing */}
                                                 <div className="hidden">
                                                     <QRCodeCanvas
                                                         value={fullUrl}
-                                                        size={1024} // Super high resolution for download
+                                                        size={1024}
                                                         bgColor="#ffffff"
                                                         fgColor={qrColor}
                                                         level="H"
                                                         includeMargin={true}
                                                         imageSettings={{
-                                                            src: "/favicon.svg",
+                                                            src: customLogoUrl,
                                                             x: undefined,
                                                             y: undefined,
                                                             height: 220,
@@ -307,24 +619,24 @@ export default function QrPortalsPage() {
                                                     level="H"
                                                     includeMargin={false}
                                                     imageSettings={{
-                                                        src: "/favicon.svg",
+                                                        src: customLogoUrl,
                                                         x: undefined,
                                                         y: undefined,
-                                                        height: 56,
-                                                        width: 56,
+                                                        height: 58,
+                                                        width: 58,
                                                         excavate: true,
                                                     }}
                                                 />
 
-                                                <div className="mt-4 pt-3 border-t border-slate-100 w-full flex items-center justify-center gap-1.5 text-[11px] font-black tracking-wider text-slate-400 uppercase">
-                                                    <Sparkles className="h-3 w-3 text-emerald-500" />
-                                                    <span>Escanea para ingreso automático</span>
+                                                <div className="mt-5 pt-3 border-t border-slate-100 w-full flex items-center justify-center gap-1.5 text-xs font-black tracking-wider text-slate-500 uppercase">
+                                                    <Sparkles className="h-3.5 w-3.5 text-emerald-500" />
+                                                    <span>Escanea para ingreso al {portal.title}</span>
                                                 </div>
                                             </div>
 
                                             {/* URL Display */}
-                                            <div className="w-full max-w-md bg-muted/60 rounded-xl p-3 border flex items-center justify-between gap-3 text-xs">
-                                                <div className="truncate font-mono text-muted-foreground font-medium pl-1">
+                                            <div className="w-full max-w-md bg-muted/80 rounded-xl p-3 border flex items-center justify-between gap-3 text-xs shadow-inner">
+                                                <div className="truncate font-mono text-muted-foreground font-bold pl-2">
                                                     {fullUrl}
                                                 </div>
                                                 <Button 
@@ -348,29 +660,44 @@ export default function QrPortalsPage() {
                                             </div>
                                         </CardContent>
 
-                                        <CardFooter className="bg-muted/30 border-t p-6 flex flex-col sm:flex-row items-center justify-between gap-4 relative z-10">
-                                            <div className="text-xs text-muted-foreground flex items-center gap-2">
+                                        <CardFooter className="bg-muted/40 border-t p-6 flex flex-col sm:flex-row items-center justify-between gap-4 relative z-10">
+                                            <div className="text-xs text-muted-foreground flex items-center gap-2 font-medium">
                                                 <Smartphone className="h-4 w-4 text-primary shrink-0" />
-                                                <span>Listo para colocar en mostradores, facturas o volantes informativos.</span>
+                                                <span>Cartel completo con identificación del portal y tu logo.</span>
                                             </div>
 
-                                            <div className="flex items-center gap-3 w-full sm:w-auto">
-                                                <Button 
-                                                    variant="outline" 
-                                                    className="w-full sm:w-auto font-bold gap-2 border-primary/20 hover:bg-primary/5"
-                                                    onClick={() => handleDownloadPNG(portal.id, portal.title)}
-                                                >
-                                                    <Download className="h-4 w-4 text-primary" />
-                                                    <span>Descargar PNG</span>
-                                                </Button>
-
+                                            <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto justify-end">
+                                                {/* Button 1: Download Complete Poster */}
                                                 <Button 
                                                     variant="default" 
-                                                    className="w-full sm:w-auto font-bold gap-2 bg-gradient-to-r from-primary to-indigo-600 hover:from-primary/90 hover:to-indigo-600/90 shadow-md shadow-primary/20 text-white"
+                                                    className="w-full sm:w-auto font-extrabold gap-2 bg-gradient-to-r from-primary to-indigo-600 hover:from-primary/90 hover:to-indigo-600/90 shadow-lg shadow-primary/20 text-white"
+                                                    onClick={() => handleDownloadFullPoster(portal)}
+                                                >
+                                                    <Download className="h-4 w-4" />
+                                                    <span>Descargar Cartel Identificado (PNG)</span>
+                                                </Button>
+
+                                                {/* Button 2: Download Simple QR */}
+                                                <Button 
+                                                    variant="outline" 
+                                                    size="sm"
+                                                    className="w-full sm:w-auto font-bold gap-1.5 text-xs border-primary/20 hover:bg-primary/5"
+                                                    onClick={() => handleDownloadSimpleQR(portal.id, portal.title)}
+                                                    title="Descargar únicamente el cuadrado del código QR"
+                                                >
+                                                    <Layers className="h-3.5 w-3.5 text-muted-foreground" />
+                                                    <span>Solo QR Simple</span>
+                                                </Button>
+
+                                                {/* Button 3: Print */}
+                                                <Button 
+                                                    variant="secondary" 
+                                                    size="sm"
+                                                    className="w-full sm:w-auto font-bold gap-1.5 text-xs"
                                                     onClick={() => handlePrintSign(portal)}
                                                 >
-                                                    <Printer className="h-4 w-4" />
-                                                    <span>Imprimir Hablador / Cartel</span>
+                                                    <Printer className="h-3.5 w-3.5" />
+                                                    <span>Imprimir Cartel</span>
                                                 </Button>
                                             </div>
                                         </CardFooter>
@@ -484,14 +811,7 @@ export default function QrPortalsPage() {
                         {/* Lab Logo & Brand */}
                         <div className="pt-6 pb-4 border-b border-slate-200 w-full flex flex-col items-center">
                             <div className="flex items-center justify-center gap-3 mb-2">
-                                <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: "54px", height: "54px" }}>
-                                    <rect x="6" y="6" width="88" height="88" rx="22" fill="#4F46E5" fillOpacity="0.1" />
-                                    <path d="M 72 44 A 28 28 0 1 0 63.8 63.8" stroke="#4F46E5" strokeWidth="7.5" strokeLinecap="round" fill="none" />
-                                    <path d="M 52 52 L 82 82" stroke="#4F46E5" strokeWidth="8.5" strokeLinecap="round" />
-                                    <path d="M 24 44 L 33 44 L 39 28 L 47 62 L 55 36 L 61 44 L 68 44" stroke="#10B981" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" />
-                                    <circle cx="39" cy="28" r="2.5" fill="#10B981" />
-                                    <circle cx="82" cy="82" r="3.5" fill="#06B6D4" />
-                                </svg>
+                                <img src={customLogoUrl} alt="Lab Logo" className="h-14 w-14 object-contain" />
                                 <div className="text-left">
                                     <h1 style={{ margin: 0, fontSize: "36px", fontWeight: 900, color: "#0F172A", letterSpacing: "-1px", lineHeight: 1 }}>
                                         Diagnosti<span style={{ color: "#4F46E5" }}>Q</span>
@@ -526,7 +846,7 @@ export default function QrPortalsPage() {
                                 level="H"
                                 includeMargin={false}
                                 imageSettings={{
-                                    src: "/favicon.svg",
+                                    src: customLogoUrl,
                                     x: undefined,
                                     y: undefined,
                                     height: 72,
