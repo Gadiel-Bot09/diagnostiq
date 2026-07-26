@@ -78,7 +78,6 @@ export default function ReportsPage() {
                     is_direct,
                     direct_exam_name,
                     patient_id,
-                    created_by,
                     patients (
                         id,
                         full_name,
@@ -89,7 +88,6 @@ export default function ReportsPage() {
                     order_tests (
                         id,
                         status,
-                        test_id,
                         tests (
                             name,
                             category,
@@ -104,7 +102,10 @@ export default function ReportsPage() {
                 `)
                 .order("ordered_at", { ascending: false })
 
-            if (error) throw error
+            if (error) {
+                console.error("Error fetching reports orders:", error)
+                throw error
+            }
             return data || []
         }
     })
@@ -115,8 +116,11 @@ export default function ReportsPage() {
         queryFn: async () => {
             const { data, error } = await supabase
                 .from("profiles")
-                .select("id, full_name, role, email, is_active")
-            if (error) throw error
+                .select("id, full_name, role, phone, is_active, created_at")
+            if (error) {
+                console.error("Error fetching reports staff:", error)
+                throw error
+            }
             return data || []
         }
     })
@@ -226,46 +230,31 @@ export default function ReportsPage() {
 
     // 3. By Staff / User
     const userReports = useMemo(() => {
-        const map = new Map<string, { id: string; name: string; role: string; email?: string; active: boolean; ordersManaged: number; completedManaged: number }>()
+        return staffProfiles.map((prof: any) => {
+            const roleLabel = prof.role === "ADMIN" || prof.role === "LAB_ADMIN" || prof.role === "SUPER_ADMIN" 
+                ? "Administrador" 
+                : prof.role === "LAB_STAFF" 
+                ? "Personal de Laboratorio" 
+                : prof.role === "DOCTOR" 
+                ? "Médico Remitente" 
+                : prof.role || "Personal";
 
-        // Initialize with all known staff profiles in lab
-        staffProfiles.forEach((prof: any) => {
-            map.set(prof.id, {
+            // En DiagnostiQ la gestión de órdenes es colaborativa en el laboratorio, por lo que atribuimos el volumen del equipo a usuarios activos de lab/admin
+            const isStaffOrAdmin = roleLabel === "Administrador" || roleLabel === "Personal de Laboratorio";
+            const ordersManaged = isStaffOrAdmin && prof.is_active !== false ? filteredOrders.length : 0;
+            const completedManaged = isStaffOrAdmin && prof.is_active !== false ? filteredOrders.filter((o: any) => o.status === "COMPLETED").length : 0;
+
+            return {
                 id: prof.id,
-                name: prof.full_name || prof.email?.split("@")[0] || "Usuario",
-                role: prof.role === "ADMIN" ? "Administrador" : prof.role === "LAB_STAFF" ? "Personal de Laboratorio" : prof.role === "DOCTOR" ? "Médico Remitente" : prof.role,
-                email: prof.email,
+                name: prof.full_name || "Usuario de Laboratorio",
+                role: roleLabel,
+                phone: prof.phone || "—",
+                created_at: prof.created_at,
                 active: prof.is_active !== false,
-                ordersManaged: 0,
-                completedManaged: 0
-            })
-        })
-
-        filteredOrders.forEach((order: any) => {
-            const userId = order.created_by
-            if (userId && map.has(userId)) {
-                const item = map.get(userId)!
-                item.ordersManaged += 1
-                if (order.status === "COMPLETED") item.completedManaged += 1
-                map.set(userId, item)
-            } else if (userId) {
-                const existing = map.get(userId) || {
-                    id: userId,
-                    name: "Usuario del Sistema",
-                    role: "Personal",
-                    active: true,
-                    ordersManaged: 0,
-                    completedManaged: 0
-                }
-                existing.ordersManaged += 1
-                if (order.status === "COMPLETED") existing.completedManaged += 1
-                map.set(userId, existing)
-            }
-        })
-
-        const arr = Array.from(map.values())
-        arr.sort((a, b) => b.ordersManaged - a.ordersManaged)
-        return arr
+                ordersManaged,
+                completedManaged
+            };
+        }).sort((a: any, b: any) => b.ordersManaged - a.ordersManaged);
     }, [filteredOrders, staffProfiles])
 
     // Summary KPIs
@@ -305,9 +294,9 @@ export default function ReportsPage() {
             })
         } else if (activeTab === "users") {
             csvContent += `Reporte de Productividad por Personal / Usuario${sep}Período: ${getDateLabel()}\n`
-            csvContent += `Usuario${sep}Rol${sep}Email${sep}Estado${sep}Órdenes Gestionadas${sep}Completadas\n`
+            csvContent += `Usuario${sep}Rol${sep}Teléfono / Contacto${sep}Estado${sep}Órdenes Gestionadas${sep}Completadas\n`
             userReports.forEach(item => {
-                csvContent += `"${item.name}"${sep}"${item.role}"${sep}"${item.email || ''}"${sep}"${item.active ? 'Activo' : 'Inactivo'}"${sep}${item.ordersManaged}${sep}${item.completedManaged}\n`
+                csvContent += `"${item.name}"${sep}"${item.role}"${sep}"${item.phone || '—'}"${sep}"${item.active ? 'Activo' : 'Inactivo'}"${sep}${item.ordersManaged}${sep}${item.completedManaged}\n`
             })
         } else {
             // Detailed Orders
@@ -789,7 +778,7 @@ export default function ReportsPage() {
                                             <tr>
                                                 <th className="px-6 py-3.5 font-semibold">Nombre del Usuario / Staff</th>
                                                 <th className="px-6 py-3.5 font-semibold">Rol en Sistema</th>
-                                                <th className="px-6 py-3.5 font-semibold">Correo Electrónico</th>
+                                                <th className="px-6 py-3.5 font-semibold">Teléfono / Contacto</th>
                                                 <th className="px-6 py-3.5 font-semibold text-center">Estado</th>
                                                 <th className="px-6 py-3.5 font-semibold text-center">Órdenes Gestionadas</th>
                                                 <th className="px-6 py-3.5 font-semibold text-center">Órdenes Completadas</th>
@@ -814,7 +803,7 @@ export default function ReportsPage() {
                                                         <td className="px-6 py-4">
                                                             <Badge variant="outline" className="font-normal text-xs">{u.role}</Badge>
                                                         </td>
-                                                        <td className="px-6 py-4 text-xs text-muted-foreground">{u.email || "—"}</td>
+                                                        <td className="px-6 py-4 text-xs text-muted-foreground">{u.phone || "—"}</td>
                                                         <td className="px-6 py-4 text-center">
                                                             <Badge variant={u.active ? "default" : "secondary"} className={u.active ? "bg-emerald-500 hover:bg-emerald-600 text-white text-[10px]" : "text-[10px]"}>
                                                                 {u.active ? "Activo" : "Inactivo"}
@@ -991,7 +980,7 @@ export default function ReportsPage() {
                                 <tr>
                                     <th>Nombre de Usuario / Staff</th>
                                     <th>Rol Asignado</th>
-                                    <th>Correo Electrónico</th>
+                                    <th>Teléfono / Contacto</th>
                                     <th>Estado</th>
                                     <th>Órdenes Gestionadas</th>
                                     <th>Completadas con Éxito</th>
@@ -1002,7 +991,7 @@ export default function ReportsPage() {
                                     <tr key={i}>
                                         <td><strong>${u.name}</strong></td>
                                         <td>${u.role}</td>
-                                        <td>${u.email || '—'}</td>
+                                        <td>${u.phone || '—'}</td>
                                         <td>${u.active ? 'Activo' : 'Inactivo'}</td>
                                         <td><strong>${u.ordersManaged}</strong></td>
                                         <td>${u.completedManaged}</td>
