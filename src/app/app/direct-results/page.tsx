@@ -6,10 +6,11 @@ import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
 import { useDropzone } from "react-dropzone"
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
     UploadCloud, Search, UserPlus, CheckCircle2, FileText,
-    X, AlertCircle, ArrowRight, User, Hash, Mail, Beaker
+    X, AlertCircle, ArrowRight, User, Hash, Mail, Beaker,
+    Plus, Pencil, Trash2, Settings, Sparkles
 } from "lucide-react"
 
 import { AdminLayout } from "@/components/layout/AdminLayout"
@@ -21,6 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/use-toast"
 import { createClient } from "@/lib/supabase/client"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 
 const patientSchema = z.object({
     document_type: z.string().min(1, "Tipo de documento requerido"),
@@ -51,6 +53,111 @@ type UploadResult = {
 export default function DirectResultsPage() {
     const { toast } = useToast()
     const supabase = createClient()
+    const queryClient = useQueryClient()
+
+    const [showManageModal, setShowManageModal] = useState(false)
+    const [newExamName, setNewExamName] = useState("")
+    const [editingExamId, setEditingExamId] = useState<string | null>(null)
+    const [editingExamName, setEditingExamName] = useState("")
+
+    const { data: labId } = useQuery({
+        queryKey: ["lab-id-direct"],
+        queryFn: async () => {
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return null
+            const { data } = await supabase.from("profiles").select("lab_id").eq("id", user.id).single()
+            return data?.lab_id
+        }
+    })
+
+    const { data: examTypes = [], isLoading: isLoadingExams } = useQuery({
+        queryKey: ["tests", labId],
+        enabled: !!labId,
+        queryFn: async () => {
+            const { data, error } = await supabase
+                .from("tests")
+                .select("*")
+                .eq("lab_id", labId)
+                .order("name", { ascending: true })
+            if (error) throw error
+            return data || []
+        }
+    })
+
+    const createExamMutation = useMutation({
+        mutationFn: async (name: string) => {
+            if (!labId) throw new Error("Sin laboratorio asignado")
+            const code = `DIR-${Date.now().toString().slice(-6)}`
+            const { error } = await supabase.from("tests").insert({
+                code,
+                name: name.trim(),
+                category: "Diagnóstico por Imágenes",
+                lab_id: labId
+            })
+            if (error) throw error
+        },
+        onSuccess: (_, name) => {
+            queryClient.invalidateQueries({ queryKey: ["tests"] })
+            toast({ title: "Examen creado", description: "Se agregó a la lista desplegable." })
+            setNewExamName("")
+            form.setValue("exam_name", name.trim(), { shouldValidate: true })
+        },
+        onError: (e: any) => toast({ title: "Error al crear", description: e.message, variant: "destructive" })
+    })
+
+    const updateExamMutation = useMutation({
+        mutationFn: async ({ id, name }: { id: string; name: string }) => {
+            const { error } = await supabase.from("tests").update({ name: name.trim() }).eq("id", id)
+            if (error) throw error
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["tests"] })
+            toast({ title: "Examen actualizado" })
+            setEditingExamId(null)
+            setEditingExamName("")
+        },
+        onError: (e: any) => toast({ title: "Error al actualizar", description: e.message, variant: "destructive" })
+    })
+
+    const deleteExamMutation = useMutation({
+        mutationFn: async (id: string) => {
+            const { error } = await supabase.from("tests").delete().eq("id", id)
+            if (error) throw error
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["tests"] })
+            toast({ title: "Examen eliminado" })
+        },
+        onError: () => toast({ title: "No se puede eliminar", description: "Es posible que ya esté en uso en una orden.", variant: "destructive" })
+    })
+
+    const seedDefaultExamsMutation = useMutation({
+        mutationFn: async () => {
+            if (!labId) throw new Error("Sin laboratorio asignado")
+            const defaults = [
+                "Ordenamiento",
+                "Radiografía panorámica",
+                "Radiografía periapical",
+                "Juego completo",
+                "Tomografías maxilar superior y/o inferior",
+                "Fotografías clínicas",
+                "Perfilogramas"
+            ]
+            const toInsert = defaults.map((name, i) => ({
+                code: `RAD-${Date.now().toString().slice(-4)}-${i + 1}`,
+                name,
+                category: "Diagnóstico por Imágenes",
+                lab_id: labId
+            }))
+            const { error } = await supabase.from("tests").insert(toInsert)
+            if (error) throw error
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["tests"] })
+            toast({ title: "¡Tipos predeterminados cargados!", description: "Se agregaron los 7 exámenes de radiología/odontología." })
+        },
+        onError: (e: any) => toast({ title: "Error al cargar predeterminados", description: e.message, variant: "destructive" })
+    })
 
     const [step, setStep] = useState<"search" | "form" | "files" | "done">("search")
     const [searchDoc, setSearchDoc] = useState("")
@@ -277,13 +384,58 @@ export default function DirectResultsPage() {
 
                         {/* Exam name */}
                         <Card>
-                            <CardHeader className="pb-4">
-                                <CardTitle className="text-base flex items-center gap-2"><Beaker className="h-4 w-4" />Datos del Resultado</CardTitle>
+                            <CardHeader className="pb-4 flex flex-row items-center justify-between space-y-0">
+                                <CardTitle className="text-base flex items-center gap-2"><Beaker className="h-4 w-4 text-primary" />Datos del Resultado</CardTitle>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setShowManageModal(true)}
+                                    className="h-8 gap-1.5 text-xs text-primary border-primary/20 hover:bg-primary/5 font-medium"
+                                >
+                                    <Settings className="h-3.5 w-3.5" /> Gestionar Tipos de Exámenes
+                                </Button>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <div className="space-y-1.5">
-                                    <Label htmlFor="exam_name">Nombre del Examen / Resultado *</Label>
-                                    <Input id="exam_name" {...form.register("exam_name")} placeholder="Ej: Hemograma Completo, Perfil Lipídico..." />
+                                    <div className="flex justify-between items-center">
+                                        <Label htmlFor="exam_name">Tipo de Examen Diagnóstico / Resultado *</Label>
+                                        <span className="text-[11px] text-muted-foreground">Selecciona de la lista o crea uno nuevo</span>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <div className="flex-1">
+                                            <Select
+                                                value={form.watch("exam_name") || ""}
+                                                onValueChange={(val) => form.setValue("exam_name", val, { shouldValidate: true })}
+                                            >
+                                                <SelectTrigger className="w-full">
+                                                    <SelectValue placeholder="— Seleccionar tipo de examen —" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {examTypes.length === 0 ? (
+                                                        <div className="p-3 text-center text-xs text-muted-foreground">
+                                                            No hay exámenes creados. Haz clic en "Nuevo" o "Gestionar".
+                                                        </div>
+                                                    ) : (
+                                                        examTypes.map((test: any) => (
+                                                            <SelectItem key={test.id} value={test.name}>
+                                                                {test.name} {test.code && <span className="text-muted-foreground text-xs">({test.code})</span>}
+                                                            </SelectItem>
+                                                        ))
+                                                    )}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <Button
+                                            type="button"
+                                            variant="secondary"
+                                            onClick={() => setShowManageModal(true)}
+                                            className="shrink-0 gap-1"
+                                            title="Crear o administrar tipos de examen"
+                                        >
+                                            <Plus className="h-4 w-4" /> Nuevo
+                                        </Button>
+                                    </div>
                                     {form.formState.errors.exam_name && <p className="text-xs text-destructive">{form.formState.errors.exam_name.message}</p>}
                                 </div>
                             </CardContent>
@@ -394,6 +546,156 @@ export default function DirectResultsPage() {
                     </Card>
                 )}
             </div>
+
+            {/* Manage Exam Types Modal */}
+            <Dialog open={showManageModal} onOpenChange={setShowManageModal}>
+                <DialogContent className="max-w-md max-h-[85vh] flex flex-col">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Settings className="h-5 w-5 text-primary" /> Gestionar Tipos de Exámenes
+                        </DialogTitle>
+                        <DialogDescription>
+                            Crea, edita o elimina los exámenes que aparecerán en la lista desplegable de resultados.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {/* Quick Add Form */}
+                    <div className="flex gap-2 pt-2 border-b pb-4">
+                        <Input
+                            placeholder="Ej: Radiografía panorámica..."
+                            value={newExamName}
+                            onChange={(e) => setNewExamName(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" && newExamName.trim()) {
+                                    e.preventDefault()
+                                    createExamMutation.mutate(newExamName)
+                                }
+                            }}
+                            className="flex-1"
+                        />
+                        <Button
+                            type="button"
+                            disabled={!newExamName.trim() || createExamMutation.isPending}
+                            onClick={() => createExamMutation.mutate(newExamName)}
+                            size="sm"
+                            className="h-10"
+                        >
+                            <Plus className="h-4 w-4 mr-1" /> Agregar
+                        </Button>
+                    </div>
+
+                    {/* Seed Default Radiology Exams Button (if few or none) */}
+                    {examTypes.length < 7 && (
+                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 my-2 flex items-center justify-between gap-2">
+                            <div className="text-xs text-amber-900 space-y-0.5 min-w-0">
+                                <p className="font-semibold flex items-center gap-1 truncate"><Sparkles className="h-3.5 w-3.5 text-amber-600 shrink-0" /> Plantilla Odontológica</p>
+                                <p className="text-[11px] text-amber-700 leading-tight">Cargar los 7 tipos predeterminados (Panorámica, Tomografías, etc.)</p>
+                            </div>
+                            <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="bg-white border-amber-300 hover:bg-amber-100 text-amber-800 text-xs h-8 whitespace-nowrap shrink-0"
+                                disabled={seedDefaultExamsMutation.isPending}
+                                onClick={() => seedDefaultExamsMutation.mutate()}
+                            >
+                                {seedDefaultExamsMutation.isPending ? "Cargando..." : "+ Cargar 7 Tipos"}
+                            </Button>
+                        </div>
+                    )}
+
+                    {/* List of Exams */}
+                    <div className="flex-1 overflow-y-auto space-y-2 py-2 min-h-[200px] max-h-[350px] pr-1">
+                        {isLoadingExams ? (
+                            <div className="text-center py-8 text-muted-foreground text-xs">Cargando exámenes...</div>
+                        ) : examTypes.length === 0 ? (
+                            <div className="text-center py-8 text-muted-foreground text-xs">No hay tipos de exámenes registrados.</div>
+                        ) : (
+                            examTypes.map((test: any) => (
+                                <div key={test.id} className="flex items-center justify-between p-2 rounded-lg border bg-card hover:bg-accent/50 transition-colors gap-2">
+                                    {editingExamId === test.id ? (
+                                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                                            <Input
+                                                value={editingExamName}
+                                                onChange={(e) => setEditingExamName(e.target.value)}
+                                                className="h-8 text-sm"
+                                                autoFocus
+                                                onKeyDown={(e) => {
+                                                    if (e.key === "Enter" && editingExamName.trim()) {
+                                                        e.preventDefault()
+                                                        updateExamMutation.mutate({ id: test.id, name: editingExamName })
+                                                    }
+                                                }}
+                                            />
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                className="h-8 px-2.5 shrink-0"
+                                                disabled={!editingExamName.trim() || updateExamMutation.isPending}
+                                                onClick={() => updateExamMutation.mutate({ id: test.id, name: editingExamName })}
+                                            >
+                                                Guardar
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-8 px-2 shrink-0"
+                                                onClick={() => setEditingExamId(null)}
+                                            >
+                                                Cancelar
+                                            </Button>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                                                <span className="text-sm font-medium truncate">{test.name}</span>
+                                                {test.code && <Badge variant="secondary" className="text-[10px] shrink-0">{test.code}</Badge>}
+                                            </div>
+                                            <div className="flex items-center gap-1 shrink-0">
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                                    onClick={() => {
+                                                        setEditingExamId(test.id)
+                                                        setEditingExamName(test.name)
+                                                    }}
+                                                    title="Editar nombre"
+                                                >
+                                                    <Pencil className="h-3.5 w-3.5" />
+                                                </Button>
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                                                    disabled={deleteExamMutation.isPending}
+                                                    onClick={() => {
+                                                        if (confirm(`¿Eliminar "${test.name}"?`)) {
+                                                            deleteExamMutation.mutate(test.id)
+                                                        }
+                                                    }}
+                                                    title="Eliminar"
+                                                >
+                                                    <Trash2 className="h-3.5 w-3.5" />
+                                                </Button>
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                            ))
+                        )}
+                    </div>
+
+                    <DialogFooter className="border-t pt-3">
+                        <Button type="button" variant="outline" onClick={() => setShowManageModal(false)} className="w-full sm:w-auto">
+                            Cerrar
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </AdminLayout>
     )
 }
