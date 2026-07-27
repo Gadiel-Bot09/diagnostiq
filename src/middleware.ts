@@ -30,6 +30,11 @@ export async function middleware(req: NextRequest) {
     const isAppRoute = url.pathname.startsWith('/app') && url.pathname !== '/app/login'
     const isPortalRoute = url.pathname.startsWith('/portal') && url.pathname !== '/portal/login'
 
+    if (url.pathname === '/login') {
+        url.pathname = '/app/login'
+        return NextResponse.redirect(url)
+    }
+
     // --- Not logged in ---
     if (!user) {
         if (isAppRoute) {
