@@ -109,10 +109,11 @@ export default function LabLoginPage() {
                     </Form>
                 </CardContent>
                 <CardFooter className="flex flex-col space-y-2">
-                    <Link href="/app/forgot-password" passHref legacyBehavior>
-                        <Button variant="link" className="text-xs text-muted-foreground" asChild>
-                            <a>¿Olvidaste tu contraseña?</a>
-                        </Button>
+                    <Link 
+                        href="/app/forgot-password" 
+                        className="text-xs text-muted-foreground hover:underline underline-offset-4 font-medium"
+                    >
+                        ¿Olvidaste tu contraseña?
                     </Link>
                 </CardFooter>
             </Card>
