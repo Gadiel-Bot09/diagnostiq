@@ -27,7 +27,7 @@ export async function middleware(req: NextRequest) {
 
     const url = req.nextUrl.clone()
     const isSuperAdminRoute = url.pathname.startsWith('/superadmin')
-    const isAppRoute = url.pathname.startsWith('/app') && url.pathname !== '/app/login'
+    const isAppRoute = url.pathname.startsWith('/app') && !['/app/login', '/app/forgot-password', '/app/reset-password'].includes(url.pathname)
     const isPortalRoute = url.pathname.startsWith('/portal') && url.pathname !== '/portal/login'
 
     if (url.pathname === '/login') {
