@@ -1,17 +1,20 @@
 // @ts-nocheck
 "use client"
 
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
-import { Users, Building2, ShieldCheck, ShieldOff, Search } from "lucide-react"
+import { Users, Building2, ShieldCheck, ShieldOff, Search, Edit2, Mail, Loader2 } from "lucide-react"
 import { useState } from "react"
 
-import { createClient } from "@/lib/supabase/client"
 import { SuperAdminLayout } from "@/components/layout/SuperAdminLayout"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import { useToast } from "@/components/ui/use-toast"
 
 const roleLabels: any = {
     SUPER_ADMIN: { label: "Super Admin", color: "bg-amber-100 text-amber-700 border-amber-200" },
@@ -21,23 +24,55 @@ const roleLabels: any = {
 }
 
 export default function SuperAdminUsersPage() {
-    const supabase = createClient()
+    const { toast } = useToast()
+    const queryClient = useQueryClient()
     const [search, setSearch] = useState("")
+
+    const [editUser, setEditUser] = useState<any>(null)
+    const [editName, setEditName] = useState("")
+    const [editEmail, setEditEmail] = useState("")
 
     const { data: users, isLoading } = useQuery({
         queryKey: ["superadmin-all-users"],
         queryFn: async () => {
-            const { data, error } = await supabase
-                .from("profiles")
-                .select("id, full_name, role, is_active, created_at, lab_id, labs(name)")
-                .order("created_at", { ascending: false })
-            if (error) throw error
-            return data || []
+            const res = await fetch('/api/admin/users')
+            if (!res.ok) throw new Error("Failed to fetch users")
+            return res.json()
         }
     })
 
+    const updateMutation = useMutation({
+        mutationFn: async (data: { id: string, full_name: string, email: string }) => {
+            const res = await fetch('/api/admin/users', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            if (!res.ok) {
+                const error = await res.json()
+                throw new Error(error.error || "Error al actualizar")
+            }
+            return res.json()
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ["superadmin-all-users"] })
+            toast({ title: "Usuario actualizado", description: "Los datos del usuario han sido actualizados." })
+            setEditUser(null)
+        },
+        onError: (err: any) => {
+            toast({ title: "Error", description: err.message, variant: "destructive" })
+        }
+    })
+
+    const handleEditClick = (user: any) => {
+        setEditUser(user)
+        setEditName(user.full_name || "")
+        setEditEmail(user.email || "")
+    }
+
     const filtered = users?.filter((u: any) =>
         u.full_name?.toLowerCase().includes(search.toLowerCase()) ||
+        u.email?.toLowerCase().includes(search.toLowerCase()) ||
         u.role?.toLowerCase().includes(search.toLowerCase()) ||
         (u.labs as any)?.name?.toLowerCase().includes(search.toLowerCase())
     ) || []
@@ -82,7 +117,7 @@ export default function SuperAdminUsersPage() {
                 <div className="relative">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
                     <Input
-                        placeholder="Buscar por nombre, rol o laboratorio..."
+                        placeholder="Buscar por nombre, correo, rol o laboratorio..."
                         className="pl-10 bg-white border-slate-200"
                         value={search}
                         onChange={e => setSearch(e.target.value)}
@@ -119,20 +154,28 @@ export default function SuperAdminUsersPage() {
                                                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-red-50 text-red-600 border-red-200">Inactivo</span>
                                                     )}
                                                 </div>
+                                                <p className="text-xs text-slate-500 flex items-center gap-1 mt-1">
+                                                    <Mail className="h-3 w-3" /> {user.email}
+                                                </p>
                                                 {labName && (
                                                     <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
                                                         <Building2 className="h-3 w-3" /> {labName}
                                                     </p>
                                                 )}
                                             </div>
-                                            <div className="text-right shrink-0">
-                                                <p className="text-xs text-slate-400">
-                                                    {user.created_at ? format(new Date(user.created_at), "dd MMM yyyy", { locale: es }) : "—"}
-                                                </p>
-                                                {user.is_active
-                                                    ? <ShieldCheck className="h-4 w-4 text-emerald-500 ml-auto mt-1" />
-                                                    : <ShieldOff className="h-4 w-4 text-red-400 ml-auto mt-1" />
-                                                }
+                                            <div className="flex flex-col items-end shrink-0 gap-2">
+                                                <div className="flex items-center gap-2">
+                                                    <Button variant="outline" size="sm" onClick={() => handleEditClick(user)} className="h-8 border-slate-200">
+                                                        <Edit2 className="h-3.5 w-3.5 mr-1" /> Editar
+                                                    </Button>
+                                                </div>
+                                                <div className="flex items-center gap-2 text-xs text-slate-400">
+                                                    <span>{user.created_at ? format(new Date(user.created_at), "dd MMM yyyy", { locale: es }) : "—"}</span>
+                                                    {user.is_active
+                                                        ? <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
+                                                        : <ShieldOff className="h-3.5 w-3.5 text-red-400" />
+                                                    }
+                                                </div>
                                             </div>
                                         </div>
                                     )
@@ -143,6 +186,52 @@ export default function SuperAdminUsersPage() {
                 </Card>
                 <p className="text-xs text-slate-400 text-right">{filtered.length} usuario{filtered.length !== 1 ? "s" : ""}</p>
             </div>
+
+            {/* Edit User Modal */}
+            <Dialog open={!!editUser} onOpenChange={(open) => !open && setEditUser(null)}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Editar Usuario</DialogTitle>
+                        <DialogDescription>
+                            Modifica el nombre y el correo electrónico del usuario.
+                        </DialogDescription>
+                    </DialogHeader>
+                    
+                    <div className="space-y-4 py-4">
+                        <div className="space-y-2">
+                            <Label>Nombre Completo</Label>
+                            <Input 
+                                value={editName} 
+                                onChange={(e) => setEditName(e.target.value)} 
+                                placeholder="Ej. Juan Pérez"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Correo Electrónico</Label>
+                            <Input 
+                                type="email"
+                                value={editEmail} 
+                                onChange={(e) => setEditEmail(e.target.value)} 
+                                placeholder="usuario@correo.com"
+                            />
+                            <p className="text-xs text-muted-foreground mt-1">Este correo se actualizará en las credenciales de inicio de sesión.</p>
+                        </div>
+                    </div>
+
+                    <DialogFooter>
+                        <DialogClose asChild>
+                            <Button variant="outline" disabled={updateMutation.isPending}>Cancelar</Button>
+                        </DialogClose>
+                        <Button 
+                            disabled={updateMutation.isPending || !editName || !editEmail} 
+                            onClick={() => updateMutation.mutate({ id: editUser.id, full_name: editName, email: editEmail })}
+                        >
+                            {updateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                            Guardar Cambios
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </SuperAdminLayout>
     )
 }
