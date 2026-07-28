@@ -39,10 +39,10 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
                         {!isLoading && profile && (
                             <div className="flex items-center gap-3 border-l pl-3 ml-1 border-muted">
                                 <span className="text-sm text-muted-foreground font-medium">
-                                    {profile.full_name}
+                                    {profile.full_name || "Usuario"}
                                 </span>
                                 <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center text-primary text-xs font-bold uppercase">
-                                    {profile.full_name.substring(0, 2)}
+                                    {(profile.full_name || "U").substring(0, 2)}
                                 </div>
                             </div>
                         )}

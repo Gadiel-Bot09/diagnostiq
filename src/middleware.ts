@@ -71,6 +71,10 @@ export async function middleware(req: NextRequest) {
     }
 
     if (isAppRoute) {
+        if (role === 'SUPER_ADMIN') {
+            url.pathname = '/superadmin/dashboard'
+            return NextResponse.redirect(url)
+        }
         if (role === 'DOCTOR') {
             url.pathname = '/doctor'
             return NextResponse.redirect(url)
