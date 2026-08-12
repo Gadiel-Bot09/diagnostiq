@@ -79,10 +79,11 @@ export async function POST(req: NextRequest) {
 
         // 5. Always create portal account (real email or synthetic — so all patients can log in)
         const realEmail = email || patient.email || null
-        const loginEmail = realEmail || syntheticEmail(documentNumber)
+        let loginEmail = realEmail || syntheticEmail(documentNumber)
         const hasRealEmail = !!realEmail
 
         let authUserId: string
+        let isNewAuthUser = false
 
         // Try to create the auth user. If the email is already registered,
         // handle the conflict gracefully instead of using listUsers() which has pagination limits.
@@ -94,7 +95,6 @@ export async function POST(req: NextRequest) {
         })
 
         if (authError) {
-            // If user already exists, find them via patient_accounts (most reliable) or by listing with filter
             const isAlreadyExists = authError.message?.toLowerCase().includes("already registered")
                 || authError.message?.toLowerCase().includes("already been registered")
                 || authError.message?.toLowerCase().includes("user already exists")
@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
 
             if (!isAlreadyExists) throw authError
 
-            // Find existing user: try patient_accounts first (fastest), then paginated search
+            // Try patient_accounts first to find the real patient auth user
             const { data: existingAccount } = await supabaseAdmin
                 .from("patient_accounts")
                 .select("user_id")
@@ -111,9 +111,32 @@ export async function POST(req: NextRequest) {
                 .single()
 
             if (existingAccount) {
-                authUserId = existingAccount.user_id
+                // Check if this existing account belongs to a non-patient (admin/staff)
+                const { data: accountProfile } = await supabaseAdmin
+                    .from("profiles")
+                    .select("role")
+                    .eq("id", existingAccount.user_id)
+                    .single()
+
+                if (accountProfile && accountProfile.role !== "PATIENT") {
+                    // The linked account is an admin/staff — use synthetic email for isolation
+                    loginEmail = syntheticEmail(documentNumber)
+                    const { data: newAuthData, error: newAuthError } = await supabaseAdmin.auth.admin.createUser({
+                        email: loginEmail,
+                        password: documentNumber,
+                        email_confirm: true,
+                        user_metadata: { role: "PATIENT", full_name: fullName, password_changed: false }
+                    })
+                    if (newAuthError) throw newAuthError
+                    authUserId = newAuthData.user.id
+                    isNewAuthUser = true
+                } else {
+                    authUserId = existingAccount.user_id
+                    await supabaseAdmin.auth.admin.updateUserById(authUserId, { password: documentNumber })
+                }
             } else {
-                // Fallback: paginated search for the auth user by email
+                // No patient_accounts link yet — find existing auth user by email
+                // First check if it's a non-patient profile (admin/staff)
                 let foundUserId: string | null = null
                 let page = 1
                 while (!foundUserId) {
@@ -121,23 +144,50 @@ export async function POST(req: NextRequest) {
                     if (!pageData?.users?.length) break
                     const found = pageData.users.find((u: any) => u.email === loginEmail)
                     if (found) { foundUserId = found.id; break }
-                    if (pageData.users.length < 1000) break // last page
+                    if (pageData.users.length < 1000) break
                     page++
                 }
-                if (!foundUserId) throw new Error(`Auth user with email ${loginEmail} not found after creation conflict`)
-                authUserId = foundUserId
-            }
 
-            // Always reset the password to document_number so login works
-            await supabaseAdmin.auth.admin.updateUserById(authUserId, { password: documentNumber })
+                if (foundUserId) {
+                    // Check if the found user is a non-patient (admin/staff)
+                    const { data: foundProfile } = await supabaseAdmin
+                        .from("profiles")
+                        .select("role")
+                        .eq("id", foundUserId)
+                        .single()
+
+                    if (foundProfile && foundProfile.role !== "PATIENT") {
+                        // Non-patient user — use synthetic email to protect their account
+                        loginEmail = syntheticEmail(documentNumber)
+                        const { data: newAuthData, error: newAuthError } = await supabaseAdmin.auth.admin.createUser({
+                            email: loginEmail,
+                            password: documentNumber,
+                            email_confirm: true,
+                            user_metadata: { role: "PATIENT", full_name: fullName, password_changed: false }
+                        })
+                        if (newAuthError) throw newAuthError
+                        authUserId = newAuthData.user.id
+                        isNewAuthUser = true
+                    } else {
+                        authUserId = foundUserId
+                        await supabaseAdmin.auth.admin.updateUserById(authUserId, { password: documentNumber })
+                    }
+                } else {
+                    throw new Error(`Auth user with email ${loginEmail} not found after creation conflict`)
+                }
+            }
         } else {
             authUserId = authData.user.id
+            isNewAuthUser = true
+        }
 
+        // Create profiles entry ONLY for genuinely new patient auth users (never overwrite admin roles)
+        if (isNewAuthUser) {
             await supabaseAdmin.from("profiles").upsert({
                 id: authUserId, role: "PATIENT", full_name: fullName, is_active: true
             }, { onConflict: "id" })
 
-            // Only send welcome email if there is a real email address
+            // Only send welcome email if there is a real email address and this is a new patient
             if (isNewPatient && hasRealEmail) {
                 const labRes = await supabaseAdmin.from("labs").select("name").eq("id", labId).single()
                 await sendWelcomeEmail(loginEmail, fullName, labRes.data?.name || "DiagnostiQ")
