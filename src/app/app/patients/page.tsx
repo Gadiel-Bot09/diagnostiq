@@ -1,7 +1,7 @@
 "use client"
 
-import { useQuery } from "@tanstack/react-query"
-import { Plus, Search, FileEdit, UserPlus, MoreVertical, History } from "lucide-react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { Plus, Search, FileEdit, UserPlus, MoreVertical, History, CheckCircle2, XCircle, Loader2 } from "lucide-react"
 import { useState } from "react"
 
 import { createClient } from "@/lib/supabase/client"
@@ -32,7 +32,9 @@ import { Badge } from "@/components/ui/badge"
 export default function PatientsPage() {
     const supabase = createClient()
     const { hasPermission } = usePermissions()
+    const queryClient = useQueryClient()
     const [searchTerm, setSearchTerm] = useState("")
+    const [creatingPortalFor, setCreatingPortalFor] = useState<string | null>(null)
 
     const { data: patients, isLoading } = useQuery({
         queryKey: ["patients", searchTerm],
@@ -52,27 +54,22 @@ export default function PatientsPage() {
         }
     })
 
-    const handleCreatePortalAccount = async (patientId: string, email: string) => {
-        if (!email) {
-            alert("El paciente debe tener un correo electrónico registrado para crearle una cuenta de portal.")
-            return
-        }
-        
+    const handleCreatePortalAccount = async (patientId: string, email: string | null, documentNumber: string) => {
+        setCreatingPortalFor(patientId)
         try {
+            const loginEmail = email || `${documentNumber.trim()}@portal.diagnostiq`
             const res = await fetch("/api/patients/create-account", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ patientId, email })
+                body: JSON.stringify({ patientId, email: loginEmail })
             })
-            
             const data = await res.json()
             if (!res.ok) throw new Error(data.error)
-            
-            alert("Cuenta creada y link enviado al paciente.")
-            // Ideally trigger query refetch here, assuming a refresh function or reload
-            window.location.reload()
+            await queryClient.invalidateQueries({ queryKey: ["patients"] })
         } catch (error: any) {
             alert(error.message)
+        } finally {
+            setCreatingPortalFor(null)
         }
     }
 
@@ -135,12 +132,16 @@ export default function PatientsPage() {
                                             <TableCell>{patient.phone || "N/A"}</TableCell>
                                             <TableCell>
                                                 {patient.patient_accounts && patient.patient_accounts.length > 0 ? (
-                                                    <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
-                                                        Con Acceso
+                                                    <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 gap-1">
+                                                        <CheckCircle2 className="h-3 w-3" /> Con Acceso
+                                                    </Badge>
+                                                ) : creatingPortalFor === patient.id ? (
+                                                    <Badge variant="outline" className="bg-blue-50 text-blue-600 border-blue-200 gap-1">
+                                                        <Loader2 className="h-3 w-3 animate-spin" /> Activando...
                                                     </Badge>
                                                 ) : (
-                                                    <Badge variant="outline" className="bg-slate-50 text-slate-600 border-slate-200">
-                                                        Sin Acceso
+                                                    <Badge variant="outline" className="bg-slate-50 text-slate-500 border-slate-200 gap-1">
+                                                        <XCircle className="h-3 w-3" /> Sin Acceso
                                                     </Badge>
                                                 )}
                                             </TableCell>
@@ -164,7 +165,8 @@ export default function PatientsPage() {
                                                         {hasPermission("patients", "edit") && (!patient.patient_accounts || patient.patient_accounts.length === 0) && (
                                                             <DropdownMenuItem 
                                                                 className="gap-2 text-violet-600"
-                                                                onClick={() => handleCreatePortalAccount(patient.id, patient.email)}
+                                                                onClick={() => handleCreatePortalAccount(patient.id, patient.email, patient.document_number)}
+                                                                disabled={creatingPortalFor === patient.id}
                                                             >
                                                                 <UserPlus className="h-4 w-4" /> Crear Cuenta Portal
                                                             </DropdownMenuItem>

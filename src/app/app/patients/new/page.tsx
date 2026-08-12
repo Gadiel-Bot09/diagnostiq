@@ -78,6 +78,28 @@ export default function NewPatientPage() {
 
             if (error) throw error
 
+            // Get the newly created patient id to auto-create portal account
+            const { data: newPatient } = await supabase
+                .from("patients")
+                .select("id, document_number, full_name")
+                .eq("lab_id", profile.lab_id)
+                .eq("document_number", values.document_number)
+                .single()
+
+            // Auto-provision portal access using the service role API
+            if (newPatient) {
+                try {
+                    await fetch("/api/patients/create-account", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            patientId: newPatient.id,
+                            email: values.email || `${values.document_number.trim()}@portal.diagnostiq`,
+                        })
+                    })
+                    // Portal account creation is best-effort — don't block patient save on failure
+                } catch (_) { /* silent */ }
+            }
             toast({
                 title: "Paciente registrado",
                 description: `${values.full_name} ha sido agregado correctamente.`,
