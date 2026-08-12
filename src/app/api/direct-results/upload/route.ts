@@ -82,22 +82,55 @@ export async function POST(req: NextRequest) {
         const loginEmail = realEmail || syntheticEmail(documentNumber)
         const hasRealEmail = !!realEmail
 
-        const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers()
-        const existingAuthUser = existingUsers?.users?.find((u: any) => u.email === loginEmail)
-
         let authUserId: string
 
-        if (existingAuthUser) {
-            authUserId = existingAuthUser.id
+        // Try to create the auth user. If the email is already registered,
+        // handle the conflict gracefully instead of using listUsers() which has pagination limits.
+        const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+            email: loginEmail,
+            password: documentNumber,
+            email_confirm: true,
+            user_metadata: { role: "PATIENT", full_name: fullName, password_changed: false }
+        })
+
+        if (authError) {
+            // If user already exists, find them via patient_accounts (most reliable) or by listing with filter
+            const isAlreadyExists = authError.message?.toLowerCase().includes("already registered")
+                || authError.message?.toLowerCase().includes("already been registered")
+                || authError.message?.toLowerCase().includes("user already exists")
+                || (authError as any).code === "email_exists"
+
+            if (!isAlreadyExists) throw authError
+
+            // Find existing user: try patient_accounts first (fastest), then paginated search
+            const { data: existingAccount } = await supabaseAdmin
+                .from("patient_accounts")
+                .select("user_id")
+                .eq("patient_id", patient.id)
+                .eq("lab_id", labId)
+                .single()
+
+            if (existingAccount) {
+                authUserId = existingAccount.user_id
+            } else {
+                // Fallback: paginated search for the auth user by email
+                let foundUserId: string | null = null
+                let page = 1
+                while (!foundUserId) {
+                    const { data: pageData } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000, page })
+                    if (!pageData?.users?.length) break
+                    const found = pageData.users.find((u: any) => u.email === loginEmail)
+                    if (found) { foundUserId = found.id; break }
+                    if (pageData.users.length < 1000) break // last page
+                    page++
+                }
+                if (!foundUserId) throw new Error(`Auth user with email ${loginEmail} not found after creation conflict`)
+                authUserId = foundUserId
+            }
+
+            // Always reset the password to document_number so login works
             await supabaseAdmin.auth.admin.updateUserById(authUserId, { password: documentNumber })
         } else {
-            const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-                email: loginEmail,
-                password: documentNumber,
-                email_confirm: true,
-                user_metadata: { role: "PATIENT", full_name: fullName, password_changed: false }
-            })
-            if (authError) throw authError
             authUserId = authData.user.id
 
             await supabaseAdmin.from("profiles").upsert({
@@ -111,12 +144,16 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        // Link auth user to patient account
-        await supabaseAdmin.from("patient_accounts").upsert({
+        // Link auth user to patient account — check error explicitly
+        const { error: linkError } = await supabaseAdmin.from("patient_accounts").upsert({
             user_id: authUserId,
             patient_id: patient.id,
             lab_id: labId,
         }, { onConflict: "user_id, lab_id" })
+        if (linkError) {
+            console.error("patient_accounts upsert error:", linkError)
+            throw new Error(`No se pudo vincular la cuenta del paciente: ${linkError.message}`)
+        }
 
         // Update patient email if it was missing and provided now
         if (!patient.email && email) {

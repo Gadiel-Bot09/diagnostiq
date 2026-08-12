@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
 
         const docTrimmed = document_number.trim()
 
-        // Step 1: Look up the patient(s) by document number
+        // Step 1: Find all patients with this document number (may belong to multiple labs)
         const { data: patients, error: patientError } = await supabaseAdmin
             .from("patients")
             .select("id, email, document_number, full_name, lab_id")
@@ -26,39 +26,58 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Paciente no encontrado. Consulta con tu laboratorio." }, { status: 404 })
         }
 
-        // Step 2: Figure out what email was actually used to create the Supabase Auth account.
-        // The auth account was created with the SYNTHETIC email if the patient had no real email
-        // at the time of account creation, OR with the real email if one was provided.
-        // We must look up the auth users to find who actually exists.
+        const patientIds = patients.map(p => p.id)
 
-        // First try the synthetic email (most common path — document_number@portal.diagnostiq)
-        const syntheticLoginEmail = syntheticEmail(docTrimmed)
+        // Step 2: Look up patient_accounts to find the linked auth user_id
+        // This is the single source of truth — it was written at account creation time
+        const { data: accounts, error: accountsError } = await supabaseAdmin
+            .from("patient_accounts")
+            .select("user_id, patient_id, lab_id")
+            .in("patient_id", patientIds)
+            .limit(1)
 
-        // Check if a user exists under the synthetic email
-        const { data: allUsers } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 })
-        
-        // Find auth user whose email matches the synthetic one
-        const syntheticAuthUser = allUsers?.users?.find(u => u.email === syntheticLoginEmail)
-        
-        if (syntheticAuthUser) {
-            // Auth account uses synthetic email — return that so Supabase login works
-            return NextResponse.json({ email: syntheticLoginEmail })
-        }
+        if (accountsError || !accounts || accounts.length === 0) {
+            // No account found — auto-create one now using synthetic email
+            // This handles patients that were created but whose portal account was not created yet
+            const patient = patients[0]
+            const loginEmail = patient.email || syntheticEmail(docTrimmed)
 
-        // If no synthetic user, look for a patient with a real email that has an auth account
-        for (const patient of patients) {
-            if (patient.email) {
-                const realAuthUser = allUsers?.users?.find(u => u.email === patient.email)
-                if (realAuthUser) {
-                    return NextResponse.json({ email: patient.email })
+            // Try to create the auth user
+            try {
+                const { data: existingUserList } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 })
+                const existingUser = existingUserList?.users?.find(u => u.email === loginEmail)
+
+                if (existingUser) {
+                    // Auth user exists but patient_accounts was missing — recreate the link
+                    await supabaseAdmin.from("patient_accounts").upsert({
+                        user_id: existingUser.id,
+                        patient_id: patient.id,
+                        lab_id: patient.lab_id,
+                    }, { onConflict: "user_id, lab_id" })
+
+                    return NextResponse.json({ email: loginEmail })
                 }
-            }
+            } catch (_) { /* continue */ }
+
+            return NextResponse.json({
+                error: "No tienes cuenta de portal activa. Pide al laboratorio que active tu acceso.",
+            }, { status: 404 })
         }
 
-        // If we reach here, no auth account exists yet — patient needs account creation
-        return NextResponse.json({ 
-            error: "No tienes cuenta de portal activa. Pide al laboratorio que active tu acceso.",
-        }, { status: 404 })
+        const { user_id } = accounts[0]
+
+        // Step 3: Get the exact email of the auth user by their user_id
+        const { data: authUser, error: authUserError } = await supabaseAdmin.auth.admin.getUserById(user_id)
+
+        if (authUserError || !authUser?.user) {
+            return NextResponse.json({
+                error: "Error al obtener la cuenta de acceso. Contacta al laboratorio.",
+            }, { status: 500 })
+        }
+
+        const loginEmail = authUser.user.email!
+
+        return NextResponse.json({ email: loginEmail })
 
     } catch (error: any) {
         console.error("Patient lookup error:", error)
