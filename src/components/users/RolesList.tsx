@@ -18,7 +18,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { usePermissions } from "@/contexts/PermissionsContext"
 
 type ModuleKey = "orders" | "patients" | "results" | "reports" | "staff" | "settings" | "audit" | "qr"
-type ActionKey = "view" | "create" | "edit" | "delete"
+type ActionKey = "view" | "create" | "edit" | "delete" | "upload"
 
 const MODULES: { id: ModuleKey, label: string }[] = [
     { id: "orders", label: "Órdenes" },
@@ -225,18 +225,23 @@ export function RolesList() {
                                             <th className="p-3 text-center font-medium text-muted-foreground">Crear</th>
                                             <th className="p-3 text-center font-medium text-muted-foreground">Editar</th>
                                             <th className="p-3 text-center font-medium text-muted-foreground">Eliminar</th>
+                                            <th className="p-3 text-center font-medium text-muted-foreground">Subir PDF</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y">
                                         {MODULES.map(mod => (
                                             <tr key={mod.id} className="hover:bg-muted/30">
                                                 <td className="p-3 font-medium">{mod.label}</td>
-                                                {["view", "create", "edit", "delete"].map(act => (
+                                                {["view", "create", "edit", "delete", "upload"].map(act => (
                                                     <td key={act} className="p-3 text-center">
-                                                        <Checkbox 
-                                                            checked={!!permissions[mod.id]?.[act]}
-                                                            onCheckedChange={(c) => handleTogglePermission(mod.id, act, !!c)}
-                                                        />
+                                                        {(mod.id === "results" && act === "upload") || act !== "upload" ? (
+                                                            <Checkbox 
+                                                                checked={!!permissions[mod.id]?.[act]}
+                                                                onCheckedChange={(c) => handleTogglePermission(mod.id, act, !!c)}
+                                                            />
+                                                        ) : (
+                                                            <span className="text-muted-foreground">-</span>
+                                                        )}
                                                     </td>
                                                 ))}
                                             </tr>
