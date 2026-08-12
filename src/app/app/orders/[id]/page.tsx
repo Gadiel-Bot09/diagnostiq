@@ -187,7 +187,7 @@ export default function AdminOrderDetailPage() {
                     <Button variant="ghost" onClick={() => router.back()} className="gap-2 -ml-4">
                         <ArrowLeft className="h-4 w-4" /> Volver a órdenes
                     </Button>
-                    {(hasPermission("results", "create") || hasPermission("orders", "edit")) && (
+                    {hasPermission("orders", "upload") && (
                     <Link href={`/app/orders/${id}/upload`}>
                         <Button className="gap-2 bg-blue-600 hover:bg-blue-700">
                             <FileUp className="h-4 w-4" /> Subir / Reemplazar PDF
@@ -308,7 +308,7 @@ export default function AdminOrderDetailPage() {
                                     <div className="border-2 border-dashed rounded-xl p-8 text-center">
                                         <FileUp className="h-10 w-10 mx-auto text-muted-foreground/30 mb-3" />
                                         <p className="text-sm text-muted-foreground">No se han subido PDFs para esta orden aún.</p>
-                                        {(hasPermission("results", "create") || hasPermission("orders", "edit")) && (
+                                        {hasPermission("orders", "upload") && (
                                         <Link href={`/app/orders/${id}/upload`} className="mt-3 inline-block">
                                             <Button variant="outline" size="sm" className="gap-2 mt-2">
                                                 <FileUp className="h-3.5 w-3.5" /> Subir primer PDF
