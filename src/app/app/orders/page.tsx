@@ -145,7 +145,7 @@ export default function LabOrdersPage() {
                                                             <Eye className="h-3.5 w-3.5" /> Ver
                                                         </Button>
                                                     </Link>
-                                                    {hasPermission("results", "upload") && (
+                                                    {hasPermission("orders", "upload") && (
                                                     <Link href={`/app/orders/${order.id}/upload`}>
                                                         <Button size="sm" className="gap-2 h-8 bg-blue-600 hover:bg-blue-700">
                                                             <FileUp className="h-3.5 w-3.5" /> Subir PDF

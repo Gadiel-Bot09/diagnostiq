@@ -234,7 +234,7 @@ export function RolesList() {
                                                 <td className="p-3 font-medium">{mod.label}</td>
                                                 {["view", "create", "edit", "delete", "upload"].map(act => (
                                                     <td key={act} className="p-3 text-center">
-                                                        {(mod.id === "results" && act === "upload") || act !== "upload" ? (
+                                                        {(mod.id === "orders" && act === "upload") || act !== "upload" ? (
                                                             <Checkbox 
                                                                 checked={!!permissions[mod.id]?.[act]}
                                                                 onCheckedChange={(c) => handleTogglePermission(mod.id, act, !!c)}
