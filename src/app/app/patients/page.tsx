@@ -47,11 +47,11 @@ type Patient = {
 // ──────────────────────────────────────────────────────────
 export default function PatientsPage() {
     const supabase = createClient()
-    const { hasPermission, role } = usePermissions()
+    const { hasPermission, profile } = usePermissions()
     const queryClient = useQueryClient()
     const { toast } = useToast()
 
-    const isAdmin = role === "LAB_ADMIN" || role === "SUPER_ADMIN"
+    const isAdmin = profile?.role === "LAB_ADMIN" || profile?.role === "SUPER_ADMIN"
 
     const [searchTerm, setSearchTerm] = useState("")
     const [creatingPortalFor, setCreatingPortalFor] = useState<string | null>(null)
