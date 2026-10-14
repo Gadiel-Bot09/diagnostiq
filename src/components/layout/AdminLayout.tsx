@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import { AdminSidebar } from "./AdminSidebar"
 import { usePermissions } from "@/contexts/PermissionsContext"
@@ -26,8 +26,9 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
         <div className="flex bg-background min-h-screen">
             <AdminSidebar />
             <main className="flex-1 overflow-auto">
-                <header className="h-16 border-b bg-card flex items-center justify-between px-8">
-                    <h2 className="text-lg font-semibold text-muted-foreground italic">Panel de Control</h2>
+                <header className="h-16 border-b border-indigo-100 bg-white/80 backdrop-blur flex items-center justify-between px-8 sticky top-0 z-10">
+                    <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-indigo-600 via-blue-500 to-emerald-400" />
+                    <h2 className="text-lg font-semibold dq-gradient-text">Panel de Control</h2>
                     <div className="flex items-center gap-2">
                         {isLoading ? (
                             <Skeleton className="h-5 w-40" />
@@ -41,7 +42,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
                                 <span className="text-sm text-muted-foreground font-medium">
                                     {profile.full_name || "Usuario"}
                                 </span>
-                                <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center text-primary text-xs font-bold uppercase">
+                                <div className="h-7 w-7 rounded-full dq-gradient flex items-center justify-center text-white text-xs shadow font-bold uppercase">
                                     {(profile.full_name || "U").substring(0, 2)}
                                 </div>
                             </div>
@@ -62,3 +63,4 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
         </div>
     )
 }
+

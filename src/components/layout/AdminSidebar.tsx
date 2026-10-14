@@ -55,7 +55,7 @@ export function AdminSidebar() {
     }
 
     return (
-        <div className="flex h-screen w-64 flex-col border-r bg-card shadow-sm">
+        <div className="flex h-screen w-64 flex-col border-r border-indigo-100 bg-gradient-to-b from-white via-indigo-50/60 to-cyan-50/70 shadow-sm">
             <div className="flex h-16 items-center px-5 border-b">
                 <Link href="/app/dashboard">
                     <Logo size="md" />
@@ -75,13 +75,15 @@ export function AdminSidebar() {
                         return (
                             <Link key={item.name} href={item.href}>
                                 <Button
-                                    variant={isActive ? "secondary" : "ghost"}
+                                    variant="ghost"
                                     className={cn(
-                                        "w-full justify-start gap-3 px-3 py-6",
-                                        isActive ? "bg-secondary text-primary font-medium" : "text-muted-foreground"
+                                        "w-full justify-start gap-3 px-3 py-6 rounded-xl transition-all",
+                                        isActive
+                                            ? "bg-gradient-to-r from-indigo-600 via-blue-500 to-cyan-500 text-white font-semibold shadow-md shadow-indigo-500/30 hover:text-white hover:from-indigo-600 hover:to-cyan-500"
+                                            : "text-slate-600 hover:bg-indigo-100/70 hover:text-indigo-700"
                                     )}
                                 >
-                                    <item.icon className={cn("h-5 w-5", isActive ? "text-primary" : "text-muted-foreground")} />
+                                    <item.icon className={cn("h-5 w-5", isActive ? "text-white" : "text-indigo-400")} />
                                     {item.name}
                                 </Button>
                             </Link>
