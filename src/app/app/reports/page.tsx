@@ -1,7 +1,7 @@
 // @ts-nocheck
 "use client"
 
-import { useState, useMemo } from "react"
+import React, { useState, useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { format, subDays, isAfter } from "date-fns"
 import { es } from "date-fns/locale"
@@ -25,7 +25,10 @@ import {
     Sparkles,
     ArrowUpRight,
     UserCheck,
-    Stethoscope
+    Stethoscope,
+    ChevronDown,
+    ChevronUp,
+    FileUp
 } from "lucide-react"
 
 import { AdminLayout } from "@/components/layout/AdminLayout"
@@ -54,6 +57,7 @@ export default function ReportsPage() {
     const [statusFilter, setStatusFilter] = useState<string>("ALL")
     const [showPrintModal, setShowPrintModal] = useState<boolean>(false)
     const [isExporting, setIsExporting] = useState<boolean>(false)
+    const [expandedUserId, setExpandedUserId] = useState<string | null>(null)
 
     // Fetch Lab ID (optional reference for tenant-scoped operations if needed)
     const { data: labId } = useQuery({
@@ -100,7 +104,11 @@ export default function ReportsPage() {
                     result_files (
                         id,
                         file_name,
-                        uploaded_at
+                        uploaded_at,
+                        uploaded_by,
+                        performed_at,
+                        version,
+                        size_bytes
                     )
                 `)
                 .order("ordered_at", { ascending: false })
@@ -264,21 +272,109 @@ export default function ReportsPage() {
         return arr
     }, [filteredOrders])
 
-    // 3. By Staff / User
+    // Staff lookup map
+    const staffMap = useMemo(() => {
+        const map = new Map<string, any>()
+        staffProfiles.forEach((p: any) => map.set(p.id, p))
+        return map
+    }, [staffProfiles])
+
+    // Helper: quien cargo los resultados de una orden
+    const getUploaders = (o: any) => {
+        const files = o.result_files || []
+        if (files.length === 0) return "Pendiente"
+        const names = Array.from(new Set(
+            files
+                .map((f: any) => f.uploaded_by ? (staffMap.get(f.uploaded_by)?.full_name || `Usuario (${f.uploaded_by.slice(0, 6)})`) : null)
+                .filter(Boolean)
+        ))
+        return names.length > 0 ? names.join(", ") : "Personal"
+    }
+
+    // 3. By Staff / User (Productividad Real de Cargue de Resultados)
     const userReports = useMemo(() => {
-        return staffProfiles.map((prof: any) => {
+        const userUploadsMap = new Map<string, {
+            filesCount: number
+            ordersSet: Set<string>
+            completedOrdersSet: Set<string>
+            uploadsList: Array<{
+                orderNumber: string
+                orderedAt: string
+                performedAt?: string | null
+                uploadedAt: string
+                patientName: string
+                patientDoc: string
+                examName: string
+                fileName: string
+            }>
+        }>()
+
+        // Inicializar para todos los perfiles de staff
+        staffProfiles.forEach((prof: any) => {
+            userUploadsMap.set(prof.id, {
+                filesCount: 0,
+                ordersSet: new Set(),
+                completedOrdersSet: new Set(),
+                uploadsList: []
+            })
+        })
+
+        let totalFilesUploaded = 0
+
+        filteredOrders.forEach((o: any) => {
+            const files = o.result_files || []
+            const isCompleted = o.status === "COMPLETED"
+            const patientName = o.patients?.full_name || "Desconocido"
+            const patientDoc = `${o.patients?.document_type || ""} ${o.patients?.document_number || ""}`.trim()
+            const examName = o.is_direct
+                ? (o.direct_exam_name || "Resultado Directo")
+                : (o.order_tests?.map((t: any) => t.tests?.name).join(", ") || "General")
+
+            files.forEach((f: any) => {
+                totalFilesUploaded += 1
+                const uploaderId = f.uploaded_by
+                if (uploaderId) {
+                    let entry = userUploadsMap.get(uploaderId)
+                    if (!entry) {
+                        entry = { filesCount: 0, ordersSet: new Set(), completedOrdersSet: new Set(), uploadsList: [] }
+                        userUploadsMap.set(uploaderId, entry)
+                    }
+                    entry.filesCount += 1
+                    entry.ordersSet.add(o.id)
+                    if (isCompleted) entry.completedOrdersSet.add(o.id)
+                    entry.uploadsList.push({
+                        orderNumber: o.order_number,
+                        orderedAt: o.ordered_at,
+                        performedAt: f.performed_at || o.performed_at,
+                        uploadedAt: f.uploaded_at,
+                        patientName,
+                        patientDoc,
+                        examName,
+                        fileName: f.file_name,
+                    })
+                }
+            })
+        })
+
+        const reports = staffProfiles.map((prof: any) => {
             const roleLabel = prof.role === "ADMIN" || prof.role === "LAB_ADMIN" || prof.role === "SUPER_ADMIN" 
                 ? "Administrador" 
                 : prof.role === "LAB_STAFF" 
                 ? "Personal de Laboratorio" 
                 : prof.role === "DOCTOR" 
                 ? "Médico Remitente" 
-                : prof.role || "Personal";
+                : prof.role || "Personal"
 
-            // En DiagnostiQ la gestión de órdenes es colaborativa en el laboratorio, por lo que atribuimos el volumen del equipo a usuarios activos de lab/admin
-            const isStaffOrAdmin = roleLabel === "Administrador" || roleLabel === "Personal de Laboratorio";
-            const ordersManaged = isStaffOrAdmin && prof.is_active !== false ? filteredOrders.length : 0;
-            const completedManaged = isStaffOrAdmin && prof.is_active !== false ? filteredOrders.filter((o: any) => o.status === "COMPLETED").length : 0;
+            const data = userUploadsMap.get(prof.id) || {
+                filesCount: 0,
+                ordersSet: new Set(),
+                completedOrdersSet: new Set(),
+                uploadsList: []
+            }
+
+            const contribution = totalFilesUploaded > 0
+                ? Math.round((data.filesCount / totalFilesUploaded) * 100)
+                : 0
 
             return {
                 id: prof.id,
@@ -287,10 +383,37 @@ export default function ReportsPage() {
                 phone: prof.phone || "—",
                 created_at: prof.created_at,
                 active: prof.is_active !== false,
-                ordersManaged,
-                completedManaged
-            };
-        }).sort((a: any, b: any) => b.ordersManaged - a.ordersManaged);
+                filesUploaded: data.filesCount,
+                ordersManaged: data.ordersSet.size,
+                completedManaged: data.completedOrdersSet.size,
+                contribution,
+                uploadsList: data.uploadsList,
+            }
+        })
+
+        // Si hay resultados cargados por usuarios externos o IDs no listados en staffProfiles
+        userUploadsMap.forEach((data, userId) => {
+            if (!staffProfiles.some((p: any) => p.id === userId) && data.filesCount > 0) {
+                const contribution = totalFilesUploaded > 0
+                    ? Math.round((data.filesCount / totalFilesUploaded) * 100)
+                    : 0
+                reports.push({
+                    id: userId,
+                    name: `Usuario (${userId.slice(0, 8)})`,
+                    role: "Personal / Externo",
+                    phone: "—",
+                    created_at: null,
+                    active: false,
+                    filesUploaded: data.filesCount,
+                    ordersManaged: data.ordersSet.size,
+                    completedManaged: data.completedOrdersSet.size,
+                    contribution,
+                    uploadsList: data.uploadsList,
+                })
+            }
+        })
+
+        return reports.sort((a: any, b: any) => b.filesUploaded - a.filesUploaded || b.ordersManaged - a.ordersManaged)
     }, [filteredOrders, staffProfiles])
 
     // Summary KPIs
@@ -381,13 +504,14 @@ export default function ReportsPage() {
         return Math.round((day(b) - day(a)) / 86400000)
     }
 
-    const detailColumns = ["N° Orden", "Fecha de orden", "Fecha realización exámenes", "Fecha de cargue", "Días realiz. → cargue", "Paciente", "Documento", "Examen(es)", "Estado", "Archivos"]
+    const detailColumns = ["N° Orden", "Fecha de orden", "Fecha realización exámenes", "Fecha de cargue", "Días realiz. → cargue", "Cargado por", "Paciente", "Documento", "Examen(es)", "Estado", "Archivos"]
     const orderDetailRow = (o: any, examLabel?: string) => [
         o.order_number,
         fmtDateTime(o.ordered_at),
         fmtDay(o.performed_at),
         fmtDateTime(uploadedOf(o)),
         daysBetween(o.performed_at, uploadedOf(o)),
+        getUploaders(o),
         o.patients?.full_name || "Desconocido",
         `${o.patients?.document_type || ""} ${o.patients?.document_number || ""}`.trim(),
         examLabel ?? examNamesOf(o).join(", "),
@@ -400,7 +524,7 @@ export default function ReportsPage() {
         if (activeTab === "exams") {
             const detail: any[][] = []
             filteredOrders.forEach((o: any) => examNamesOf(o).forEach((name: string) => detail.push(orderDetailRow(o, name))))
-            detail.sort((a, b) => String(a[7]).localeCompare(String(b[7])))
+            detail.sort((a, b) => String(a[8]).localeCompare(String(b[8])))
             return {
                 ...base,
                 title: "Rendimiento y Volumetría por Examen Diagnóstico",
@@ -435,14 +559,70 @@ export default function ReportsPage() {
             }
         }
         if (activeTab === "users") {
+            const detailRows: any[][] = []
+            userReports.forEach((u: any) => {
+                (u.uploadsList || []).forEach((item: any) => {
+                    detailRows.push([
+                        u.name,
+                        u.role,
+                        item.orderNumber,
+                        fmtDateTime(item.orderedAt),
+                        fmtDay(item.performedAt),
+                        fmtDateTime(item.uploadedAt),
+                        daysBetween(item.performedAt, item.uploadedAt),
+                        item.patientName,
+                        item.patientDoc,
+                        item.examName,
+                        item.fileName
+                    ])
+                })
+            })
+
             return {
                 ...base,
-                title: "Productividad por Personal / Usuario",
-                sheets: [{
-                    name: "Personal",
-                    columns: ["Usuario", "Rol", "Teléfono / Contacto", "Estado", "Órdenes gestionadas", "Completadas"],
-                    rows: userReports.map((i: any) => [i.name, i.role, i.phone || "—", i.active ? "Activo" : "Inactivo", i.ordersManaged, i.completedManaged]),
-                }],
+                title: "Productividad y Cargue de Resultados por Personal",
+                sheets: [
+                    {
+                        name: "Resumen de productividad",
+                        columns: [
+                            "Usuario / Staff",
+                            "Rol en Sistema",
+                            "Teléfono / Contacto",
+                            "Estado",
+                            "Resultados PDF Cargados",
+                            "Órdenes Atendidas",
+                            "Órdenes Completadas",
+                            "% Participación"
+                        ],
+                        rows: userReports.map((i: any) => [
+                            i.name,
+                            i.role,
+                            i.phone || "—",
+                            i.active ? "Activo" : "Inactivo",
+                            i.filesUploaded,
+                            i.ordersManaged,
+                            i.completedManaged,
+                            `${i.contribution}%`
+                        ]),
+                    },
+                    {
+                        name: "Detalle de cargues por usuario",
+                        columns: [
+                            "Cargado Por",
+                            "Rol",
+                            "N° Orden",
+                            "Fecha Orden",
+                            "Fecha Realización",
+                            "Fecha Cargue",
+                            "Días Realiz. → Cargue",
+                            "Paciente",
+                            "Documento",
+                            "Examen",
+                            "Archivo PDF"
+                        ],
+                        rows: detailRows.length > 0 ? detailRows : [["Sin resultados cargados en el período"]],
+                    }
+                ],
             }
         }
         return {
@@ -816,10 +996,37 @@ export default function ReportsPage() {
                     <TabsContent value="exams" className="m-0">
                         <Card className="border shadow-sm">
                             <CardHeader className="pb-3 border-b bg-muted/20">
-                                <CardTitle className="text-base font-semibold flex items-center justify-between">
-                                    <span>Rendimiento y Volumetría por Examen Diagnóstico</span>
-                                    <span className="text-xs font-normal text-muted-foreground">{getDateLabel()}</span>
-                                </CardTitle>
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                    <div>
+                                        <CardTitle className="text-base font-semibold">
+                                            Rendimiento y Volumetría por Examen Diagnóstico
+                                        </CardTitle>
+                                        <p className="text-xs text-muted-foreground mt-0.5">
+                                            Distribución y tasa de efectividad por tipo de prueba · {getDateLabel()}
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={handleExportXlsx}
+                                            disabled={isExporting}
+                                            className="gap-1.5 h-8 text-xs hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200"
+                                        >
+                                            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+                                            <span>Exportar Excel</span>
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            onClick={handleExportPdf}
+                                            disabled={isExporting}
+                                            className="gap-1.5 h-8 text-xs bg-gradient-to-r from-primary to-sky-600"
+                                        >
+                                            <FileText className="h-3.5 w-3.5" />
+                                            <span>Exportar PDF</span>
+                                        </Button>
+                                    </div>
+                                </div>
                             </CardHeader>
                             <CardContent className="p-0">
                                 <div className="overflow-x-auto">
@@ -890,10 +1097,37 @@ export default function ReportsPage() {
                     <TabsContent value="patients" className="m-0">
                         <Card className="border shadow-sm">
                             <CardHeader className="pb-3 border-b bg-muted/20">
-                                <CardTitle className="text-base font-semibold flex items-center justify-between">
-                                    <span>Frecuencia y Atenciones por Paciente</span>
-                                    <span className="text-xs font-normal text-muted-foreground">{getDateLabel()}</span>
-                                </CardTitle>
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                    <div>
+                                        <CardTitle className="text-base font-semibold">
+                                            Frecuencia y Atenciones por Paciente
+                                        </CardTitle>
+                                        <p className="text-xs text-muted-foreground mt-0.5">
+                                            Historial y estado de portal por paciente · {getDateLabel()}
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={handleExportXlsx}
+                                            disabled={isExporting}
+                                            className="gap-1.5 h-8 text-xs hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200"
+                                        >
+                                            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+                                            <span>Exportar Excel</span>
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            onClick={handleExportPdf}
+                                            disabled={isExporting}
+                                            className="gap-1.5 h-8 text-xs bg-gradient-to-r from-primary to-sky-600"
+                                        >
+                                            <FileText className="h-3.5 w-3.5" />
+                                            <span>Exportar PDF</span>
+                                        </Button>
+                                    </div>
+                                </div>
                             </CardHeader>
                             <CardContent className="p-0">
                                 <div className="overflow-x-auto">
@@ -959,10 +1193,37 @@ export default function ReportsPage() {
                     <TabsContent value="users" className="m-0">
                         <Card className="border shadow-sm">
                             <CardHeader className="pb-3 border-b bg-muted/20">
-                                <CardTitle className="text-base font-semibold flex items-center justify-between">
-                                    <span>Productividad de Usuarios y Personal de Laboratorio</span>
-                                    <span className="text-xs font-normal text-muted-foreground">{getDateLabel()}</span>
-                                </CardTitle>
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                    <div>
+                                        <CardTitle className="text-base font-semibold">
+                                            Productividad de Usuarios y Personal de Laboratorio
+                                        </CardTitle>
+                                        <p className="text-xs text-muted-foreground mt-0.5">
+                                            Cargue real de resultados y órdenes atendidas por el personal · {getDateLabel()}
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={handleExportXlsx}
+                                            disabled={isExporting}
+                                            className="gap-1.5 h-8 text-xs hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200"
+                                        >
+                                            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+                                            <span>Exportar Excel</span>
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            onClick={handleExportPdf}
+                                            disabled={isExporting}
+                                            className="gap-1.5 h-8 text-xs bg-gradient-to-r from-primary to-sky-600"
+                                        >
+                                            <FileText className="h-3.5 w-3.5" />
+                                            <span>Exportar PDF</span>
+                                        </Button>
+                                    </div>
+                                </div>
                             </CardHeader>
                             <CardContent className="p-0">
                                 <div className="overflow-x-auto">
@@ -973,43 +1234,107 @@ export default function ReportsPage() {
                                                 <th className="px-6 py-3.5 font-semibold">Rol en Sistema</th>
                                                 <th className="px-6 py-3.5 font-semibold">Teléfono / Contacto</th>
                                                 <th className="px-6 py-3.5 font-semibold text-center">Estado</th>
-                                                <th className="px-6 py-3.5 font-semibold text-center">Órdenes Gestionadas</th>
-                                                <th className="px-6 py-3.5 font-semibold text-center">Órdenes Completadas</th>
+                                                <th className="px-6 py-3.5 font-semibold text-center">Resultados Cargados</th>
+                                                <th className="px-6 py-3.5 font-semibold text-center">Órdenes Atendidas</th>
+                                                <th className="px-6 py-3.5 font-semibold text-center">% Aporte</th>
+                                                <th className="px-6 py-3.5 font-semibold text-center">Detalle</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y">
                                             {ordersLoading ? (
-                                                <tr><td colSpan={6} className="p-8 text-center"><LoaderText /></td></tr>
+                                                <tr><td colSpan={8} className="p-8 text-center"><LoaderText /></td></tr>
                                             ) : userReports.length === 0 ? (
-                                                <tr><td colSpan={6} className="p-12 text-center text-muted-foreground">No hay usuarios activos registrados.</td></tr>
+                                                <tr><td colSpan={8} className="p-12 text-center text-muted-foreground">No hay usuarios activos registrados.</td></tr>
                                             ) : (
-                                                userReports.map((u, idx) => (
-                                                    <tr key={idx} className="hover:bg-muted/30 transition-colors">
-                                                        <td className="px-6 py-4 font-medium text-foreground">
-                                                            <div className="flex items-center gap-2.5">
-                                                                <div className="h-7 w-7 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-600 font-bold text-xs shrink-0">
-                                                                    <Stethoscope className="h-3.5 w-3.5" />
-                                                                </div>
-                                                                <span>{u.name}</span>
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-6 py-4">
-                                                            <Badge variant="outline" className="font-normal text-xs">{u.role}</Badge>
-                                                        </td>
-                                                        <td className="px-6 py-4 text-xs text-muted-foreground">{u.phone || "—"}</td>
-                                                        <td className="px-6 py-4 text-center">
-                                                            <Badge variant={u.active ? "default" : "secondary"} className={u.active ? "bg-emerald-500 hover:bg-emerald-600 text-white text-[10px]" : "text-[10px]"}>
-                                                                {u.active ? "Activo" : "Inactivo"}
-                                                            </Badge>
-                                                        </td>
-                                                        <td className="px-6 py-4 text-center font-bold text-base">{u.ordersManaged}</td>
-                                                        <td className="px-6 py-4 text-center">
-                                                            <Badge variant="secondary" className="bg-emerald-50 text-emerald-700 border-emerald-200">
-                                                                {u.completedManaged}
-                                                            </Badge>
-                                                        </td>
-                                                    </tr>
-                                                ))
+                                                userReports.map((u, idx) => {
+                                                    const isExpanded = expandedUserId === u.id
+                                                    return (
+                                                        <React.Fragment key={u.id || idx}>
+                                                            <tr className="hover:bg-muted/30 transition-colors">
+                                                                <td className="px-6 py-4 font-medium text-foreground">
+                                                                    <div className="flex items-center gap-2.5">
+                                                                        <div className="h-7 w-7 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-600 font-bold text-xs shrink-0">
+                                                                            <Stethoscope className="h-3.5 w-3.5" />
+                                                                        </div>
+                                                                        <span>{u.name}</span>
+                                                                    </div>
+                                                                </td>
+                                                                <td className="px-6 py-4">
+                                                                    <Badge variant="outline" className="font-normal text-xs">{u.role}</Badge>
+                                                                </td>
+                                                                <td className="px-6 py-4 text-xs text-muted-foreground">{u.phone || "—"}</td>
+                                                                <td className="px-6 py-4 text-center">
+                                                                    <Badge variant={u.active ? "default" : "secondary"} className={u.active ? "bg-emerald-500 hover:bg-emerald-600 text-white text-[10px]" : "text-[10px]"}>
+                                                                        {u.active ? "Activo" : "Inactivo"}
+                                                                    </Badge>
+                                                                </td>
+                                                                <td className="px-6 py-4 text-center font-bold text-base text-indigo-600">
+                                                                    {u.filesUploaded}
+                                                                </td>
+                                                                <td className="px-6 py-4 text-center">
+                                                                    <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 border-indigo-200">
+                                                                        {u.ordersManaged}
+                                                                    </Badge>
+                                                                </td>
+                                                                <td className="px-6 py-4 text-center">
+                                                                    <Badge variant="secondary" className="bg-sky-50 text-sky-700 border-sky-200">
+                                                                        {u.contribution}%
+                                                                    </Badge>
+                                                                </td>
+                                                                <td className="px-6 py-4 text-center">
+                                                                    {u.filesUploaded > 0 ? (
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="sm"
+                                                                            className="h-7 px-2 text-xs gap-1 text-primary hover:bg-primary/10"
+                                                                            onClick={() => setExpandedUserId(isExpanded ? null : u.id)}
+                                                                        >
+                                                                            <span>{isExpanded ? "Ocultar" : "Ver"} ({u.filesUploaded})</span>
+                                                                            {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                                                                        </Button>
+                                                                    ) : (
+                                                                        <span className="text-xs text-muted-foreground">—</span>
+                                                                    )}
+                                                                </td>
+                                                            </tr>
+                                                            {isExpanded && u.uploadsList && u.uploadsList.length > 0 && (
+                                                                <tr className="bg-indigo-50/20">
+                                                                    <td colSpan={8} className="p-4">
+                                                                        <div className="rounded-xl border border-indigo-100 bg-white p-3 space-y-2 shadow-xs">
+                                                                            <p className="text-xs font-semibold uppercase tracking-wider text-indigo-700 flex items-center gap-1.5">
+                                                                                <FileUp className="h-3.5 w-3.5" /> Resultados cargados por {u.name} ({u.uploadsList.length} archivos)
+                                                                            </p>
+                                                                            <div className="max-h-60 overflow-y-auto">
+                                                                                <table className="w-full text-xs">
+                                                                                    <thead className="bg-muted/40 text-muted-foreground">
+                                                                                        <tr>
+                                                                                            <th className="p-2 text-left">N° Orden</th>
+                                                                                            <th className="p-2 text-left">Fecha Cargue</th>
+                                                                                            <th className="p-2 text-left">Paciente</th>
+                                                                                            <th className="p-2 text-left">Examen</th>
+                                                                                            <th className="p-2 text-left">Archivo PDF</th>
+                                                                                        </tr>
+                                                                                    </thead>
+                                                                                    <tbody className="divide-y">
+                                                                                        {u.uploadsList.map((item: any, itemIdx: number) => (
+                                                                                            <tr key={itemIdx} className="hover:bg-muted/30">
+                                                                                                <td className="p-2 font-mono font-bold text-primary">{item.orderNumber}</td>
+                                                                                                <td className="p-2 text-muted-foreground">{format(new Date(item.uploadedAt), "dd/MM/yyyy HH:mm")}</td>
+                                                                                                <td className="p-2 font-medium">{item.patientName} <span className="text-muted-foreground text-[10px]">({item.patientDoc})</span></td>
+                                                                                                <td className="p-2">{item.examName}</td>
+                                                                                                <td className="p-2 font-mono text-[11px] text-slate-600">{item.fileName}</td>
+                                                                                            </tr>
+                                                                                        ))}
+                                                                                    </tbody>
+                                                                                </table>
+                                                                            </div>
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                            )}
+                                                        </React.Fragment>
+                                                    )
+                                                })
                                             )}
                                         </tbody>
                                     </table>
@@ -1022,10 +1347,37 @@ export default function ReportsPage() {
                     <TabsContent value="orders" className="m-0">
                         <Card className="border shadow-sm">
                             <CardHeader className="pb-3 border-b bg-muted/20">
-                                <CardTitle className="text-base font-semibold flex items-center justify-between">
-                                    <span>Registro Completo de Órdenes para Auditoría y Exportación</span>
-                                    <span className="text-xs font-normal text-muted-foreground">{getDateLabel()}</span>
-                                </CardTitle>
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                    <div>
+                                        <CardTitle className="text-base font-semibold">
+                                            Registro Completo de Órdenes para Auditoría y Exportación
+                                        </CardTitle>
+                                        <p className="text-xs text-muted-foreground mt-0.5">
+                                            Trazabilidad completa con fechas y personal asignado · {getDateLabel()}
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={handleExportXlsx}
+                                            disabled={isExporting}
+                                            className="gap-1.5 h-8 text-xs hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200"
+                                        >
+                                            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+                                            <span>Exportar Excel</span>
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            onClick={handleExportPdf}
+                                            disabled={isExporting}
+                                            className="gap-1.5 h-8 text-xs bg-gradient-to-r from-primary to-sky-600"
+                                        >
+                                            <FileText className="h-3.5 w-3.5" />
+                                            <span>Exportar PDF</span>
+                                        </Button>
+                                    </div>
+                                </div>
                             </CardHeader>
                             <CardContent className="p-0">
                                 <div className="overflow-x-auto">
@@ -1036,21 +1388,23 @@ export default function ReportsPage() {
                                                 <th className="px-6 py-3.5 font-semibold">Fecha y Hora</th>
                                                 <th className="px-6 py-3.5 font-semibold">Paciente</th>
                                                 <th className="px-6 py-3.5 font-semibold">Exámenes / Tipo</th>
+                                                <th className="px-6 py-3.5 font-semibold">Cargado por</th>
                                                 <th className="px-6 py-3.5 font-semibold text-center">Archivos PDF</th>
                                                 <th className="px-6 py-3.5 font-semibold text-right">Estado</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y">
                                             {ordersLoading ? (
-                                                <tr><td colSpan={6} className="p-8 text-center"><LoaderText /></td></tr>
+                                                <tr><td colSpan={7} className="p-8 text-center"><LoaderText /></td></tr>
                                             ) : filteredOrders.length === 0 ? (
-                                                <tr><td colSpan={6} className="p-12 text-center text-muted-foreground">No hay órdenes para mostrar con los filtros seleccionados.</td></tr>
+                                                <tr><td colSpan={7} className="p-12 text-center text-muted-foreground">No hay órdenes para mostrar con los filtros seleccionados.</td></tr>
                                             ) : (
                                                 filteredOrders.map((o: any) => {
                                                     const patientName = o.patients?.full_name || "Desconocido"
                                                     const patientDoc = `${o.patients?.document_type || ''} ${o.patients?.document_number || ''}`.trim()
                                                     const isCompleted = o.status === "COMPLETED"
                                                     const filesCount = o.result_files?.length || 0
+                                                    const uploaders = getUploaders(o)
 
                                                     return (
                                                         <tr key={o.id} className="hover:bg-muted/30 transition-colors">
@@ -1077,6 +1431,15 @@ export default function ReportsPage() {
                                                                             </div>
                                                                         ))}
                                                                     </div>
+                                                                )}
+                                                            </td>
+                                                            <td className="px-6 py-4">
+                                                                {uploaders === "Pendiente" ? (
+                                                                    <span className="text-xs text-muted-foreground italic">Sin resultados</span>
+                                                                ) : (
+                                                                    <Badge variant="outline" className="bg-indigo-50/70 text-indigo-700 border-indigo-200 text-xs font-medium">
+                                                                        {uploaders}
+                                                                    </Badge>
                                                                 )}
                                                             </td>
                                                             <td className="px-6 py-4 text-center">
@@ -1175,8 +1538,9 @@ export default function ReportsPage() {
                                     <th>Rol Asignado</th>
                                     <th>Teléfono / Contacto</th>
                                     <th>Estado</th>
-                                    <th>Órdenes Gestionadas</th>
-                                    <th>Completadas con Éxito</th>
+                                    <th>Resultados PDF Cargados</th>
+                                    <th>Órdenes Atendidas</th>
+                                    <th>% Participación</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1186,8 +1550,9 @@ export default function ReportsPage() {
                                         <td>${u.role}</td>
                                         <td>${u.phone || '—'}</td>
                                         <td>${u.active ? 'Activo' : 'Inactivo'}</td>
-                                        <td><strong>${u.ordersManaged}</strong></td>
-                                        <td>${u.completedManaged}</td>
+                                        <td><strong>${u.filesUploaded}</strong></td>
+                                        <td>${u.ordersManaged}</td>
+                                        <td>${u.contribution}%</td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -1202,6 +1567,7 @@ export default function ReportsPage() {
                                     <th>Fecha y Hora</th>
                                     <th>Paciente Atendido</th>
                                     <th>Examen(es) / Servicio</th>
+                                    <th>Cargado por</th>
                                     <th>Archivos Subidos</th>
                                     <th>Estado Actual</th>
                                 </tr>
@@ -1211,12 +1577,14 @@ export default function ReportsPage() {
                                     const patientName = o.patients?.full_name || "Desconocido"
                                     const examInfo = o.is_direct ? (o.direct_exam_name || "Directo") : (o.order_tests?.map((t: any) => t.tests?.name).join(", ") || "General")
                                     const statusLabel = o.status === "COMPLETED" ? "Completado" : o.status === "PENDING" ? "Pendiente" : o.status
+                                    const uploaders = getUploaders(o)
                                     return (
                                         <tr key={o.id}>
                                             <td><strong>${o.order_number}</strong></td>
                                             <td>${format(new Date(o.ordered_at), "dd/MM/yyyy HH:mm")}</td>
                                             <td>${patientName}</td>
                                             <td>${examInfo}</td>
+                                            <td>${uploaders}</td>
                                             <td>${o.result_files?.length || 0} PDF(s)</td>
                                             <td><span class="badge ${o.status === 'COMPLETED' ? 'badge-completed' : 'badge-pending'}">${statusLabel}</span></td>
                                         </tr>

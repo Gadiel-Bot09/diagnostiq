@@ -1,7 +1,7 @@
 // @ts-nocheck
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { useParams, useRouter } from "next/navigation"
 import { format } from "date-fns"
@@ -102,7 +102,8 @@ export default function AdminOrderDetailPage() {
                         file_name,
                         version,
                         size_bytes,
-                        uploaded_at
+                        uploaded_at,
+                        uploaded_by
                     )
                 `)
                 .eq("id", id)
@@ -179,6 +180,22 @@ export default function AdminOrderDetailPage() {
     const patient = order.patients as any
     const orderTests = (order.order_tests as any[]) || []
     const resultFiles = (order.result_files as any[]) || []
+
+    const uploaderIds = useMemo(() => {
+        return Array.from(new Set(resultFiles.map((f: any) => f.uploaded_by).filter(Boolean)))
+    }, [resultFiles])
+
+    const { data: uploadersProfiles = [] } = useQuery({
+        queryKey: ["uploaders-profiles", uploaderIds],
+        queryFn: async () => {
+            if (uploaderIds.length === 0) return []
+            const { data } = await supabase.from("profiles").select("id, full_name, role").in("id", uploaderIds)
+            return data || []
+        },
+        enabled: uploaderIds.length > 0
+    })
+
+    const uploadersMap = useMemo(() => new Map(uploadersProfiles.map((p: any) => [p.id, p.full_name])), [uploadersProfiles])
 
     return (
         <AdminLayout>
@@ -307,6 +324,11 @@ export default function AdminOrderDetailPage() {
                                                     <p className="font-semibold text-sm truncate">{file.file_name}</p>
                                                     <p className="text-xs text-muted-foreground">
                                                         v{file.version} · {(file.size_bytes / 1024).toFixed(0)} KB · {format(new Date(file.uploaded_at), "dd/MM/yyyy HH:mm")}
+                                                        {file.uploaded_by && uploadersMap.get(file.uploaded_by) && (
+                                                            <span className="ml-1.5 text-indigo-600 font-medium">
+                                                                · Cargado por: {uploadersMap.get(file.uploaded_by)}
+                                                            </span>
+                                                        )}
                                                     </p>
                                                 </div>
                                                 <Button
