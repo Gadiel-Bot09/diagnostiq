@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
-import { supabaseAdmin } from "@/lib/supabase/admin"
+import { supabaseAdmin, findAuthUserByEmail } from "@/lib/supabase/admin"
 import { createServerClient } from "@supabase/ssr"
-import { sendWelcomeEmail } from "@/lib/email"
+import { sendWelcomeEmail, sendStaffLinkedAsPatientEmail } from "@/lib/email"
 
 export async function POST(req: NextRequest) {
     try {
@@ -39,15 +39,29 @@ export async function POST(req: NextRequest) {
 
         // 1. Check if auth user already exists by email
         let authUserId = null
-        const { data: existingUsers, error: listError } = await supabaseAdmin.auth.admin.listUsers()
-        const existingUser = existingUsers?.users?.find(u => u.email === email)
+        let isExistingStaff = false
+        const existingUser = await findAuthUserByEmail(email)
 
         if (existingUser) {
             authUserId = existingUser.id
-            // Update password for existing users to match the new password flow
-            await supabaseAdmin.auth.admin.updateUserById(authUserId, {
-                password: patient.document_number
-            })
+
+            // Check if existing user is staff, doctor or admin
+            const { data: existingProfile } = await supabaseAdmin
+                .from("profiles")
+                .select("role")
+                .eq("id", authUserId)
+                .maybeSingle()
+
+            if (existingProfile && existingProfile.role !== "PATIENT") {
+                // The user is an existing staff member / doctor / admin:
+                // PRESERVE their staff password and their staff role!
+                isExistingStaff = true
+            } else {
+                // Regular patient: set password to document_number
+                await supabaseAdmin.auth.admin.updateUserById(authUserId, {
+                    password: patient.document_number
+                })
+            }
         } else {
             // Create new auth user
             const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
@@ -74,12 +88,13 @@ export async function POST(req: NextRequest) {
         }
 
         // 2. Link auth user to patient via patient_accounts
-        // Ensure table patient_accounts exists in your DB: id, user_id, patient_id, lab_id
         const { error: linkError } = await supabaseAdmin.from("patient_accounts").upsert({
             user_id: authUserId,
             patient_id: patientId,
             lab_id: patient.lab_id
         }, { onConflict: "user_id, lab_id" }).select()
+
+        if (linkError) throw linkError
 
         // 3. Update patient record with the email if missing
         if (!patient.email) {
@@ -88,12 +103,23 @@ export async function POST(req: NextRequest) {
 
         // 4. Send Welcome Email via Resend
         const labName = (patient.labs as any)?.name || "DiagnostiQ"
-        await sendWelcomeEmail(email, patient.full_name, labName)
+        if (isExistingStaff) {
+            await sendStaffLinkedAsPatientEmail(email, patient.full_name, labName)
+        } else {
+            await sendWelcomeEmail(email, patient.full_name, labName)
+        }
 
-        return NextResponse.json({ success: true, message: "Cuenta de portal creada exitosamente." })
+        return NextResponse.json({
+            success: true,
+            isExistingStaff,
+            message: isExistingStaff
+                ? "La cuenta de personal fue vinculada como paciente sin modificar sus credenciales de acceso al sistema."
+                : "Cuenta de portal creada exitosamente."
+        })
 
     } catch (error: any) {
         console.error("Create account error:", error)
         return NextResponse.json({ error: error.message || "Error al crear la cuenta" }, { status: 500 })
     }
 }
+

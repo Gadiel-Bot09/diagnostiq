@@ -126,7 +126,10 @@ export function UsersList() {
             const data = await res.json()
             if (!res.ok) throw new Error(data.error)
             
-            toast({ title: "Médico creado", description: "El usuario médico fue creado exitosamente." })
+            toast({ 
+                title: data.wasPatient ? "Cuenta vinculada como médico" : "Médico creado", 
+                description: data.message || "El usuario médico fue creado exitosamente." 
+            })
             setIsDoctorOpen(false)
             refetch()
         } catch (err: any) {
@@ -154,7 +157,10 @@ export function UsersList() {
             const data = await res.json()
             if (!res.ok) throw new Error(data.error)
             
-            toast({ title: "Personal invitado", description: "El usuario ha sido registrado y se le asignó su rol." })
+            toast({ 
+                title: data.wasPatient ? "Cuenta vinculada como personal" : "Personal invitado", 
+                description: data.message || "El usuario ha sido registrado y se le asignó su rol." 
+            })
             setIsStaffOpen(false)
             refetch()
         } catch (err: any) {
@@ -250,6 +256,10 @@ export function UsersList() {
                                     Crea un acceso para que un médico pueda consultar los resultados de los pacientes en el portal médico.
                                 </DialogDescription>
                             </DialogHeader>
+                            <div className="bg-teal-50/70 border border-teal-200/60 rounded-lg p-2.5 text-xs text-teal-800 flex items-start gap-2 mt-2">
+                                <span className="text-sm">💡</span>
+                                <span>Si la persona ya tiene cuenta en DiagnostiQ como paciente, el sistema la habilitará como médico manteniendo su historial médico seguro.</span>
+                            </div>
                             <form onSubmit={handleCreateDoctor} className="space-y-4 py-2">
                                 <div className="space-y-2">
                                     <Label>Nombre completo</Label>
@@ -293,6 +303,10 @@ export function UsersList() {
                                     Registra a un nuevo miembro del staff y asígnale un rol personalizado.
                                 </DialogDescription>
                             </DialogHeader>
+                            <div className="bg-blue-50/70 border border-blue-200/60 rounded-lg p-2.5 text-xs text-blue-800 flex items-start gap-2 mt-2">
+                                <span className="text-sm">💡</span>
+                                <span>Si la persona ya tiene cuenta en DiagnostiQ como paciente, el sistema la vinculará automáticamente como personal manteniendo su historial médico seguro.</span>
+                            </div>
                             <form onSubmit={handleInviteStaff} className="space-y-4 py-2">
                                 <div className="space-y-2">
                                     <Label>Nombre completo</Label>

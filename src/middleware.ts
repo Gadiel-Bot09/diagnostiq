@@ -79,6 +79,10 @@ export async function middleware(req: NextRequest) {
             url.pathname = '/doctor'
             return NextResponse.redirect(url)
         }
+        if (role === 'PATIENT') {
+            url.pathname = '/portal'
+            return NextResponse.redirect(url)
+        }
     }
 
     return res

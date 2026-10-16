@@ -101,3 +101,114 @@ export async function sendDirectResultsEmail(
         await resend.emails.send({ from: FROM_EMAIL, to: toEmail, subject: `🧪 Tus resultados de "${examName}" están listos — ${labName}`, html });
     } catch (e) { console.error("Error email resultados directos:", e); }
 }
+
+export async function sendStaffInvitationEmail({
+    toEmail,
+    fullName,
+    labName,
+    roleTitle,
+    temporaryPassword,
+    wasPatient,
+}: {
+    toEmail: string
+    fullName: string
+    labName: string
+    roleTitle: string
+    temporaryPassword?: string
+    wasPatient?: boolean
+}) {
+    if (!resend) { console.warn("RESEND_API_KEY no configurada."); return; }
+
+    const patientNotice = wasPatient ? `
+        <div style="background:#eef2ff;border-left:4px solid #6366f1;padding:16px 20px;border-radius:8px;margin:20px 0;">
+          <p style="margin:0 0 6px 0;font-size:14px;font-weight:700;color:#3730a3;">ℹ️ Cuenta Vinculada</p>
+          <p style="margin:0;font-size:13px;color:#334155;line-height:1.5;">
+            Detectamos que ya contabas con una cuenta de paciente en DiagnostiQ. Tu cuenta ha sido habilitada ahora como miembro del personal. Tu historial médico anterior como paciente se conserva intacto y seguro.
+          </p>
+        </div>` : '';
+
+    const credBlock = temporaryPassword ? `
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:18px 22px;margin:22px 0;">
+          <p style="margin:0 0 10px 0;font-size:14px;font-weight:700;color:#0f172a;">🔐 Credenciales de Acceso</p>
+          <p style="margin:4px 0;font-size:14px;color:#334155;">👤 <strong>Correo / Usuario:</strong> ${toEmail}</p>
+          <p style="margin:4px 0;font-size:14px;color:#334155;">🔑 <strong>Contraseña inicial:</strong> ${temporaryPassword}</p>
+          <p style="margin:10px 0 0 0;font-size:12px;color:#64748b;">Te recomendamos cambiar tu contraseña una vez ingreses al sistema.</p>
+        </div>` : `
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:18px 22px;margin:22px 0;">
+          <p style="margin:0 0 6px 0;font-size:14px;font-weight:700;color:#0f172a;">👤 Usuario de Acceso: ${toEmail}</p>
+          <p style="margin:0;font-size:13px;color:#64748b;">Ingresa con tus credenciales asignadas.</p>
+        </div>`;
+
+    const html = `
+    <div style="font-family:'Segoe UI',sans-serif;background:#f8fafc;padding:40px 20px;">
+      <div style="background:#fff;border-radius:16px;padding:40px;max-width:540px;margin:0 auto;border-top:6px solid #4f46e5;box-shadow:0 4px 12px rgba(0,0,0,0.05);">
+        <div style="text-align:center;margin-bottom:28px;">
+          <div style="background:linear-gradient(135deg,#4f46e5,#6366f1);width:64px;height:64px;border-radius:16px;display:inline-flex;align-items:center;justify-content:center;font-size:30px;margin-bottom:14px;">🏥</div>
+          <h1 style="color:#0f172a;margin:0;font-size:24px;font-weight:800;">Invitación al Equipo</h1>
+          <p style="color:#64748b;font-size:14px;margin:6px 0 0 0;">DiagnostiQ — Sistema de Gestión de Laboratorio</p>
+        </div>
+        <h2 style="color:#0f172a;font-size:18px;margin-bottom:12px;">Hola, ${fullName}</h2>
+        <p style="color:#334155;font-size:15px;line-height:1.6;margin:0 0 14px 0;">
+          Has sido registrado como miembro del equipo en el laboratorio <strong>${labName}</strong> con el rol de:
+        </p>
+        <div style="background:#f1f5f9;border-radius:8px;padding:12px 18px;text-align:center;font-weight:700;color:#4f46e5;font-size:16px;margin-bottom:16px;">
+          🛡️ ${roleTitle}
+        </div>
+        ${patientNotice}
+        ${credBlock}
+        <div style="text-align:center;margin:30px 0;">
+          <a href="https://diagnostiq.sinuhub.com/app/login" style="background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;padding:15px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:16px;display:inline-block;">Ingresar al Panel de Control</a>
+        </div>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:30px 0;"/>
+        <p style="color:#94a3b8;font-size:11px;text-align:center;line-height:1.6;">DiagnostiQ · Plataforma Segura para Laboratorios Clínicos.<br/>Si no reconoces esta invitación, puedes ignorar este mensaje.</p>
+      </div>
+    </div>`;
+
+    try {
+        await resend.emails.send({
+            from: FROM_EMAIL,
+            to: toEmail,
+            subject: `🎉 Invitación al equipo de ${labName} en DiagnostiQ (${roleTitle})`,
+            html
+        });
+    } catch (e) {
+        console.error("Error al enviar email de invitación a personal:", e);
+    }
+}
+
+export async function sendStaffLinkedAsPatientEmail(toEmail: string, patientName: string, labName: string) {
+    if (!resend) { console.warn("RESEND_API_KEY no configurada."); return; }
+    const html = `
+    <div style="font-family:'Segoe UI',sans-serif;background:#f8fafc;padding:40px 20px;">
+      <div style="background:#fff;border-radius:16px;padding:40px;max-width:520px;margin:0 auto;border-top:6px solid #10b981;">
+        <div style="text-align:center;margin-bottom:28px;">
+          <h1 style="color:#4f46e5;margin:0;font-size:26px;font-weight:800;">DiagnostiQ</h1>
+          <p style="color:#64748b;font-size:14px;margin-top:5px;">Portal de Pacientes y Resultados</p>
+        </div>
+        <h2 style="color:#0f172a;font-size:18px;">Hola, ${patientName}</h2>
+        <p style="color:#334155;font-size:15px;line-height:1.6;">
+          Detectamos que formas parte del equipo de <strong>${labName}</strong>. Tus exámenes médicos como paciente han sido vinculados a tu cuenta existente de DiagnostiQ.
+        </p>
+        <p style="color:#334155;font-size:15px;line-height:1.6;">
+          Puedes consultar y descargar tus resultados médicos en el portal de pacientes en cualquier momento usando tu contraseña habitual.
+        </p>
+        <div style="text-align:center;margin:32px 0;">
+          <a href="https://diagnostiq.sinuhub.com/portal/login" style="background:#10b981;color:#fff;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px;display:inline-block;">Ver mis Resultados en el Portal</a>
+        </div>
+        <hr style="border:none;border-top:1px solid #e2e8f0;margin:30px 0;"/>
+        <p style="color:#94a3b8;font-size:11px;text-align:center;">DiagnostiQ · Cifrado y protección de datos médicos.</p>
+      </div>
+    </div>`;
+
+    try {
+        await resend.emails.send({
+            from: FROM_EMAIL,
+            to: toEmail,
+            subject: `📋 Tus exámenes médicos de ${labName} están vinculados a tu cuenta DiagnostiQ`,
+            html
+        });
+    } catch (e) {
+        console.error("Error email vinculación paciente-staff:", e);
+    }
+}
+
