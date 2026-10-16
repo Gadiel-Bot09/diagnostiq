@@ -81,6 +81,7 @@ export default function AdminOrderDetailPage() {
                     order_number,
                     status,
                     ordered_at,
+                    performed_at,
                     patients (
                         id,
                         full_name,
@@ -216,6 +217,23 @@ export default function AdminOrderDetailPage() {
                         {currentStatus.icon}
                         {currentStatus.label}
                     </div>
+                </div>
+
+                {/* Trazabilidad de fechas */}
+                <div className="grid sm:grid-cols-3 gap-3">
+                    {[
+                        { label: "Orden generada", value: format(new Date(order.ordered_at), "dd/MM/yyyy HH:mm") },
+                        { label: "Exámenes realizados", value: order.performed_at ? format(new Date(order.performed_at + "T00:00:00"), "dd/MM/yyyy") : "Pendiente" },
+                        { label: "Resultados cargados", value: resultFiles.length ? format(new Date(resultFiles.map((f: any) => f.uploaded_at).sort().slice(-1)[0]), "dd/MM/yyyy HH:mm") : "Pendiente" },
+                    ].map((d, i) => (
+                        <div key={d.label} className="rounded-xl border border-indigo-100 bg-white p-3 flex items-center gap-3">
+                            <div className={`h-8 w-8 rounded-full flex items-center justify-center text-white text-xs font-bold ${["bg-indigo-500", "bg-blue-500", "bg-emerald-500"][i]}`}>{i + 1}</div>
+                            <div>
+                                <p className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">{d.label}</p>
+                                <p className="text-sm font-semibold">{d.value}</p>
+                            </div>
+                        </div>
+                    ))}
                 </div>
 
                 <div className="grid lg:grid-cols-3 gap-6">

@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import { useState, useCallback } from "react"
 import { useDropzone } from "react-dropzone"
@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button"
 import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/components/ui/use-toast"
 import { Progress } from "@/components/ui/progress"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 
 interface ResultUploaderProps {
     orderId: string
@@ -22,6 +24,8 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
     const [isUploading, setIsUploading] = useState(false)
     const [progress, setProgress] = useState(0)
     const [isSuccess, setIsSuccess] = useState(false)
+    const todayStr = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10) // hora Colombia
+    const [performedAt, setPerformedAt] = useState("")
     const { toast } = useToast()
     const supabase = createClient()
     const router = useRouter()
@@ -55,6 +59,11 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
     const handleUpload = async () => {
         if (files.length === 0) return
 
+        if (!performedAt) {
+            toast({ variant: "destructive", title: "Fecha requerida", description: "Indica la fecha de realización de los exámenes." })
+            return
+        }
+
         setIsUploading(true)
         setProgress(5)
 
@@ -72,6 +81,7 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
                 formData.append("patientId", patientId)
                 formData.append("labId", labId)
                 formData.append("version", version.toString())
+                formData.append("performedAt", performedAt)
 
                 const uploadResponse = await fetch("/api/results/upload", {
                     method: "POST",
@@ -110,6 +120,24 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
 
     return (
         <div className="space-y-4">
+            <div className="space-y-2 rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
+                <Label htmlFor="performedAt" className="text-sm font-semibold">
+                    Fecha de realización de los exámenes <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                    id="performedAt"
+                    type="date"
+                    required
+                    max={todayStr}
+                    value={performedAt}
+                    onChange={(e) => setPerformedAt(e.target.value)}
+                    disabled={isUploading}
+                    className="max-w-xs bg-white"
+                />
+                <p className="text-xs text-muted-foreground">
+                    Día en que se tomaron/realizaron los exámenes. La fecha de cargue y la de la orden se registran automáticamente.
+                </p>
+            </div>
             <div
                 {...getRootProps()}
                 className={`
@@ -170,7 +198,7 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
             )}
 
             {isSuccess && (
-                <Button variant="outline" className="w-full" onClick={() => { setFiles([]); setIsSuccess(false); }}>
+                <Button variant="outline" className="w-full" onClick={() => { setFiles([]); setIsSuccess(false); setPerformedAt(""); }}>
                     Cargar más archivos
                 </Button>
             )}

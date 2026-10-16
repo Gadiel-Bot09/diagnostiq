@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server"
+﻿import { NextRequest, NextResponse } from "next/server"
 import { uploadToMinio } from "@/lib/minio"
 import { createServerClient } from "@supabase/ssr"
 import { sendNewResultsEmail } from "@/lib/email"
@@ -11,9 +11,19 @@ export async function POST(req: NextRequest) {
         const patientId = formData.get("patientId") as string
         const labId = formData.get("labId") as string
         const version = formData.get("version") as string
+        const performedAt = formData.get("performedAt") as string
 
         if (!file || !orderId || !patientId || !labId) {
             return NextResponse.json({ error: "Faltan datos requeridos" }, { status: 400 })
+        }
+
+        // Fecha de realización de los exámenes (YYYY-MM-DD), obligatoria y no futura
+        if (!performedAt || !/^\d{4}-\d{2}-\d{2}$/.test(performedAt) || isNaN(Date.parse(performedAt))) {
+            return NextResponse.json({ error: "La fecha de realización de los exámenes es obligatoria" }, { status: 400 })
+        }
+        const today = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10) // hora Colombia
+        if (performedAt > today) {
+            return NextResponse.json({ error: "La fecha de realización no puede ser futura" }, { status: 400 })
         }
 
         const supabase = createServerClient(
@@ -64,7 +74,8 @@ export async function POST(req: NextRequest) {
                 uploaded_by: user.id,
                 version: parseInt(version || "1", 10),
                 storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
-                sha256: hashHex
+                sha256: hashHex,
+                performed_at: performedAt
             })
             .select()
             .single()
@@ -74,7 +85,7 @@ export async function POST(req: NextRequest) {
         // Update order status to COMPLETED
         const { data: updatedOrder, error: orderError } = await supabase
             .from("orders")
-            .update({ status: "COMPLETED" })
+            .update({ status: "COMPLETED", performed_at: performedAt })
             .eq("id", orderId)
             .select("order_number, patients(email, full_name), labs(name)")
             .single()
@@ -97,7 +108,7 @@ export async function POST(req: NextRequest) {
             action: "UPLOAD",
             entity_type: "RESULT_FILE",
             entity_id: resultFile.id,
-            details: { file_name: file.name, order_id: orderId }
+            details: { file_name: file.name, order_id: orderId, performed_at: performedAt }
         })
 
         return NextResponse.json({ success: true, file: resultFile })
