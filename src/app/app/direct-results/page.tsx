@@ -10,7 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
     UploadCloud, Search, UserPlus, CheckCircle2, FileText,
     X, AlertCircle, ArrowRight, User, Hash, Mail, Beaker,
-    Plus, Pencil, Trash2, Settings, Sparkles
+    Plus, Pencil, Trash2, Settings, Sparkles, Eye
 } from "lucide-react"
 
 import { AdminLayout } from "@/components/layout/AdminLayout"
@@ -24,6 +24,8 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/use-toast"
 import { createClient } from "@/lib/supabase/client"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
+import Link from "next/link"
 
 const patientSchema = z.object({
     document_type: z.string().min(1, "Tipo de documento requerido"),
@@ -169,6 +171,24 @@ export default function DirectResultsPage() {
     const [patientNotFound, setPatientNotFound] = useState(false)
     const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
     const [uploadResult, setUploadResult] = useState<UploadResult | null>(null)
+    const [previewModal, setPreviewModal] = useState<{ url: string; name: string; subtitle?: string; isBlob?: boolean } | null>(null)
+
+    const openDirectPreview = (file: File) => {
+        const objectUrl = URL.createObjectURL(file)
+        setPreviewModal({
+            url: objectUrl,
+            name: file.name,
+            subtitle: `${(file.size / 1024).toFixed(0)} KB · Archivo listo para subir`,
+            isBlob: true,
+        })
+    }
+
+    const closeDirectPreview = () => {
+        if (previewModal?.isBlob && previewModal.url) {
+            URL.revokeObjectURL(previewModal.url)
+        }
+        setPreviewModal(null)
+    }
 
     const form = useForm<PatientForm>({
         resolver: zodResolver(patientSchema),
@@ -494,14 +514,26 @@ export default function DirectResultsPage() {
                                     <div className="space-y-2">
                                         {uploadedFiles.map((f, i) => (
                                             <div key={i} className="flex items-center justify-between bg-muted/40 rounded-lg px-3 py-2">
-                                                <div className="flex items-center gap-2">
+                                                <div className="flex items-center gap-2 min-w-0 pr-2">
                                                     <FileText className="h-4 w-4 text-rose-500 flex-shrink-0" />
                                                     <span className="text-sm font-medium truncate max-w-xs">{f.name}</span>
-                                                    <Badge variant="outline" className="text-xs">{(f.size / 1024).toFixed(0)} KB</Badge>
+                                                    <Badge variant="outline" className="text-xs shrink-0">{(f.size / 1024).toFixed(0)} KB</Badge>
                                                 </div>
-                                                <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => removeFile(i)}>
-                                                    <X className="h-3 w-3" />
-                                                </Button>
+                                                <div className="flex items-center gap-1.5 shrink-0">
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="h-7 px-2.5 text-xs gap-1 text-blue-700 border-blue-200 bg-blue-50/50 hover:bg-blue-100"
+                                                        onClick={() => openDirectPreview(f)}
+                                                    >
+                                                        <Eye className="h-3.5 w-3.5" />
+                                                        Previsualizar
+                                                    </Button>
+                                                    <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:bg-destructive/10" onClick={() => removeFile(i)}>
+                                                        <X className="h-3.5 w-3.5" />
+                                                    </Button>
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
@@ -567,7 +599,24 @@ export default function DirectResultsPage() {
                                 </div>
                             )}
 
-                            <Button onClick={reset} className="mt-4">Cargar Otro Resultado</Button>
+                            <div className="flex flex-col sm:flex-row gap-2 mt-4">
+                                {uploadedFiles.length > 0 && (
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="gap-2 text-blue-700 border-blue-200 bg-blue-50/40 hover:bg-blue-100"
+                                        onClick={() => openDirectPreview(uploadedFiles[0])}
+                                    >
+                                        <Eye className="h-4 w-4" /> Previsualizar
+                                    </Button>
+                                )}
+                                <Link href={`/app/orders/${uploadResult.order.id}`} className="flex-1">
+                                    <Button variant="outline" className="w-full gap-2">
+                                        Ver Orden y Detalles
+                                    </Button>
+                                </Link>
+                                <Button onClick={reset} className="flex-1">Cargar Otro</Button>
+                            </div>
                         </CardContent>
                     </Card>
                 )}
@@ -728,6 +777,17 @@ export default function DirectResultsPage() {
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
+
+            {/* Modal de Previsualización de PDF */}
+            <PdfPreviewModal
+                open={!!previewModal}
+                onOpenChange={(open) => {
+                    if (!open) closeDirectPreview()
+                }}
+                title={previewModal?.name || "Previsualización de Documento"}
+                url={previewModal?.url || null}
+                subtitle={previewModal?.subtitle}
+            />
         </AdminLayout>
     )
 }

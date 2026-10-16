@@ -20,6 +20,7 @@ import {
     Download,
     RefreshCw,
     FlaskConical,
+    Eye,
 } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
@@ -37,6 +38,7 @@ import {
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { useToast } from "@/components/ui/use-toast"
+import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 import Link from "next/link"
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
@@ -70,6 +72,8 @@ export default function AdminOrderDetailPage() {
     const queryClient = useQueryClient()
     const { hasPermission } = usePermissions()
     const [isDownloading, setIsDownloading] = useState(false)
+    const [previewFile, setPreviewFile] = useState<{ url: string; name: string; subtitle?: string } | null>(null)
+    const [previewingId, setPreviewingId] = useState<string | null>(null)
 
     const { data: order, isLoading } = useQuery({
         queryKey: ["admin-order-detail", id],
@@ -155,6 +159,46 @@ export default function AdminOrderDetailPage() {
             toast({ variant: "destructive", title: "Error de descarga", description: error.message })
         } finally {
             setIsDownloading(false)
+        }
+    }
+
+    const handlePreview = async (file: any) => {
+        setPreviewingId(file.id)
+        try {
+            const res = await fetch(`/api/results/download?fileId=${file.id}&preview=true`)
+            const data = await res.json()
+            let previewUrl = data.url
+
+            if (!previewUrl) {
+                const { data: { session } } = await supabase.auth.getSession()
+                const fallbackRes = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/create-signed-url`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${session?.access_token}`,
+                    },
+                    body: JSON.stringify({ result_file_id: file.id }),
+                })
+                const fallbackData = await fallbackRes.json()
+                previewUrl = fallbackData.signedUrl
+            }
+
+            if (!previewUrl) {
+                throw new Error(data.error || "No se pudo generar la vista previa del documento")
+            }
+
+            const uploaderName = file.uploaded_by ? uploadersMap.get(file.uploaded_by) : null
+            const subtitle = `v${file.version} · ${file.size_bytes ? (file.size_bytes / 1024).toFixed(0) + " KB" : ""}${uploaderName ? ` · Cargado por: ${uploaderName}` : ""}`
+
+            setPreviewFile({
+                url: previewUrl,
+                name: file.file_name,
+                subtitle,
+            })
+        } catch (err: any) {
+            toast({ variant: "destructive", title: "Error de previsualización", description: err.message })
+        } finally {
+            setPreviewingId(null)
         }
     }
 
@@ -348,16 +392,28 @@ export default function AdminOrderDetailPage() {
                                                         )}
                                                     </p>
                                                 </div>
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    className="gap-2 shrink-0"
-                                                    onClick={() => handleDownload(file.id)}
-                                                    disabled={isDownloading}
-                                                >
-                                                    {isDownloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                                                    Descargar
-                                                </Button>
+                                                <div className="flex items-center gap-2 shrink-0">
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="gap-1.5 h-8 text-xs text-blue-700 border-blue-200 bg-blue-50/40 hover:bg-blue-100/60"
+                                                        onClick={() => handlePreview(file)}
+                                                        disabled={previewingId === file.id}
+                                                    >
+                                                        {previewingId === file.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
+                                                        Previsualizar
+                                                    </Button>
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="gap-1.5 h-8 text-xs"
+                                                        onClick={() => handleDownload(file.id)}
+                                                        disabled={isDownloading}
+                                                    >
+                                                        {isDownloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                                                        Descargar
+                                                    </Button>
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
@@ -464,6 +520,14 @@ export default function AdminOrderDetailPage() {
                     </div>
                 </div>
             </div>
+
+            <PdfPreviewModal
+                open={!!previewFile}
+                onOpenChange={(open) => !open && setPreviewFile(null)}
+                title={previewFile?.name || ""}
+                url={previewFile?.url || null}
+                subtitle={previewFile?.subtitle}
+            />
         </AdminLayout>
     )
 }

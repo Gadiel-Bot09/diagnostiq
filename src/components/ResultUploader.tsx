@@ -1,8 +1,8 @@
-﻿"use client"
+"use client"
 
 import { useState, useCallback } from "react"
 import { useDropzone } from "react-dropzone"
-import { FileUp, FileText, X, Loader2, CheckCircle, AlertCircle } from "lucide-react"
+import { FileUp, FileText, X, Loader2, CheckCircle, Eye, ArrowRight } from "lucide-react"
 import { useRouter } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
@@ -11,6 +11,7 @@ import { useToast } from "@/components/ui/use-toast"
 import { Progress } from "@/components/ui/progress"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 
 interface ResultUploaderProps {
     orderId: string
@@ -26,9 +27,27 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
     const [isSuccess, setIsSuccess] = useState(false)
     const todayStr = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10) // hora Colombia
     const [performedAt, setPerformedAt] = useState("")
+    const [previewModal, setPreviewModal] = useState<{ url: string; name: string; subtitle?: string; isBlob?: boolean } | null>(null)
     const { toast } = useToast()
     const supabase = createClient()
     const router = useRouter()
+
+    const openLocalPreview = (file: File) => {
+        const objectUrl = URL.createObjectURL(file)
+        setPreviewModal({
+            url: objectUrl,
+            name: file.name,
+            subtitle: `${(file.size / 1024).toFixed(0)} KB · Archivo listo para subir`,
+            isBlob: true,
+        })
+    }
+
+    const closePreview = () => {
+        if (previewModal?.isBlob && previewModal.url) {
+            URL.revokeObjectURL(previewModal.url)
+        }
+        setPreviewModal(null)
+    }
 
     const onDrop = useCallback((acceptedFiles: File[]) => {
         if (acceptedFiles.length > 0) {
@@ -46,14 +65,6 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
 
     const removeFile = (index: number) => {
         setFiles(prev => prev.filter((_, i) => i !== index))
-    }
-
-    const calculateSHA256 = async (file: File) => {
-        const buffer = await file.arrayBuffer()
-        const hash = await crypto.subtle.digest('SHA-256', buffer)
-        return Array.from(new Uint8Array(hash))
-            .map(b => b.toString(16).padStart(2, '0'))
-            .join('')
     }
 
     const handleUpload = async () => {
@@ -113,8 +124,6 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
                 description: error.message || "Ocurrió un error inesperado.",
             })
             setIsUploading(false)
-        } finally {
-            // We keep isUploading = false after success is handled
         }
     }
 
@@ -138,14 +147,15 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
                     Día en que se tomaron/realizaron los exámenes. La fecha de cargue y la de la orden se registran automáticamente.
                 </p>
             </div>
+
             <div
                 {...getRootProps()}
                 className={`
-          border-2 border-dashed rounded-xl p-10 text-center transition-all cursor-pointer
-          ${isDragActive ? 'border-primary bg-primary/5' : 'border-muted-foreground/20 hover:border-primary/50'}
-          ${isSuccess ? 'border-green-500 bg-green-50/50' : ''}
-          ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}
-        `}
+                    border-2 border-dashed rounded-xl p-10 text-center transition-all cursor-pointer
+                    ${isDragActive ? 'border-primary bg-primary/5' : 'border-muted-foreground/20 hover:border-primary/50'}
+                    ${isSuccess ? 'border-green-500 bg-green-50/50' : ''}
+                    ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}
+                `}
             >
                 <input {...getInputProps()} />
                 <div className="flex flex-col items-center gap-3">
@@ -168,17 +178,37 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
                 </div>
             </div>
 
+            {/* Selected files list with preview button */}
             {files.length > 0 && !isUploading && !isSuccess && (
                 <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
                     {files.map((f, idx) => (
-                        <div key={idx} className="flex items-center justify-between p-2 border rounded text-sm bg-muted/30">
-                            <div className="flex items-center gap-2 truncate">
+                        <div key={idx} className="flex items-center justify-between p-2.5 border rounded-lg text-sm bg-muted/30">
+                            <div className="flex items-center gap-2 truncate pr-2">
                                 <FileText className="h-4 w-4 text-rose-500 shrink-0" />
-                                <span className="truncate">{f.name}</span>
+                                <span className="truncate font-medium">{f.name}</span>
+                                <span className="text-xs text-muted-foreground shrink-0">({(f.size / 1024).toFixed(0)} KB)</span>
                             </div>
-                            <Button variant="ghost" size="icon" onClick={() => removeFile(idx)} className="h-6 w-6 text-destructive shrink-0">
-                                <X className="h-4 w-4" />
-                            </Button>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 px-2.5 text-xs gap-1 text-blue-700 border-blue-200 bg-blue-50/50 hover:bg-blue-100"
+                                    onClick={() => openLocalPreview(f)}
+                                >
+                                    <Eye className="h-3.5 w-3.5" />
+                                    Previsualizar
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => removeFile(idx)}
+                                    className="h-7 w-7 text-destructive hover:bg-destructive/10"
+                                >
+                                    <X className="h-4 w-4" />
+                                </Button>
+                            </div>
                         </div>
                     ))}
                 </div>
@@ -198,10 +228,55 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
             )}
 
             {isSuccess && (
-                <Button variant="outline" className="w-full" onClick={() => { setFiles([]); setIsSuccess(false); setPerformedAt(""); }}>
-                    Cargar más archivos
-                </Button>
+                <div className="space-y-3 pt-2">
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 text-emerald-800 text-center space-y-1.5">
+                        <CheckCircle className="h-7 w-7 text-emerald-600 mx-auto" />
+                        <p className="font-semibold text-base">¡Resultados cargados exitosamente!</p>
+                        <p className="text-xs text-emerald-700">
+                            El PDF ha sido registrado en el sistema. Puedes previsualizarlo o ir a la vista general de la orden.
+                        </p>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-2">
+                        {files.length > 0 && (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="flex-1 gap-2 h-11 text-blue-700 border-blue-200 bg-blue-50/40 hover:bg-blue-100/60 font-medium"
+                                onClick={() => openLocalPreview(files[0])}
+                            >
+                                <Eye className="h-4 w-4" />
+                                Previsualizar documento
+                            </Button>
+                        )}
+                        <Button
+                            type="button"
+                            className="flex-1 gap-2 h-11 bg-primary text-white font-medium"
+                            onClick={() => router.push(`/app/orders/${orderId}`)}
+                        >
+                            Ver detalle de la orden <ArrowRight className="h-4 w-4" />
+                        </Button>
+                    </div>
+
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="w-full text-muted-foreground text-xs"
+                        onClick={() => { setFiles([]); setIsSuccess(false); setPerformedAt(""); }}
+                    >
+                        Cargar más archivos
+                    </Button>
+                </div>
             )}
+
+            <PdfPreviewModal
+                open={!!previewModal}
+                onOpenChange={(open) => !open && closePreview()}
+                title={previewModal?.name || ""}
+                url={previewModal?.url || null}
+                subtitle={previewModal?.subtitle}
+            />
         </div>
     )
 }
