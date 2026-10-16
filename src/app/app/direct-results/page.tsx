@@ -25,6 +25,7 @@ import { useToast } from "@/components/ui/use-toast"
 import { createClient } from "@/lib/supabase/client"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
+import { DOCUMENT_TYPES } from "@/lib/constants/patient"
 import Link from "next/link"
 
 const patientSchema = z.object({
@@ -384,11 +385,11 @@ export default function DirectResultsPage() {
                                         >
                                             <SelectTrigger><SelectValue /></SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="CC">Cédula de Ciudadanía</SelectItem>
-                                                <SelectItem value="TI">Tarjeta de Identidad</SelectItem>
-                                                <SelectItem value="CE">Cédula de Extranjería</SelectItem>
-                                                <SelectItem value="PA">Pasaporte</SelectItem>
-                                                <SelectItem value="RC">Registro Civil</SelectItem>
+                                                {DOCUMENT_TYPES.map((dt) => (
+                                                    <SelectItem key={dt.value} value={dt.value}>
+                                                        {dt.label}
+                                                    </SelectItem>
+                                                ))}
                                             </SelectContent>
                                         </Select>
                                     </div>

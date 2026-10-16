@@ -26,6 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/components/ui/use-toast"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
+import { DOCUMENT_TYPES } from "@/lib/constants/patient"
 
 // ──────────────────────────────────────────────────────────
 // Types
@@ -345,10 +346,11 @@ export default function PatientsPage() {
                                 >
                                     <SelectTrigger><SelectValue /></SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="CC">Cédula de Ciudadanía</SelectItem>
-                                        <SelectItem value="TI">Tarjeta de Identidad</SelectItem>
-                                        <SelectItem value="CE">Cédula de Extranjería</SelectItem>
-                                        <SelectItem value="PA">Pasaporte</SelectItem>
+                                        {DOCUMENT_TYPES.map((dt) => (
+                                            <SelectItem key={dt.value} value={dt.value}>
+                                                {dt.label}
+                                            </SelectItem>
+                                        ))}
                                     </SelectContent>
                                 </Select>
                             </div>

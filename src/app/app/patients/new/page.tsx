@@ -29,10 +29,11 @@ import { AdminLayout } from "@/components/layout/AdminLayout"
 import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/components/ui/use-toast"
 import { usePermissions } from "@/contexts/PermissionsContext"
+import { DOCUMENT_TYPES } from "@/lib/constants/patient"
 
 const patientSchema = z.object({
     document_type: z.string().min(1, "Requerido"),
-    document_number: z.string().min(5, "Mínimo 5 caracteres"),
+    document_number: z.string().min(4, "Número de documento inválido"),
     full_name: z.string().min(3, "Nombre muy corto"),
     email: z.string().email("Email inválido").optional().or(z.literal("")),
     phone: z.string().optional(),
@@ -162,10 +163,11 @@ export default function NewPatientPage() {
                                                         </SelectTrigger>
                                                     </FormControl>
                                                     <SelectContent>
-                                                        <SelectItem value="CC">Cédula de Ciudadanía</SelectItem>
-                                                        <SelectItem value="TI">Tarjeta de Identidad</SelectItem>
-                                                        <SelectItem value="CE">Cédula de Extranjería</SelectItem>
-                                                        <SelectItem value="PA">Pasaporte</SelectItem>
+                                                        {DOCUMENT_TYPES.map((dt) => (
+                                                            <SelectItem key={dt.value} value={dt.value}>
+                                                                {dt.label}
+                                                            </SelectItem>
+                                                        ))}
                                                     </SelectContent>
                                                 </Select>
                                                 <FormMessage />
