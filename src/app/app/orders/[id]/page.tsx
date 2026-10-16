@@ -158,6 +158,29 @@ export default function AdminOrderDetailPage() {
         }
     }
 
+    const resultFiles = (order?.result_files as any[]) || []
+
+    const uploaderIds = useMemo(() => {
+        return Array.from(new Set(resultFiles.map((f: any) => f.uploaded_by).filter(Boolean)))
+    }, [resultFiles])
+
+    const { data: uploadersProfiles = [] } = useQuery({
+        queryKey: ["uploaders-profiles", uploaderIds],
+        queryFn: async () => {
+            if (uploaderIds.length === 0) return []
+            const { data } = await supabase.from("profiles").select("id, full_name, role").in("id", uploaderIds)
+            return data || []
+        },
+        enabled: uploaderIds.length > 0
+    })
+
+    const uploadersMap = useMemo(() => new Map(uploadersProfiles.map((p: any) => [p.id, p.full_name])), [uploadersProfiles])
+
+    const latestUploadDate = useMemo(() => {
+        const uploadDates = resultFiles.map((f: any) => f.uploaded_at).filter(Boolean).sort()
+        return uploadDates.length > 0 ? uploadDates[uploadDates.length - 1] : null
+    }, [resultFiles])
+
     if (isLoading) {
         return (
             <AdminLayout>
@@ -179,23 +202,6 @@ export default function AdminOrderDetailPage() {
     const currentStatus = STATUS_CONFIG[order.status] || STATUS_CONFIG["PENDING"]
     const patient = order.patients as any
     const orderTests = (order.order_tests as any[]) || []
-    const resultFiles = (order.result_files as any[]) || []
-
-    const uploaderIds = useMemo(() => {
-        return Array.from(new Set(resultFiles.map((f: any) => f.uploaded_by).filter(Boolean)))
-    }, [resultFiles])
-
-    const { data: uploadersProfiles = [] } = useQuery({
-        queryKey: ["uploaders-profiles", uploaderIds],
-        queryFn: async () => {
-            if (uploaderIds.length === 0) return []
-            const { data } = await supabase.from("profiles").select("id, full_name, role").in("id", uploaderIds)
-            return data || []
-        },
-        enabled: uploaderIds.length > 0
-    })
-
-    const uploadersMap = useMemo(() => new Map(uploadersProfiles.map((p: any) => [p.id, p.full_name])), [uploadersProfiles])
 
     return (
         <AdminLayout>
@@ -226,7 +232,7 @@ export default function AdminOrderDetailPage() {
                             </h1>
                             <p className="text-sm text-muted-foreground flex items-center gap-1 mt-0.5">
                                 <Calendar className="h-3.5 w-3.5" />
-                                {format(new Date(order.ordered_at), "PPP 'a las' p", { locale: es })}
+                                {order.ordered_at ? format(new Date(order.ordered_at), "PPP 'a las' p", { locale: es }) : "—"}
                             </p>
                         </div>
                     </div>
@@ -239,9 +245,20 @@ export default function AdminOrderDetailPage() {
                 {/* Trazabilidad de fechas */}
                 <div className="grid sm:grid-cols-3 gap-3">
                     {[
-                        { label: "Orden generada", value: format(new Date(order.ordered_at), "dd/MM/yyyy HH:mm") },
-                        { label: "Exámenes realizados", value: order.performed_at ? format(new Date(order.performed_at + "T00:00:00"), "dd/MM/yyyy") : "Pendiente" },
-                        { label: "Resultados cargados", value: resultFiles.length ? format(new Date(resultFiles.map((f: any) => f.uploaded_at).sort().slice(-1)[0]), "dd/MM/yyyy HH:mm") : "Pendiente" },
+                        {
+                            label: "Orden generada",
+                            value: order.ordered_at ? format(new Date(order.ordered_at), "dd/MM/yyyy HH:mm") : "—"
+                        },
+                        {
+                            label: "Exámenes realizados",
+                            value: order.performed_at
+                                ? format(new Date(order.performed_at.includes("T") ? order.performed_at : order.performed_at + "T00:00:00"), "dd/MM/yyyy")
+                                : "Pendiente"
+                        },
+                        {
+                            label: "Resultados cargados",
+                            value: latestUploadDate ? format(new Date(latestUploadDate), "dd/MM/yyyy HH:mm") : "Pendiente"
+                        },
                     ].map((d, i) => (
                         <div key={d.label} className="rounded-xl border border-indigo-100 bg-white p-3 flex items-center gap-3">
                             <div className={`h-8 w-8 rounded-full flex items-center justify-center text-white text-xs font-bold ${["bg-indigo-500", "bg-blue-500", "bg-emerald-500"][i]}`}>{i + 1}</div>
@@ -323,7 +340,7 @@ export default function AdminOrderDetailPage() {
                                                 <div className="flex-1 min-w-0">
                                                     <p className="font-semibold text-sm truncate">{file.file_name}</p>
                                                     <p className="text-xs text-muted-foreground">
-                                                        v{file.version} · {(file.size_bytes / 1024).toFixed(0)} KB · {format(new Date(file.uploaded_at), "dd/MM/yyyy HH:mm")}
+                                                        v{file.version} · {file.size_bytes ? `${(file.size_bytes / 1024).toFixed(0)} KB · ` : ""}{file.uploaded_at ? format(new Date(file.uploaded_at), "dd/MM/yyyy HH:mm") : "—"}
                                                         {file.uploaded_by && uploadersMap.get(file.uploaded_by) && (
                                                             <span className="ml-1.5 text-indigo-600 font-medium">
                                                                 · Cargado por: {uploadersMap.get(file.uploaded_by)}
@@ -391,7 +408,7 @@ export default function AdminOrderDetailPage() {
                                 {patient?.dob && (
                                     <div className="flex justify-between text-sm">
                                         <span className="text-muted-foreground">F. Nacimiento</span>
-                                        <span className="font-medium">{format(new Date(patient.dob), "dd/MM/yyyy")}</span>
+                                        <span className="font-medium">{format(new Date(patient.dob.includes("T") ? patient.dob : patient.dob + "T00:00:00"), "dd/MM/yyyy")}</span>
                                     </div>
                                 )}
                                 {patient?.sex && (
