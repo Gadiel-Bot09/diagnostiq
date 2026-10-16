@@ -57,7 +57,7 @@ export default function OrderUploadPage() {
     const latestVersion = order?.result_files?.reduce((max: number, f: any) => Math.max(max, f.version), 0) || 0
     const patient = order?.patients as any
 
-    if (!permsLoading && !hasPermission("results", "create") && !hasPermission("orders", "edit")) {
+    if (!permsLoading && !hasPermission("orders", "upload") && !hasPermission("orders", "edit") && !hasPermission("orders", "create")) {
         return (
             <AdminLayout>
                 <div className="max-w-md mx-auto mt-20 text-center space-y-4 p-8 border rounded-xl bg-card">

@@ -264,6 +264,10 @@ export default function DirectResultsPage() {
     })
 
     const onSubmit = (values: PatientForm) => {
+        if (!hasPermission("direct_results", "create")) {
+            toast({ variant: "destructive", title: "Sin permisos", description: "Tu rol no tiene permisos para cargar resultados directos." })
+            return
+        }
         if (uploadedFiles.length === 0) {
             toast({ variant: "destructive", title: "Sin archivos", description: "Agrega al menos un PDF de resultado." })
             return
@@ -277,12 +281,12 @@ export default function DirectResultsPage() {
         form.reset()
     }
 
-    if (!permsLoading && !hasPermission("results", "create")) {
+    if (!permsLoading && !hasPermission("direct_results", "view") && !hasPermission("direct_results", "create")) {
         return (
             <AdminLayout>
                 <div className="max-w-md mx-auto mt-20 text-center space-y-4 p-8 border rounded-xl bg-card">
                     <h2 className="text-xl font-bold text-destructive">Acceso Denegado</h2>
-                    <p className="text-sm text-muted-foreground">No tienes permisos para subir resultados directos.</p>
+                    <p className="text-sm text-muted-foreground">No tienes permisos para acceder ni subir resultados directos.</p>
                 </div>
             </AdminLayout>
         )

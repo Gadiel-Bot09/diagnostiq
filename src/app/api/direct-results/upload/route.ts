@@ -33,6 +33,31 @@ export async function POST(req: NextRequest) {
         }
         const labId = profile.lab_id
 
+        // Verify LAB_STAFF has permission for direct_results
+        if (profile.role === "LAB_STAFF") {
+            const { data: assignment } = await supabaseAdmin
+                .from("staff_role_assignments")
+                .select("custom_role_id")
+                .eq("profile_id", user.id)
+                .eq("lab_id", labId)
+                .maybeSingle()
+
+            if (!assignment?.custom_role_id) {
+                return NextResponse.json({ error: "No tienes un rol asignado con permisos para resultados directos" }, { status: 403 })
+            }
+
+            const { data: perms } = await supabaseAdmin
+                .from("role_permissions")
+                .select("id")
+                .eq("role_id", assignment.custom_role_id)
+                .in("module", ["direct_results", "results"])
+                .in("action", ["create", "upload"])
+
+            if (!perms || perms.length === 0) {
+                return NextResponse.json({ error: "Tu rol no tiene permiso para cargar resultados directos" }, { status: 403 })
+            }
+        }
+
         // 3. Parse form data
         const formData = await req.formData()
         const documentType = formData.get("document_type") as string

@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { AdminSidebar } from "./AdminSidebar"
 import { usePermissions } from "@/contexts/PermissionsContext"
@@ -14,7 +14,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     let requiredModule = ""
     if (pathname.startsWith("/app/patients")) requiredModule = "patients"
     else if (pathname.startsWith("/app/orders")) requiredModule = "orders"
-    else if (pathname.startsWith("/app/direct-results")) requiredModule = "results"
+    else if (pathname.startsWith("/app/direct-results")) requiredModule = "direct_results"
     else if (pathname.startsWith("/app/catalog")) requiredModule = "settings"
     else if (pathname.startsWith("/app/users")) requiredModule = "staff"
     else if (pathname.startsWith("/app/audit")) requiredModule = "audit"

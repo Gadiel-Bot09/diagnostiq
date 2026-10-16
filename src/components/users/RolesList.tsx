@@ -17,13 +17,13 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 
 import { usePermissions } from "@/contexts/PermissionsContext"
 
-type ModuleKey = "orders" | "patients" | "results" | "reports" | "staff" | "settings" | "audit" | "qr"
+type ModuleKey = "orders" | "patients" | "direct_results" | "reports" | "staff" | "settings" | "audit" | "qr"
 type ActionKey = "view" | "create" | "edit" | "delete" | "upload"
 
 const MODULES: { id: ModuleKey, label: string }[] = [
     { id: "orders", label: "Órdenes" },
     { id: "patients", label: "Pacientes" },
-    { id: "results", label: "Resultados" },
+    { id: "direct_results", label: "Resultados Directos" },
     { id: "reports", label: "Reportes" },
     { id: "staff", label: "Personal" },
     { id: "settings", label: "Configuración" },
@@ -124,8 +124,9 @@ export function RolesList() {
         const newPerms: Record<string, Record<string, boolean>> = {}
         if (role.role_permissions) {
             role.role_permissions.forEach((p: any) => {
-                if (!newPerms[p.module]) newPerms[p.module] = {}
-                newPerms[p.module][p.action] = true
+                const modKey = p.module === "results" ? "direct_results" : p.module
+                if (!newPerms[modKey]) newPerms[modKey] = {}
+                newPerms[modKey][p.action] = true
             })
         }
         setPermissions(newPerms)
