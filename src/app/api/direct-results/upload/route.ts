@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { createServerClient } from "@supabase/ssr"
 import { uploadToMinio } from "@/lib/minio"
@@ -41,6 +41,7 @@ export async function POST(req: NextRequest) {
         const email = formData.get("email") as string | null
         const examName = formData.get("exam_name") as string
         const files = formData.getAll("files") as File[]
+        const performedAt = formData.get("performed_at") as string
 
         if (!documentNumber || !fullName || !examName || files.length === 0) {
             return NextResponse.json({ error: "Faltan campos requeridos" }, { status: 400 })
