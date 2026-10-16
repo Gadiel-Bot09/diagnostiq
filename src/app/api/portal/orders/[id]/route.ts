@@ -45,6 +45,7 @@ export async function GET(
                 order_number,
                 status,
                 ordered_at,
+                performed_at,
                 labs (name, phone, address),
                 order_tests (
                     id,
@@ -52,7 +53,7 @@ export async function GET(
                     status,
                     result_summary_json
                 ),
-                result_files (id, file_name, version)
+                result_files (id, file_name, version, uploaded_at, performed_at)
             `)
             .eq("id", id)
             .single()

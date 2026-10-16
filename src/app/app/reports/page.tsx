@@ -75,6 +75,7 @@ export default function ReportsPage() {
                     order_number,
                     status,
                     ordered_at,
+                    performed_at,
                     is_direct,
                     direct_exam_name,
                     patient_id,
@@ -159,6 +160,39 @@ export default function ReportsPage() {
             return true
         })
     }, [orders, dateRange, statusFilter, searchQuery])
+
+    // Tiempos promedio (en días calendario) entre orden, realización y cargue
+    const timingStats = useMemo(() => {
+        const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+        const diffDays = (a: number, b: number) => Math.round((b - a) / 86400000)
+        const avg = (arr: number[]) => (arr.length ? arr.reduce((s, n) => s + n, 0) / arr.length : null)
+
+        const orderToExam: number[] = []
+        const examToUpload: number[] = []
+        const orderToUpload: number[] = []
+        let missingExamDate = 0
+
+        filteredOrders.forEach((order: any) => {
+            const files = order.result_files || []
+            const orderDay = dayStart(new Date(order.ordered_at))
+            const examDay = order.performed_at ? dayStart(new Date(order.performed_at + "T00:00:00")) : null
+            const uploadDay = files.length
+                ? dayStart(new Date(files.map((f: any) => f.uploaded_at).sort()[0])) // primer cargue
+                : null
+
+            if (examDay !== null) orderToExam.push(diffDays(orderDay, examDay))
+            if (examDay !== null && uploadDay !== null) examToUpload.push(diffDays(examDay, uploadDay))
+            if (uploadDay !== null) orderToUpload.push(diffDays(orderDay, uploadDay))
+            if (files.length && examDay === null) missingExamDate += 1
+        })
+
+        return {
+            orderToExam: avg(orderToExam),
+            examToUpload: avg(examToUpload),
+            orderToUpload: avg(orderToUpload),
+            missingExamDate,
+        }
+    }, [filteredOrders])
 
     // ──────────────── AGGREGATIONS ────────────────
 
@@ -567,6 +601,42 @@ export default function ReportsPage() {
                                 <div className="flex items-baseline justify-between">
                                     <div className="text-2xl font-bold">{patientReports.length}</div>
                                     <span className="text-xs text-muted-foreground">en {getDateLabel().toLowerCase()}</span>
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                </div>
+
+                {/* Tiempos entre fechas */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    {[
+                        { label: "Orden → Realización", value: timingStats.orderToExam, hint: "promedio de días", color: "border-l-indigo-500" },
+                        { label: "Realización → Cargue", value: timingStats.examToUpload, hint: "promedio de días", color: "border-l-blue-500" },
+                        { label: "Orden → Cargue (total)", value: timingStats.orderToUpload, hint: "promedio de días", color: "border-l-emerald-500" },
+                    ].map((k) => (
+                        <Card key={k.label} className={`border-l-4 ${k.color} shadow-sm`}>
+                            <CardHeader className="pb-2">
+                                <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{k.label}</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                {ordersLoading ? <Skeleton className="h-8 w-20" /> : (
+                                    <div className="flex items-baseline justify-between">
+                                        <div className="text-2xl font-bold">{k.value === null ? "—" : k.value.toFixed(1)}</div>
+                                        <span className="text-xs text-muted-foreground">{k.hint}</span>
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    ))}
+                    <Card className="border-l-4 border-l-amber-500 shadow-sm">
+                        <CardHeader className="pb-2">
+                            <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Sin fecha de realización</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            {ordersLoading ? <Skeleton className="h-8 w-20" /> : (
+                                <div className="flex items-baseline justify-between">
+                                    <div className="text-2xl font-bold">{timingStats.missingExamDate}</div>
+                                    <span className="text-xs text-muted-foreground">órdenes con PDF</span>
                                 </div>
                             )}
                         </CardContent>

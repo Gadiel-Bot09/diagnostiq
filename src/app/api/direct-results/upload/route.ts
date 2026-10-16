@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server"
+﻿import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase/admin"
 import { createServerClient } from "@supabase/ssr"
 import { uploadToMinio } from "@/lib/minio"
@@ -44,6 +44,15 @@ export async function POST(req: NextRequest) {
 
         if (!documentNumber || !fullName || !examName || files.length === 0) {
             return NextResponse.json({ error: "Faltan campos requeridos" }, { status: 400 })
+        }
+
+        // Fecha de realización de los exámenes (YYYY-MM-DD), obligatoria y no futura
+        if (!performedAt || !/^\d{4}-\d{2}-\d{2}$/.test(performedAt) || isNaN(Date.parse(performedAt))) {
+            return NextResponse.json({ error: "La fecha de realización de los exámenes es obligatoria" }, { status: 400 })
+        }
+        const todayCo = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10)
+        if (performedAt > todayCo) {
+            return NextResponse.json({ error: "La fecha de realización no puede ser futura" }, { status: 400 })
         }
 
         // 4. Find or create patient
@@ -226,6 +235,7 @@ export async function POST(req: NextRequest) {
                 status: "COMPLETED",
                 is_direct: true,
                 direct_exam_name: examName,
+                performed_at: performedAt,
                 ordered_at: new Date().toISOString(),
             })
             .select()
@@ -257,6 +267,7 @@ export async function POST(req: NextRequest) {
                 storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
                 sha256,
                 version: 1,
+                performed_at: performedAt,
             })
             if (insertError) {
                 console.error("Result file insert error:", insertError)

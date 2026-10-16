@@ -90,11 +90,17 @@ export default function OrderDetailsPage() {
                                         {order.status}
                                     </Badge>
                                 </CardTitle>
-                                <div className="text-right flex flex-col items-end">
+                                <div className="text-right flex flex-col items-end gap-1">
                                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
                                         <Calendar className="h-4 w-4" />
-                                        {format(new Date(order.ordered_at), "PPP", { locale: es })}
+                                        Orden: {format(new Date(order.ordered_at), "PPP", { locale: es })}
                                     </div>
+                                    {order.performed_at && (
+                                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                            <Microscope className="h-4 w-4" />
+                                            Exámenes realizados: {format(new Date(order.performed_at + "T00:00:00"), "PPP", { locale: es })}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </CardHeader>
@@ -143,6 +149,10 @@ export default function OrderDetailsPage() {
                                                 <div>
                                                     <p className="font-semibold text-sm">{file.file_name}</p>
                                                     <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-wider">Versión {file.version}</p>
+                                                    <p className="text-xs text-muted-foreground mt-1">
+                                                        Realizado: {(file.performed_at || order.performed_at) ? format(new Date((file.performed_at || order.performed_at) + "T00:00:00"), "dd/MM/yyyy") : "—"}
+                                                        {" · "}Cargado: {file.uploaded_at ? format(new Date(file.uploaded_at), "dd/MM/yyyy") : "—"}
+                                                    </p>
                                                 </div>
                                             </div>
                                             <Button

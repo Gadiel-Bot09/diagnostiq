@@ -31,6 +31,7 @@ const patientSchema = z.object({
     full_name: z.string().min(3, "Nombre muy corto"),
     email: z.string().email("Email inválido").optional().or(z.literal("")),
     exam_name: z.string().min(2, "Nombre del examen requerido"),
+  performed_at: z.string().min(1, "Fecha de realización requerida"),
 })
 
 type PatientForm = z.infer<typeof patientSchema>
@@ -171,7 +172,7 @@ export default function DirectResultsPage() {
 
     const form = useForm<PatientForm>({
         resolver: zodResolver(patientSchema),
-        defaultValues: { document_type: "CC", document_number: "", full_name: "", email: "", exam_name: "" },
+        defaultValues: { document_type: "CC", document_number: "", full_name: "", email: "", exam_name: "", performed_at: "" },
     })
 
     // ──────────────────── Search patient ────────────────────
@@ -224,6 +225,7 @@ export default function DirectResultsPage() {
             fd.append("full_name", values.full_name)
             if (values.email) fd.append("email", values.email)
             fd.append("exam_name", values.exam_name)
+            fd.append("performed_at", values.performed_at)
             uploadedFiles.forEach(f => fd.append("files", f))
 
             const res = await fetch("/api/direct-results/upload", { method: "POST", body: fd })
@@ -450,6 +452,17 @@ export default function DirectResultsPage() {
                                         </Button>
                                     </div>
                                     {form.formState.errors.exam_name && <p className="text-xs text-destructive">{form.formState.errors.exam_name.message}</p>}
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="performed_at">Fecha de realización de los exámenes *</Label>
+                                    <Input
+                                        id="performed_at"
+                                        type="date"
+                                        max={new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10)}
+                                        {...form.register("performed_at")}
+                                        className="max-w-xs"
+                                    />
+                                    {form.formState.errors.performed_at && <p className="text-xs text-destructive">{form.formState.errors.performed_at.message}</p>}
                                 </div>
                             </CardContent>
                         </Card>
