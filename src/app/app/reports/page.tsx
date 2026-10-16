@@ -41,17 +41,19 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { useToast } from "@/components/ui/use-toast"
+import { exportReportXlsx, exportReportPdf } from "@/lib/report-export"
 
 export default function ReportsPage() {
     const supabase = createClient()
     const { toast } = useToast()
-    const { hasPermission, isLoading: permsLoading } = usePermissions()
+    const { hasPermission, isLoading: permsLoading, lab } = usePermissions()
 
     const [dateRange, setDateRange] = useState<string>("all")
     const [searchQuery, setSearchQuery] = useState<string>("")
     const [activeTab, setActiveTab] = useState<string>("exams")
     const [statusFilter, setStatusFilter] = useState<string>("ALL")
     const [showPrintModal, setShowPrintModal] = useState<boolean>(false)
+    const [isExporting, setIsExporting] = useState<boolean>(false)
 
     // Fetch Lab ID (optional reference for tenant-scoped operations if needed)
     const { data: labId } = useQuery({
@@ -363,6 +365,114 @@ export default function ReportsPage() {
         })
     }
 
+    // ── Datos para exportación real (Excel .xlsx y PDF): resumen + detalle por pestaña ──
+    const fmtDateTime = (d?: string | null) => (d ? format(new Date(d), "dd/MM/yyyy HH:mm") : "—")
+    const fmtDay = (d?: string | null) => (d ? format(new Date(d.length === 10 ? d + "T00:00:00" : d), "dd/MM/yyyy") : "—")
+    const statusLabelOf = (s: string) => (s === "COMPLETED" ? "Completado" : s === "PENDING" ? "Pendiente" : s === "PROCESSING" ? "En proceso" : s === "CANCELLED" ? "Cancelado" : s)
+    const examNamesOf = (o: any): string[] =>
+        o.is_direct ? [o.direct_exam_name || "Resultado directo"] : (o.order_tests?.map((t: any) => t.tests?.name || "Examen") || ["General"])
+    const uploadedOf = (o: any) => {
+        const dates = (o.result_files || []).map((f: any) => f.uploaded_at).sort()
+        return dates.length ? dates[dates.length - 1] : null
+    }
+    const daysBetween = (a?: string | null, b?: string | null) => {
+        if (!a || !b) return "—"
+        const day = (s: string) => { const d = new Date(s.length === 10 ? s + "T00:00:00" : s); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() }
+        return Math.round((day(b) - day(a)) / 86400000)
+    }
+
+    const detailColumns = ["N° Orden", "Fecha de orden", "Fecha realización exámenes", "Fecha de cargue", "Días realiz. → cargue", "Paciente", "Documento", "Examen(es)", "Estado", "Archivos"]
+    const orderDetailRow = (o: any, examLabel?: string) => [
+        o.order_number,
+        fmtDateTime(o.ordered_at),
+        fmtDay(o.performed_at),
+        fmtDateTime(uploadedOf(o)),
+        daysBetween(o.performed_at, uploadedOf(o)),
+        o.patients?.full_name || "Desconocido",
+        `${o.patients?.document_type || ""} ${o.patients?.document_number || ""}`.trim(),
+        examLabel ?? examNamesOf(o).join(", "),
+        statusLabelOf(o.status),
+        o.result_files?.length || 0,
+    ]
+
+    const buildReportData = () => {
+        const base = { period: getDateLabel(), labName: lab?.name }
+        if (activeTab === "exams") {
+            const detail: any[][] = []
+            filteredOrders.forEach((o: any) => examNamesOf(o).forEach((name: string) => detail.push(orderDetailRow(o, name))))
+            detail.sort((a, b) => String(a[7]).localeCompare(String(b[7])))
+            return {
+                ...base,
+                title: "Rendimiento y Volumetría por Examen Diagnóstico",
+                sheets: [
+                    {
+                        name: "Resumen por examen",
+                        columns: ["Examen / Prueba", "Categoría", "Código", "Volumen total", "Completados", "Pendientes", "% Participación", "% Efectividad"],
+                        rows: examReports.map((i) => [
+                            i.name, i.category, i.code || "", i.total, i.completed, i.pending,
+                            `${totalExamsCount > 0 ? Math.round((i.total / totalExamsCount) * 100) : 0}%`,
+                            `${i.total > 0 ? Math.round((i.completed / i.total) * 100) : 0}%`,
+                        ]),
+                    },
+                    { name: "Detalle por examen", columns: detailColumns, rows: detail },
+                ],
+            }
+        }
+        if (activeTab === "patients") {
+            const ordersByPatient = [...filteredOrders].sort((a: any, b: any) =>
+                (a.patients?.full_name || "").localeCompare(b.patients?.full_name || "") || +new Date(b.ordered_at) - +new Date(a.ordered_at))
+            return {
+                ...base,
+                title: "Resumen de Atenciones por Paciente",
+                sheets: [
+                    {
+                        name: "Resumen por paciente",
+                        columns: ["Paciente", "Documento", "Email / Portal", "Total órdenes", "Total exámenes", "Órdenes completadas", "Última atención"],
+                        rows: patientReports.map((i) => [i.name, i.document, i.email || "Sin cuenta", i.totalOrders, i.totalExams, i.completedOrders, fmtDateTime(i.lastVisit)]),
+                    },
+                    { name: "Detalle por paciente", columns: detailColumns, rows: ordersByPatient.map((o: any) => orderDetailRow(o)) },
+                ],
+            }
+        }
+        if (activeTab === "users") {
+            return {
+                ...base,
+                title: "Productividad por Personal / Usuario",
+                sheets: [{
+                    name: "Personal",
+                    columns: ["Usuario", "Rol", "Teléfono / Contacto", "Estado", "Órdenes gestionadas", "Completadas"],
+                    rows: userReports.map((i: any) => [i.name, i.role, i.phone || "—", i.active ? "Activo" : "Inactivo", i.ordersManaged, i.completedManaged]),
+                }],
+            }
+        }
+        return {
+            ...base,
+            title: "Órdenes Detalladas de Laboratorio",
+            sheets: [{ name: "Órdenes detalladas", columns: detailColumns, rows: filteredOrders.map((o: any) => orderDetailRow(o)) }],
+        }
+    }
+
+    const runExport = async (kind: "xlsx" | "pdf") => {
+        setIsExporting(true)
+        try {
+            const data = buildReportData()
+            const fileBase = `reporte_diagnostiq_${activeTab}`
+            if (kind === "xlsx") await exportReportXlsx(data, fileBase)
+            else await exportReportPdf(data, fileBase)
+            toast({
+                title: kind === "xlsx" ? "📥 Excel generado" : "📄 PDF generado",
+                description: `Se descargó el reporte con resumen${data.sheets.length > 1 ? " y detalle" : ""}.`,
+            })
+        } catch (e: any) {
+            console.error(e)
+            toast({ variant: "destructive", title: "No se pudo exportar", description: e?.message || "Intenta nuevamente." })
+        } finally {
+            setIsExporting(false)
+        }
+    }
+    const handleExportXlsx = () => runExport("xlsx")
+    const handleExportPdf = () => runExport("pdf")
+
     const handlePrintPDF = () => {
         const printContent = document.getElementById("report-printable-area")
         if (!printContent) {
@@ -530,14 +640,19 @@ export default function ReportsPage() {
                             </Select>
                         </div>
 
-                        <Button variant="outline" size="sm" onClick={handleExportCSV} className="gap-2 h-9 shadow-sm hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200 transition-colors">
+                        <Button variant="outline" size="sm" onClick={handleExportXlsx} disabled={isExporting} className="gap-2 h-9 shadow-sm hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200 transition-colors">
                             <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
                             <span>Exportar Excel</span>
                         </Button>
 
-                        <Button size="sm" onClick={() => setShowPrintModal(true)} className="gap-2 h-9 bg-gradient-to-r from-primary to-sky-600 shadow-sm hover:opacity-95 transition-opacity">
+                        <Button size="sm" onClick={handleExportPdf} disabled={isExporting} className="gap-2 h-9 bg-gradient-to-r from-primary to-sky-600 shadow-sm hover:opacity-95 transition-opacity">
+                            <FileText className="h-4 w-4" />
+                            <span>Exportar PDF</span>
+                        </Button>
+
+                        <Button variant="outline" size="sm" onClick={() => setShowPrintModal(true)} className="gap-2 h-9 shadow-sm">
                             <Printer className="h-4 w-4" />
-                            <span>Exportar PDF / Imprimir</span>
+                            <span>Imprimir</span>
                         </Button>
                     </div>
                 </div>
