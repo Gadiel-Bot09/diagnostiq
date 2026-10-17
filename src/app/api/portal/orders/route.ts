@@ -41,7 +41,11 @@ export async function GET(req: NextRequest) {
                 order_number,
                 status,
                 ordered_at,
-                labs (name)
+                performed_at,
+                direct_exam_name,
+                labs (name),
+                order_tests (id, tests (name, category)),
+                result_files (id, file_name, version, uploaded_at, performed_at)
             `)
             .in("patient_id", patientIds)
             .order("ordered_at", { ascending: false })
