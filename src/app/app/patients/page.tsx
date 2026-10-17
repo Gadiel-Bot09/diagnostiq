@@ -53,6 +53,10 @@ export default function PatientsPage() {
     const { toast } = useToast()
 
     const isAdmin = profile?.role === "LAB_ADMIN" || profile?.role === "SUPER_ADMIN"
+    const canCreate = isAdmin || hasPermission("patients", "create")
+    const canEdit = isAdmin || hasPermission("patients", "edit")
+    const canDelete = isAdmin || hasPermission("patients", "delete")
+    const canManagePortal = canCreate || canEdit
 
     const [searchTerm, setSearchTerm] = useState("")
     const [creatingPortalFor, setCreatingPortalFor] = useState<string | null>(null)
@@ -100,6 +104,7 @@ export default function PatientsPage() {
     // ── Edit mutation ──
     const editMutation = useMutation({
         mutationFn: async (values: Partial<Patient> & { id: string }) => {
+            if (!canEdit) throw new Error("No tienes permiso para editar la información de pacientes.")
             const { error } = await supabase
                 .from("patients")
                 .update({
@@ -127,6 +132,7 @@ export default function PatientsPage() {
     // ── Delete mutation ──
     const deleteMutation = useMutation({
         mutationFn: async (patientId: string) => {
+            if (!canDelete) throw new Error("No tienes permiso para eliminar pacientes.")
             const { error } = await supabase.from("patients").delete().eq("id", patientId)
             if (error) throw error
         },
@@ -142,6 +148,10 @@ export default function PatientsPage() {
 
     // ── Portal account ──
     const handleCreatePortalAccount = async (patientId: string, email: string | null, documentNumber: string) => {
+        if (!canManagePortal) {
+            toast({ variant: "destructive", title: "Acceso denegado", description: "No tienes permiso para activar accesos al portal." })
+            return
+        }
         setCreatingPortalFor(patientId)
         try {
             const loginEmail = email || `${documentNumber.trim()}@portal.diagnostiq`
@@ -163,6 +173,7 @@ export default function PatientsPage() {
 
     // ── Open edit modal ──
     const openEdit = (patient: Patient) => {
+        if (!canEdit) return
         setEditPatient(patient)
         setEditForm({ ...patient })
     }
@@ -194,7 +205,7 @@ export default function PatientsPage() {
                         <h1 className="text-3xl font-bold tracking-tight">Pacientes</h1>
                         <p className="text-muted-foreground">Gestiona la base de datos de pacientes del laboratorio.</p>
                     </div>
-                    {hasPermission("patients", "create") && (
+                    {canCreate && (
                         <Link href="/app/patients/new">
                             <Button className="gap-2">
                                 <UserPlus className="h-4 w-4" /> Registrar Paciente
@@ -271,20 +282,20 @@ export default function PatientsPage() {
                                                     <DropdownMenuContent align="end">
                                                         <DropdownMenuLabel>Acciones</DropdownMenuLabel>
 
-                                                        {/* Editar — solo admin */}
-                                                        {isAdmin && (
+                                                        {/* Editar */}
+                                                        {canEdit && (
                                                             <DropdownMenuItem className="gap-2" onClick={() => openEdit(patient)}>
                                                                 <FileEdit className="h-4 w-4" /> Editar Datos
                                                             </DropdownMenuItem>
                                                         )}
 
-                                                        {/* Historial — todos */}
+                                                        {/* Historial — todos con permiso de ver */}
                                                         <DropdownMenuItem className="gap-2" onClick={() => setHistoryPatient(patient)}>
                                                             <History className="h-4 w-4" /> Ver Historial
                                                         </DropdownMenuItem>
 
-                                                        {/* Crear cuenta portal — solo admin, solo si no tiene */}
-                                                        {isAdmin && (!patient.patient_accounts || patient.patient_accounts.length === 0) && (
+                                                        {/* Crear cuenta portal — requiere permiso de crear o editar */}
+                                                        {canManagePortal && (!patient.patient_accounts || patient.patient_accounts.length === 0) && (
                                                             <DropdownMenuItem
                                                                 className="gap-2 text-violet-600"
                                                                 onClick={() => handleCreatePortalAccount(patient.id, patient.email, patient.document_number)}
@@ -294,8 +305,8 @@ export default function PatientsPage() {
                                                             </DropdownMenuItem>
                                                         )}
 
-                                                        {/* Eliminar — solo admin */}
-                                                        {isAdmin && (
+                                                        {/* Eliminar */}
+                                                        {canDelete && (
                                                             <>
                                                                 <DropdownMenuSeparator />
                                                                 <DropdownMenuItem
@@ -332,7 +343,7 @@ export default function PatientsPage() {
                             <FileEdit className="h-5 w-5 text-primary" /> Editar Datos del Paciente
                         </DialogTitle>
                         <DialogDescription>
-                            Solo los administradores pueden modificar la información del paciente.
+                            Modifica los datos personales y de contacto del paciente.
                         </DialogDescription>
                     </DialogHeader>
 

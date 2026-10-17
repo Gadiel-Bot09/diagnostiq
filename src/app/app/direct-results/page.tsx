@@ -61,6 +61,11 @@ export default function DirectResultsPage() {
     const queryClient = useQueryClient()
     const { hasPermission, isLoading: permsLoading } = usePermissions()
 
+    const canCreateExam = hasPermission("direct_results", "create") || hasPermission("settings", "create")
+    const canEditExam = hasPermission("direct_results", "edit") || hasPermission("settings", "edit")
+    const canDeleteExam = hasPermission("direct_results", "delete") || hasPermission("settings", "delete")
+    const canManageExams = canCreateExam || canEditExam || canDeleteExam
+
     const [showManageModal, setShowManageModal] = useState(false)
     const [newExamName, setNewExamName] = useState("")
     const [editingExamId, setEditingExamId] = useState<string | null>(null)
@@ -426,6 +431,7 @@ export default function DirectResultsPage() {
                         <Card>
                             <CardHeader className="pb-4 flex flex-row items-center justify-between space-y-0">
                                 <CardTitle className="text-base flex items-center gap-2"><Beaker className="h-4 w-4 text-primary" />Datos del Resultado</CardTitle>
+                                {canManageExams && (
                                 <Button
                                     type="button"
                                     variant="outline"
@@ -435,6 +441,7 @@ export default function DirectResultsPage() {
                                 >
                                     <Settings className="h-3.5 w-3.5" /> Gestionar Tipos de Exámenes
                                 </Button>
+                                )}
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <div className="space-y-1.5">
@@ -466,6 +473,7 @@ export default function DirectResultsPage() {
                                                 </SelectContent>
                                             </Select>
                                         </div>
+                                        {canCreateExam && (
                                         <Button
                                             type="button"
                                             variant="secondary"
@@ -475,6 +483,7 @@ export default function DirectResultsPage() {
                                         >
                                             <Plus className="h-4 w-4" /> Nuevo
                                         </Button>
+                                        )}
                                     </div>
                                     {form.formState.errors.exam_name && <p className="text-xs text-destructive">{form.formState.errors.exam_name.message}</p>}
                                 </div>
@@ -640,7 +649,7 @@ export default function DirectResultsPage() {
                     </DialogHeader>
 
                     {/* Quick Add Form */}
-                    {hasPermission("settings", "create") && (
+                    {canCreateExam && (
                     <div className="flex gap-2 pt-2 border-b pb-4">
                         <Input
                             placeholder="Ej: Radiografía panorámica..."
@@ -667,7 +676,7 @@ export default function DirectResultsPage() {
                     )}
 
                     {/* Seed Default Radiology Exams Button (if few or none) */}
-                    {hasPermission("settings", "create") && examTypes.length < 7 && (
+                    {canCreateExam && examTypes.length < 7 && (
                         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 my-2 flex items-center justify-between gap-2">
                             <div className="text-xs text-amber-900 space-y-0.5 min-w-0">
                                 <p className="font-semibold flex items-center gap-1 truncate"><Sparkles className="h-3.5 w-3.5 text-amber-600 shrink-0" /> Plantilla Odontológica</p>
@@ -735,7 +744,7 @@ export default function DirectResultsPage() {
                                                 {test.code && <Badge variant="secondary" className="text-[10px] shrink-0">{test.code}</Badge>}
                                             </div>
                                             <div className="flex items-center gap-1 shrink-0">
-                                                {hasPermission("settings", "edit") && (
+                                                {canEditExam && (
                                                 <Button
                                                     type="button"
                                                     variant="ghost"
@@ -750,7 +759,7 @@ export default function DirectResultsPage() {
                                                     <Pencil className="h-3.5 w-3.5" />
                                                 </Button>
                                                 )}
-                                                {hasPermission("settings", "delete") && (
+                                                {canDeleteExam && (
                                                 <Button
                                                     type="button"
                                                     variant="ghost"
