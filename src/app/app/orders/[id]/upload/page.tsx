@@ -2,8 +2,8 @@
 "use client"
 
 import { useQuery } from "@tanstack/react-query"
-import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, Loader2, User, FileText, Calendar } from "lucide-react"
+import { useParams, useRouter, useSearchParams } from "next/navigation"
+import { ArrowLeft, Loader2, User, FileText, Calendar, Microscope } from "lucide-react"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
 
@@ -18,6 +18,8 @@ import { Badge } from "@/components/ui/badge"
 export default function OrderUploadPage() {
     const { id } = useParams()
     const router = useRouter()
+    const searchParams = useSearchParams()
+    const preselectedTestId = searchParams?.get("orderTestId") || null
     const supabase = createClient()
     const { hasPermission, isLoading: permsLoading } = usePermissions()
 
@@ -34,6 +36,11 @@ export default function OrderUploadPage() {
           status,
           ordered_at,
           patients (full_name, document_number),
+          order_tests (
+            id,
+            status,
+            tests (name, category)
+          ),
           result_files (version)
         `)
                 .eq("id", id)
@@ -56,6 +63,14 @@ export default function OrderUploadPage() {
 
     const latestVersion = order?.result_files?.reduce((max: number, f: any) => Math.max(max, f.version), 0) || 0
     const patient = order?.patients as any
+    const orderTests = (order?.order_tests || []).map((ot: any) => ({
+        id: ot.id,
+        name: ot.tests?.name || "Examen",
+        category: ot.tests?.category,
+        status: ot.status,
+    }))
+
+    const preselectedTest = orderTests.find((t: any) => t.id === preselectedTestId)
 
     if (!permsLoading && !hasPermission("orders", "upload") && !hasPermission("orders", "edit") && !hasPermission("orders", "create")) {
         return (
@@ -73,7 +88,7 @@ export default function OrderUploadPage() {
         <AdminLayout>
             <div className="max-w-4xl mx-auto space-y-6">
                 <Button variant="ghost" onClick={() => router.back()} className="gap-2 -ml-4">
-                    <ArrowLeft className="h-4 w-4" /> Volver a órdenes
+                    <ArrowLeft className="h-4 w-4" /> Volver a la orden
                 </Button>
 
                 <div className="grid md:grid-cols-3 gap-6">
@@ -82,7 +97,11 @@ export default function OrderUploadPage() {
                             <CardHeader>
                                 <CardTitle>Cargar Reporte de Resultados</CardTitle>
                                 <CardDescription>
-                                    Selecciona el archivo PDF final para la orden <strong>#{order?.order_number}</strong>.
+                                    {preselectedTest ? (
+                                        <span>Subiendo resultado específico para el examen: <strong className="text-foreground">{preselectedTest.name}</strong></span>
+                                    ) : (
+                                        <span>Selecciona el archivo PDF para la orden <strong>#{order?.order_number}</strong>. Puedes cargar un PDF por cada examen.</span>
+                                    )}
                                 </CardDescription>
                             </CardHeader>
                             <CardContent>
@@ -92,6 +111,8 @@ export default function OrderUploadPage() {
                                         patientId={order.patient_id}
                                         labId={order.lab_id}
                                         currentVersion={latestVersion}
+                                        orderTests={orderTests}
+                                        selectedOrderTestId={preselectedTestId}
                                     />
                                 )}
                             </CardContent>
@@ -137,6 +158,40 @@ export default function OrderUploadPage() {
                                     <span className="text-muted-foreground">Estado Actual:</span>
                                     <Badge variant="outline">{order?.status}</Badge>
                                 </div>
+
+                                {orderTests.length > 0 && (
+                                    <div className="pt-2 border-t space-y-2">
+                                        <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                                            Exámenes en la orden ({orderTests.length}):
+                                        </p>
+                                        <div className="space-y-1.5">
+                                            {orderTests.map((t: any) => (
+                                                <div
+                                                    key={t.id}
+                                                    className={`p-2 rounded-lg text-xs flex items-center justify-between border ${
+                                                        t.id === preselectedTestId
+                                                            ? "bg-blue-50/80 border-blue-200"
+                                                            : "bg-muted/30 border-transparent"
+                                                    }`}
+                                                >
+                                                    <span className="truncate max-w-[150px] font-medium" title={t.name}>
+                                                        {t.name}
+                                                    </span>
+                                                    <Badge
+                                                        variant="outline"
+                                                        className={`text-[10px] h-5 ${
+                                                            t.status === 'COMPLETED'
+                                                                ? 'text-green-700 bg-green-50 border-green-300'
+                                                                : 'text-amber-700 bg-amber-50 border-amber-300'
+                                                        }`}
+                                                    >
+                                                        {t.status === 'COMPLETED' ? 'Completado' : 'Pendiente'}
+                                                    </Badge>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </CardContent>
                         </Card>
                     </div>

@@ -12,21 +12,52 @@ import { Progress } from "@/components/ui/progress"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
+import { Microscope } from "lucide-react"
+
+export interface OrderTestOption {
+    id: string
+    name: string
+    category?: string | null
+    status?: string
+}
 
 interface ResultUploaderProps {
     orderId: string
     patientId: string
     labId: string
     currentVersion?: number
+    orderTests?: OrderTestOption[]
+    selectedOrderTestId?: string | null
+    onUploadSuccess?: () => void
 }
 
-export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }: ResultUploaderProps) {
+export function ResultUploader({
+    orderId,
+    patientId,
+    labId,
+    currentVersion = 1,
+    orderTests = [],
+    selectedOrderTestId = null,
+    onUploadSuccess,
+}: ResultUploaderProps) {
     const [files, setFiles] = useState<File[]>([])
     const [isUploading, setIsUploading] = useState(false)
     const [progress, setProgress] = useState(0)
     const [isSuccess, setIsSuccess] = useState(false)
     const todayStr = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10) // hora Colombia
     const [performedAt, setPerformedAt] = useState("")
+    const [selectedTestId, setSelectedTestId] = useState<string>(() => {
+        if (selectedOrderTestId) return selectedOrderTestId
+        if (orderTests && orderTests.length === 1) return orderTests[0].id
+        return ""
+    })
     const [previewModal, setPreviewModal] = useState<{ url: string; name: string; subtitle?: string; isBlob?: boolean } | null>(null)
     const { toast } = useToast()
     const supabase = createClient()
@@ -93,6 +124,9 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
                 formData.append("labId", labId)
                 formData.append("version", version.toString())
                 formData.append("performedAt", performedAt)
+                if (selectedTestId && selectedTestId !== "GENERAL") {
+                    formData.append("orderTestId", selectedTestId)
+                }
 
                 const uploadResponse = await fetch("/api/results/upload", {
                     method: "POST",
@@ -110,6 +144,7 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
 
             setProgress(100)
             setIsSuccess(true)
+            onUploadSuccess?.()
             toast({
                 title: "¡Éxito!",
                 description: `Se han cargado ${successCount} archivo(s) correctamente.`,
@@ -127,8 +162,41 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
         }
     }
 
+    const activeTest = orderTests?.find(t => t.id === selectedTestId)
+
     return (
         <div className="space-y-4">
+            {orderTests && orderTests.length > 0 && (
+                <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+                    <Label htmlFor="orderTestSelect" className="text-sm font-semibold flex items-center gap-2 text-blue-900">
+                        <Microscope className="h-4 w-4 text-blue-600" />
+                        Examen al que corresponde este resultado
+                    </Label>
+                    <Select
+                        value={selectedTestId || "GENERAL"}
+                        onValueChange={(val) => setSelectedTestId(val === "GENERAL" ? "" : val)}
+                        disabled={isUploading || isSuccess}
+                    >
+                        <SelectTrigger id="orderTestSelect" className="bg-white border-blue-200">
+                            <SelectValue placeholder="Seleccionar examen..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {orderTests.map((ot) => (
+                                <SelectItem key={ot.id} value={ot.id}>
+                                    {ot.name} {ot.category ? `(${ot.category})` : ""} {ot.status === 'COMPLETED' ? '• [Completado]' : '• [Pendiente]'}
+                                </SelectItem>
+                            ))}
+                            <SelectItem value="GENERAL">
+                                📄 Reporte General (Aplica a toda la orden)
+                            </SelectItem>
+                        </SelectContent>
+                    </Select>
+                    <p className="text-xs text-blue-700/80">
+                        Cada examen dentro de la misma orden puede tener su propio documento PDF adjunto.
+                    </p>
+                </div>
+            )}
+
             <div className="space-y-2 rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
                 <Label htmlFor="performedAt" className="text-sm font-semibold">
                     Fecha de realización de los exámenes <span className="text-destructive">*</span>
@@ -231,9 +299,14 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
                 <div className="space-y-3 pt-2">
                     <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 text-emerald-800 text-center space-y-1.5">
                         <CheckCircle className="h-7 w-7 text-emerald-600 mx-auto" />
-                        <p className="font-semibold text-base">¡Resultados cargados exitosamente!</p>
+                        <p className="font-semibold text-base">
+                            ¡Resultado cargado exitosamente{activeTest ? ` para ${activeTest.name}` : ""}!
+                        </p>
                         <p className="text-xs text-emerald-700">
-                            El PDF ha sido registrado en el sistema. Puedes previsualizarlo o ir a la vista general de la orden.
+                            {activeTest
+                                ? `El PDF ha sido asociado al examen "${activeTest.name}". Puedes previsualizarlo o continuar con los demás exámenes.`
+                                : "El PDF ha sido registrado en el sistema. Puedes previsualizarlo o ir a la vista general de la orden."
+                            }
                         </p>
                     </div>
 
@@ -257,6 +330,23 @@ export function ResultUploader({ orderId, patientId, labId, currentVersion = 1 }
                             Ver detalle de la orden <ArrowRight className="h-4 w-4" />
                         </Button>
                     </div>
+
+                    {orderTests && orderTests.some((t) => t.id !== selectedTestId && t.status !== 'COMPLETED') && (
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="w-full gap-2 border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 font-medium"
+                            onClick={() => {
+                                const nextPending = orderTests.find((t) => t.id !== selectedTestId && t.status !== 'COMPLETED')
+                                if (nextPending) setSelectedTestId(nextPending.id)
+                                setFiles([])
+                                setIsSuccess(false)
+                            }}
+                        >
+                            <Microscope className="h-4 w-4" />
+                            Cargar PDF para el siguiente examen pendiente
+                        </Button>
+                    )}
 
                     <Button
                         type="button"

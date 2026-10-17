@@ -99,6 +99,7 @@ export default function AdminOrderDetailPage() {
                     order_tests (
                         id,
                         status,
+                        result_summary_json,
                         tests (name, category, units, reference_range)
                     ),
                     result_files (
@@ -107,7 +108,8 @@ export default function AdminOrderDetailPage() {
                         version,
                         size_bytes,
                         uploaded_at,
-                        uploaded_by
+                        uploaded_by,
+                        performed_at
                     )
                 `)
                 .eq("id", id)
@@ -326,32 +328,120 @@ export default function AdminOrderDetailPage() {
                                     Exámenes Solicitados
                                     <Badge variant="secondary" className="ml-auto">{orderTests.length}</Badge>
                                 </CardTitle>
+                                <CardDescription>
+                                    Cada examen puede tener su propio documento de resultados adjunto de forma independiente.
+                                </CardDescription>
                             </CardHeader>
                             <CardContent>
                                 {orderTests.length > 0 ? (
-                                    <div className="divide-y">
-                                        {orderTests.map((ot: any, i: number) => (
-                                            <div key={ot.id} className="flex items-center gap-4 py-3 first:pt-0 last:pb-0">
-                                                <div className="h-8 w-8 rounded-full bg-primary/5 flex items-center justify-center shrink-0 text-sm font-bold text-primary">
-                                                    {i + 1}
-                                                </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="font-medium text-sm truncate">{ot.tests?.name}</p>
-                                                    {ot.tests?.category && (
-                                                        <p className="text-xs text-muted-foreground">{ot.tests.category}</p>
+                                    <div className="space-y-3">
+                                        {orderTests.map((ot: any, i: number) => {
+                                            const testFile = (() => {
+                                                if (ot.result_summary_json?.file_id) {
+                                                    const found = resultFiles.find((f: any) => f.id === ot.result_summary_json.file_id)
+                                                    if (found) return found
+                                                }
+                                                const byOrderTestId = resultFiles.find((f: any) => f.order_test_id === ot.id)
+                                                if (byOrderTestId) return byOrderTestId
+                                                if (orderTests.length === 1 && resultFiles.length > 0) {
+                                                    return resultFiles[0]
+                                                }
+                                                return null
+                                            })()
+
+                                            const isCompleted = ot.status === 'COMPLETED' || !!testFile
+
+                                            return (
+                                                <div
+                                                    key={ot.id}
+                                                    className="p-4 rounded-xl border bg-card hover:border-primary/30 transition-all space-y-3"
+                                                >
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <div className="flex items-center gap-3 min-w-0">
+                                                            <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-sm font-bold text-primary">
+                                                                {i + 1}
+                                                            </div>
+                                                            <div className="min-w-0">
+                                                                <p className="font-semibold text-sm truncate">{ot.tests?.name || "Examen"}</p>
+                                                                {ot.tests?.category && (
+                                                                    <p className="text-xs text-muted-foreground">{ot.tests.category}</p>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                        <Badge
+                                                            variant="outline"
+                                                            className={isCompleted
+                                                                ? "text-green-700 border-green-300 bg-green-50 font-medium"
+                                                                : "text-amber-700 border-amber-300 bg-amber-50 font-medium"
+                                                            }
+                                                        >
+                                                            {isCompleted ? '✓ Completado' : '⏳ Pendiente'}
+                                                        </Badge>
+                                                    </div>
+
+                                                    {/* Documento adjunto para este examen */}
+                                                    {testFile ? (
+                                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-lg border border-emerald-150 bg-emerald-50/50">
+                                                            <div className="flex items-center gap-2.5 min-w-0">
+                                                                <div className="bg-rose-50 p-2 rounded-md text-rose-500 shrink-0">
+                                                                    <FileText className="h-4 w-4" />
+                                                                </div>
+                                                                <div className="min-w-0">
+                                                                    <p className="font-semibold text-xs truncate text-foreground">{testFile.file_name}</p>
+                                                                    <p className="text-[11px] text-muted-foreground">
+                                                                        v{testFile.version} · {testFile.size_bytes ? `${(testFile.size_bytes / 1024).toFixed(0)} KB · ` : ""}
+                                                                        Cargado: {testFile.uploaded_at ? format(new Date(testFile.uploaded_at), "dd/MM/yyyy HH:mm") : "—"}
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-2 shrink-0">
+                                                                <Button
+                                                                    variant="outline"
+                                                                    size="sm"
+                                                                    className="h-8 text-xs gap-1.5 text-blue-700 border-blue-200 bg-blue-50/60 hover:bg-blue-100"
+                                                                    onClick={() => handlePreview(testFile)}
+                                                                    disabled={previewingId === testFile.id}
+                                                                >
+                                                                    {previewingId === testFile.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
+                                                                    Previsualizar
+                                                                </Button>
+                                                                <Button
+                                                                    variant="outline"
+                                                                    size="sm"
+                                                                    className="h-8 text-xs gap-1.5"
+                                                                    onClick={() => handleDownload(testFile.id)}
+                                                                    disabled={isDownloading}
+                                                                >
+                                                                    {isDownloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                                                                    Descargar
+                                                                </Button>
+                                                                {hasPermission("orders", "upload") && (
+                                                                    <Link href={`/app/orders/${id}/upload?orderTestId=${ot.id}`}>
+                                                                        <Button variant="ghost" size="sm" className="h-8 text-xs text-muted-foreground hover:text-foreground gap-1">
+                                                                            <FileUp className="h-3.5 w-3.5" /> Reemplazar
+                                                                        </Button>
+                                                                    </Link>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-lg border border-dashed border-amber-200 bg-amber-50/40">
+                                                            <span className="text-xs text-amber-800 font-medium flex items-center gap-1.5">
+                                                                <Clock className="h-3.5 w-3.5 text-amber-600" />
+                                                                Sin archivo de resultado cargado para este examen
+                                                            </span>
+                                                            {hasPermission("orders", "upload") && (
+                                                                <Link href={`/app/orders/${id}/upload?orderTestId=${ot.id}`}>
+                                                                    <Button size="sm" className="h-8 text-xs gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs">
+                                                                        <FileUp className="h-3.5 w-3.5" /> Subir PDF de este examen
+                                                                    </Button>
+                                                                </Link>
+                                                            )}
+                                                        </div>
                                                     )}
                                                 </div>
-                                                <Badge
-                                                    variant="outline"
-                                                    className={ot.status === 'COMPLETED'
-                                                        ? "text-green-700 border-green-300 bg-green-50"
-                                                        : "text-amber-700 border-amber-300 bg-amber-50"
-                                                    }
-                                                >
-                                                    {ot.status === 'COMPLETED' ? 'Completado' : 'Pendiente'}
-                                                </Badge>
-                                            </div>
-                                        ))}
+                                            )
+                                        })}
                                     </div>
                                 ) : (
                                     <p className="text-sm text-muted-foreground italic">No hay exámenes registrados en esta orden.</p>
@@ -365,57 +455,72 @@ export default function AdminOrderDetailPage() {
                                 <CardTitle className="flex items-center gap-2">
                                     <FileText className="h-5 w-5 text-rose-500" />
                                     Reportes en PDF
+                                    <Badge variant="secondary" className="ml-auto">{resultFiles.length}</Badge>
                                 </CardTitle>
                                 <CardDescription>
-                                    Archivos cargados por el personal del laboratorio para esta orden.
+                                    Historial de todos los archivos cargados para esta orden.
                                 </CardDescription>
                             </CardHeader>
                             <CardContent>
                                 {resultFiles.length > 0 ? (
                                     <div className="space-y-3">
-                                        {resultFiles.map((file: any) => (
-                                            <div
-                                                key={file.id}
-                                                className="flex items-center gap-4 p-4 border rounded-xl bg-card hover:bg-muted/30 transition-colors"
-                                            >
-                                                <div className="bg-rose-50 p-2.5 rounded-lg">
-                                                    <FileText className="h-5 w-5 text-rose-500" />
+                                        {resultFiles.map((file: any) => {
+                                            const linkedTest = orderTests.find((ot: any) => ot.result_summary_json?.file_id === file.id || ot.id === file.order_test_id)
+                                            return (
+                                                <div
+                                                    key={file.id}
+                                                    className="flex items-center gap-4 p-4 border rounded-xl bg-card hover:bg-muted/30 transition-colors"
+                                                >
+                                                    <div className="bg-rose-50 p-2.5 rounded-lg">
+                                                        <FileText className="h-5 w-5 text-rose-500" />
+                                                    </div>
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                            <p className="font-semibold text-sm truncate">{file.file_name}</p>
+                                                            {linkedTest ? (
+                                                                <Badge variant="secondary" className="text-[10px] bg-blue-50 text-blue-700 border-blue-200">
+                                                                    Examen: {linkedTest.tests?.name}
+                                                                </Badge>
+                                                            ) : (
+                                                                <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                                                                    Reporte General
+                                                                </Badge>
+                                                            )}
+                                                        </div>
+                                                        <p className="text-xs text-muted-foreground mt-0.5">
+                                                            v{file.version} · {file.size_bytes ? `${(file.size_bytes / 1024).toFixed(0)} KB · ` : ""}{file.uploaded_at ? format(new Date(file.uploaded_at), "dd/MM/yyyy HH:mm") : "—"}
+                                                            {file.uploaded_by && uploadersMap.get(file.uploaded_by) && (
+                                                                <span className="ml-1.5 text-indigo-600 font-medium">
+                                                                    · Cargado por: {uploadersMap.get(file.uploaded_by)}
+                                                                </span>
+                                                            )}
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            className="gap-1.5 h-8 text-xs text-blue-700 border-blue-200 bg-blue-50/40 hover:bg-blue-100/60"
+                                                            onClick={() => handlePreview(file)}
+                                                            disabled={previewingId === file.id}
+                                                        >
+                                                            {previewingId === file.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
+                                                            Previsualizar
+                                                        </Button>
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            className="gap-1.5 h-8 text-xs"
+                                                            onClick={() => handleDownload(file.id)}
+                                                            disabled={isDownloading}
+                                                        >
+                                                            {isDownloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                                                            Descargar
+                                                        </Button>
+                                                    </div>
                                                 </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="font-semibold text-sm truncate">{file.file_name}</p>
-                                                    <p className="text-xs text-muted-foreground">
-                                                        v{file.version} · {file.size_bytes ? `${(file.size_bytes / 1024).toFixed(0)} KB · ` : ""}{file.uploaded_at ? format(new Date(file.uploaded_at), "dd/MM/yyyy HH:mm") : "—"}
-                                                        {file.uploaded_by && uploadersMap.get(file.uploaded_by) && (
-                                                            <span className="ml-1.5 text-indigo-600 font-medium">
-                                                                · Cargado por: {uploadersMap.get(file.uploaded_by)}
-                                                            </span>
-                                                        )}
-                                                    </p>
-                                                </div>
-                                                <div className="flex items-center gap-2 shrink-0">
-                                                    <Button
-                                                        variant="outline"
-                                                        size="sm"
-                                                        className="gap-1.5 h-8 text-xs text-blue-700 border-blue-200 bg-blue-50/40 hover:bg-blue-100/60"
-                                                        onClick={() => handlePreview(file)}
-                                                        disabled={previewingId === file.id}
-                                                    >
-                                                        {previewingId === file.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
-                                                        Previsualizar
-                                                    </Button>
-                                                    <Button
-                                                        variant="outline"
-                                                        size="sm"
-                                                        className="gap-1.5 h-8 text-xs"
-                                                        onClick={() => handleDownload(file.id)}
-                                                        disabled={isDownloading}
-                                                    >
-                                                        {isDownloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                                                        Descargar
-                                                    </Button>
-                                                </div>
-                                            </div>
-                                        ))}
+                                            )
+                                        })}
                                     </div>
                                 ) : (
                                     <div className="border-2 border-dashed rounded-xl p-8 text-center">

@@ -55,6 +55,8 @@ export async function GET(req: NextRequest) {
                 direct_exam_name,
                 order_tests (
                     id,
+                    status,
+                    result_summary_json,
                     tests (name, category)
                 ),
                 result_files (id, file_name, mime_type, size_bytes)

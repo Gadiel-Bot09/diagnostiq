@@ -39,10 +39,37 @@ function safeDate(value?: string | null, pattern = "d 'de' MMM yyyy") {
     return format(d, pattern, { locale: es })
 }
 
-function latestFile(order: any) {
+function fileForExam(order: any, examName: string) {
+    const tests = order.order_tests || []
+    const ot = tests.find((t: any) => t?.tests?.name === examName)
     const files = order.result_files || []
     if (files.length === 0) return null
-    return files.reduce((a: any, b: any) => ((b.version || 0) > (a.version || 0) ? b : a))
+
+    // 1. Direct match by ot.result_summary_json?.file_id
+    if (ot?.result_summary_json?.file_id) {
+        const found = files.find((f: any) => f.id === ot.result_summary_json.file_id)
+        if (found) return found
+    }
+
+    // 2. Direct match by order_test_id if present on file
+    if (ot) {
+        const matchingFiles = files.filter((f: any) => f.order_test_id === ot.id)
+        if (matchingFiles.length > 0) {
+            return matchingFiles.reduce((a: any, b: any) => ((b.version || 0) > (a.version || 0) ? b : a))
+        }
+    }
+
+    // 3. Fallback for single-exam orders or direct results
+    if (order.direct_exam_name || tests.length <= 1) {
+        return files.reduce((a: any, b: any) => ((b.version || 0) > (a.version || 0) ? b : a))
+    }
+
+    // 4. If test is COMPLETED and only 1 file exists in the order
+    if (ot?.status === 'COMPLETED' && files.length === 1) {
+        return files[0]
+    }
+
+    return null
 }
 
 function examNamesOf(order: any): string[] {
@@ -128,7 +155,7 @@ export default function PatientDashboard() {
     const colorOf = (exam: string) => PALETTE[Math.max(0, allExamNames.indexOf(exam)) % PALETTE.length]
     const visibleGroups = activeExam === "ALL" ? groups : groups.filter(g => g.exam === activeExam)
     const totalOrders = orders?.length || 0
-    const readyCount = (orders || []).filter((o: any) => latestFile(o)).length
+    const readyCount = groups.reduce((acc, g) => acc + g.list.filter(o => !!fileForExam(o, g.exam)).length, 0)
 
     const handleSignOut = async () => {
         await supabase.auth.signOut()
@@ -142,11 +169,11 @@ export default function PatientDashboard() {
         return data.url as string
     }
 
-    // Al tocar un registro se abre de inmediato el documento
+    // Al tocar un registro se abre de inmediato el documento del examen específico
     const openResult = async (order: any, exam: string) => {
-        const file = latestFile(order)
+        const file = fileForExam(order, exam)
         if (!file) {
-            toast({ title: "Aún en proceso", description: "El laboratorio todavía no ha cargado este resultado." })
+            toast({ title: "Aún en proceso", description: `El laboratorio todavía no ha cargado el resultado para ${exam}.` })
             return
         }
         const key = `${order.id}:${exam}`
@@ -167,9 +194,9 @@ export default function PatientDashboard() {
         }
     }
 
-    const downloadResult = async (e: React.MouseEvent, order: any) => {
+    const downloadResult = async (e: React.MouseEvent, order: any, exam: string) => {
         e.stopPropagation()
-        const file = latestFile(order)
+        const file = fileForExam(order, exam)
         if (!file) return
         try {
             const url = await fetchUrl(file.id, false)
@@ -301,7 +328,7 @@ export default function PatientDashboard() {
 
                                     <div className="grid gap-3 md:grid-cols-2">
                                         {list.map((order: any) => {
-                                            const file = latestFile(order)
+                                            const file = fileForExam(order, exam)
                                             const key = `${order.id}:${exam}`
                                             const isOpening = loadingKey === key
                                             const performed = safeDate(file?.performed_at || order.performed_at)
@@ -323,13 +350,13 @@ export default function PatientDashboard() {
                                                         <div className="min-w-0 space-y-1.5">
                                                             <div className="flex items-center gap-2">
                                                                 <span className="font-mono text-sm font-bold text-slate-900">#{order.order_number}</span>
-                                                                {order.status === "COMPLETED" ? (
+                                                                {ready ? (
                                                                     <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
-                                                                        <CheckCircle2 className="h-3 w-3" /> Completo
+                                                                        <CheckCircle2 className="h-3 w-3" /> Resultado Listo
                                                                     </span>
                                                                 ) : (
                                                                     <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
-                                                                        <Clock className="h-3 w-3" /> Procesando
+                                                                        <Clock className="h-3 w-3" /> En Proceso
                                                                     </span>
                                                                 )}
                                                             </div>
@@ -373,7 +400,7 @@ export default function PatientDashboard() {
                                                         </Link>
                                                         {ready && (
                                                             <button
-                                                                onClick={(e) => downloadResult(e, order)}
+                                                                onClick={(e) => downloadResult(e, order, exam)}
                                                                 className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-indigo-600 hover:bg-indigo-50"
                                                             >
                                                                 <Download className="h-3.5 w-3.5" /> Descargar

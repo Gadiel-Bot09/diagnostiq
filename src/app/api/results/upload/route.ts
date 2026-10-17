@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { uploadToMinio } from "@/lib/minio"
 import { createServerClient } from "@supabase/ssr"
 import { sendNewResultsEmail } from "@/lib/email"
@@ -60,42 +60,93 @@ export async function POST(req: NextRequest) {
         const hashArray = Array.from(new Uint8Array(hashBuffer))
         const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
 
+        const orderTestId = (formData.get("orderTestId") as string) || null
+
         // Insert into result_files in Supabase
-        const { data: resultFile, error: dbError } = await supabase
+        const filePayload: any = {
+            order_id: orderId,
+            patient_id: patientId,
+            lab_id: labId,
+            file_name: file.name,
+            storage_path: uploadedPath,
+            mime_type: file.type,
+            size_bytes: file.size,
+            uploaded_by: user.id,
+            version: parseInt(version || "1", 10),
+            storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
+            sha256: hashHex,
+            performed_at: performedAt,
+        }
+        if (orderTestId) {
+            filePayload.order_test_id = orderTestId
+        }
+
+        let { data: resultFile, error: dbError } = await supabase
             .from("result_files")
-            .insert({
-                order_id: orderId,
-                patient_id: patientId,
-                lab_id: labId,
-                file_name: file.name,
-                storage_path: uploadedPath,
-                mime_type: file.type,
-                size_bytes: file.size,
-                uploaded_by: user.id,
-                version: parseInt(version || "1", 10),
-                storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
-                sha256: hashHex,
-                performed_at: performedAt
-            })
+            .insert(filePayload)
             .select()
             .single()
 
+        // Graceful fallback if order_test_id column hasn't been added to result_files yet
+        if (dbError && dbError.message && dbError.message.includes("order_test_id")) {
+            delete filePayload.order_test_id
+            const retry = await supabase
+                .from("result_files")
+                .insert(filePayload)
+                .select()
+                .single()
+            resultFile = retry.data
+            dbError = retry.error
+        }
+
         if (dbError) throw dbError
 
-        // Update order status to COMPLETED
+        // If associated to a specific test, update order_tests status and result summary
+        if (orderTestId && resultFile) {
+            const summary = {
+                file_id: resultFile.id,
+                file_name: file.name,
+                version: parseInt(version || "1", 10),
+                size_bytes: file.size,
+                uploaded_at: resultFile.uploaded_at || new Date().toISOString(),
+                performed_at: performedAt,
+            }
+
+            await supabase
+                .from("order_tests")
+                .update({
+                    status: "COMPLETED",
+                    result_summary_json: summary,
+                })
+                .eq("id", orderTestId)
+        }
+
+        // Determine if all tests in the order are completed
+        const { data: allOrderTests } = await supabase
+            .from("order_tests")
+            .select("id, status")
+            .eq("order_id", orderId)
+
+        let targetStatus = "COMPLETED"
+        if (allOrderTests && allOrderTests.length > 0) {
+            const hasPending = allOrderTests.some((t: any) => t.status !== "COMPLETED")
+            targetStatus = hasPending ? "PROCESSING" : "COMPLETED"
+        }
+
+        // Update order status and performed_at
         const { data: updatedOrder, error: orderError } = await supabase
             .from("orders")
-            .update({ status: "COMPLETED", performed_at: performedAt })
+            .update({ status: targetStatus, performed_at: performedAt })
             .eq("id", orderId)
             .select("order_number, patients(email, full_name), labs(name)")
             .single()
 
-        if (!orderError && updatedOrder) {
+        if (!orderError && updatedOrder && targetStatus === "COMPLETED") {
             const patientEmail = (updatedOrder.patients as any)?.email
             const patientName = (updatedOrder.patients as any)?.full_name
             const labName = (updatedOrder.labs as any)?.name
             
-            // Si el paciente tiene correo, enviamos notificación
+            // Si el paciente tiene correo y toda la orden está completada, enviamos notificación
             if (patientEmail) {
                 await sendNewResultsEmail(patientEmail, patientName, labName, updatedOrder.order_number)
             }
@@ -108,10 +159,16 @@ export async function POST(req: NextRequest) {
             action: "UPLOAD",
             entity_type: "RESULT_FILE",
             entity_id: resultFile.id,
-            details: { file_name: file.name, order_id: orderId, performed_at: performedAt }
+            details: {
+                file_name: file.name,
+                order_id: orderId,
+                order_test_id: orderTestId,
+                performed_at: performedAt,
+                order_status: targetStatus,
+            }
         })
 
-        return NextResponse.json({ success: true, file: resultFile })
+        return NextResponse.json({ success: true, file: resultFile, orderStatus: targetStatus })
 
     } catch (error: any) {
         console.error("Upload error:", error)

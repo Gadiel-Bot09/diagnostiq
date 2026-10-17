@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
                 performed_at,
                 direct_exam_name,
                 labs (name),
-                order_tests (id, tests (name, category)),
+                order_tests (id, status, result_summary_json, tests (name, category)),
                 result_files (id, file_name, version, uploaded_at, performed_at)
             `)
             .in("patient_id", patientIds)
