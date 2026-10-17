@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
                         lab_id: patient.lab_id,
                     }, { onConflict: "user_id, lab_id" })
 
-                    return NextResponse.json({ email: loginEmail })
+                    return NextResponse.json({ email: loginEmail, full_name: patient.full_name })
                 }
             } catch (_) { /* continue */ }
 
@@ -77,7 +77,10 @@ export async function POST(req: NextRequest) {
 
         const loginEmail = authUser.user.email!
 
-        return NextResponse.json({ email: loginEmail })
+        return NextResponse.json({
+            email: loginEmail,
+            full_name: patients[0]?.full_name || authUser.user.user_metadata?.full_name || null
+        })
 
     } catch (error: any) {
         console.error("Patient lookup error:", error)

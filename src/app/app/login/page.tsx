@@ -6,8 +6,7 @@ import Link from "next/link"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import * as z from "zod"
-import { Microscope } from "lucide-react"
-import { Logo } from "@/components/common/Logo"
+import { Mail, Lock, ArrowRight, Loader2, Eye, EyeOff, LayoutDashboard, Users, BarChart3 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -19,9 +18,10 @@ import {
     FormMessage,
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/components/ui/use-toast"
+import { AuthShell } from "@/components/auth/AuthShell"
+import { WelcomeOverlay } from "@/components/auth/WelcomeOverlay"
 
 const loginSchema = z.object({
     email: z.string().email({ message: "Email inválido" }),
@@ -32,6 +32,9 @@ export default function LabLoginPage() {
     const router = useRouter()
     const { toast } = useToast()
     const [isLoading, setIsLoading] = useState(false)
+    const [showPassword, setShowPassword] = useState(false)
+    const [welcomeName, setWelcomeName] = useState<string | null>(null)
+    const [welcome, setWelcome] = useState(false)
     const supabase = createClient()
 
     const form = useForm<z.infer<typeof loginSchema>>({
@@ -44,7 +47,7 @@ export default function LabLoginPage() {
 
     async function onSubmit(values: z.infer<typeof loginSchema>) {
         setIsLoading(true)
-        const { error } = await supabase.auth.signInWithPassword({
+        const { data, error } = await supabase.auth.signInWithPassword({
             email: values.email,
             password: values.password,
         })
@@ -59,21 +62,52 @@ export default function LabLoginPage() {
             return
         }
 
-        router.push("/app/dashboard")
+        // Nombre para el mensaje de bienvenida
+        let name: string | null = data.user?.user_metadata?.full_name || null
+        try {
+            if (data.user) {
+                const { data: profile } = await supabase
+                    .from("profiles")
+                    .select("full_name")
+                    .eq("id", data.user.id)
+                    .single()
+                if (profile?.full_name) name = profile.full_name
+            }
+        } catch { /* usa el valor por defecto */ }
+
+        setWelcomeName(name)
+        setWelcome(true)
+        setTimeout(() => router.push("/app/dashboard"), 2400)
     }
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-muted/40 p-4">
-            <Card className="w-full max-w-md shadow-lg border-t-4 border-t-primary">
-                <CardHeader className="space-y-4 text-center pb-6">
-                    <div className="flex justify-center">
-                        <Logo size="xl" showTagline subtitle="Acceso Administrativo y Laboratorio" />
+        <>
+            {welcome && (
+                <WelcomeOverlay
+                    name={welcomeName}
+                    subtitle="Preparando tu panel de control del laboratorio..."
+                />
+            )}
+
+            <AuthShell
+                headline="Gestiona tu laboratorio con"
+                highlight="inteligencia digital"
+                description="Órdenes, pacientes y resultados en un solo lugar. Entrega informes al instante y proyecta una imagen moderna y confiable."
+                features={[
+                    { icon: <LayoutDashboard className="h-4 w-4" />, text: "Panel con el estado de tus órdenes en tiempo real" },
+                    { icon: <Users className="h-4 w-4" />, text: "Pacientes, personal y roles con permisos a medida" },
+                    { icon: <BarChart3 className="h-4 w-4" />, text: "Reportes y tiempos de entrega listos para exportar" },
+                ]}
+            >
+                <div className="rounded-3xl border border-white bg-white/90 p-8 shadow-2xl shadow-indigo-500/10 backdrop-blur">
+                    <div className="mb-6 space-y-1.5">
+                        <span className="inline-flex rounded-full bg-indigo-50 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-indigo-600">
+                            Acceso administrativo
+                        </span>
+                        <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">Bienvenido de nuevo</h1>
+                        <p className="text-sm text-slate-500">Ingresa tus credenciales para acceder al panel de control.</p>
                     </div>
-                    <CardDescription className="pt-2">
-                        Ingresa tus credenciales para acceder al panel de control.
-                    </CardDescription>
-                </CardHeader>
-                <CardContent>
+
                     <Form {...form}>
                         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
                             <FormField
@@ -83,7 +117,10 @@ export default function LabLoginPage() {
                                     <FormItem>
                                         <FormLabel>Correo Electrónico</FormLabel>
                                         <FormControl>
-                                            <Input placeholder="nombre@laboratorio.com" {...field} />
+                                            <div className="relative">
+                                                <Mail className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-indigo-400" />
+                                                <Input placeholder="nombre@laboratorio.com" className="h-12 rounded-xl border-indigo-100 bg-indigo-50/40 pl-10 focus-visible:ring-indigo-400" {...field} />
+                                            </div>
                                         </FormControl>
                                         <FormMessage />
                                     </FormItem>
@@ -96,27 +133,52 @@ export default function LabLoginPage() {
                                     <FormItem>
                                         <FormLabel>Contraseña</FormLabel>
                                         <FormControl>
-                                            <Input type="password" {...field} />
+                                            <div className="relative">
+                                                <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-indigo-400" />
+                                                <Input
+                                                    type={showPassword ? "text" : "password"}
+                                                    className="h-12 rounded-xl border-indigo-100 bg-indigo-50/40 pl-10 pr-11 focus-visible:ring-indigo-400"
+                                                    {...field}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowPassword(v => !v)}
+                                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-indigo-600"
+                                                    aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
+                                                >
+                                                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                                </button>
+                                            </div>
                                         </FormControl>
                                         <FormMessage />
                                     </FormItem>
                                 )}
                             />
-                            <Button type="submit" className="w-full" disabled={isLoading}>
-                                {isLoading ? "Iniciando sesión..." : "Acceder"}
+                            <Button
+                                type="submit"
+                                disabled={isLoading || welcome}
+                                className="h-12 w-full gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-blue-500 to-cyan-500 text-base font-semibold text-white shadow-lg shadow-indigo-500/30 transition-all hover:shadow-xl hover:shadow-indigo-500/40 hover:brightness-110"
+                            >
+                                {isLoading ? <><Loader2 className="h-4 w-4 animate-spin" /> Iniciando sesión...</> : <>Acceder <ArrowRight className="h-4 w-4" /></>}
                             </Button>
                         </form>
                     </Form>
-                </CardContent>
-                <CardFooter className="flex flex-col space-y-2">
-                    <Link 
-                        href="/app/forgot-password" 
-                        className="text-xs text-muted-foreground hover:underline underline-offset-4 font-medium"
-                    >
-                        ¿Olvidaste tu contraseña?
-                    </Link>
-                </CardFooter>
-            </Card>
-        </div>
+
+                    <div className="mt-5 text-center">
+                        <Link
+                            href="/app/forgot-password"
+                            className="text-xs font-medium text-slate-500 underline-offset-4 hover:text-indigo-600 hover:underline"
+                        >
+                            ¿Olvidaste tu contraseña?
+                        </Link>
+                    </div>
+                </div>
+
+                <p className="text-center text-xs text-slate-500">
+                    ¿Eres paciente?{" "}
+                    <Link href="/portal/login" className="font-semibold text-indigo-600 hover:underline">Ir al portal de resultados</Link>
+                </p>
+            </AuthShell>
+        </>
     )
 }

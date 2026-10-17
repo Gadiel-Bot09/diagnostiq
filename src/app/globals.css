@@ -124,3 +124,19 @@ body {
 
 table thead, [data-slot="table-header"] { background-color: rgba(79, 70, 229, 0.05); }
 
+
+/* ── Auth screens: animaciones ── */
+@keyframes dq-float { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-12px) } }
+@keyframes dq-float-slow { 0%,100% { transform: translateY(0) translateX(0) } 50% { transform: translateY(10px) translateX(-6px) } }
+@keyframes dq-pop { 0% { transform: scale(.6); opacity: 0 } 60% { transform: scale(1.08); opacity: 1 } 100% { transform: scale(1); opacity: 1 } }
+@keyframes dq-rise { 0% { transform: translateY(18px); opacity: 0 } 100% { transform: translateY(0); opacity: 1 } }
+@keyframes dq-fade { 0% { opacity: 0 } 100% { opacity: 1 } }
+@keyframes dq-draw { 0% { stroke-dashoffset: 60 } 100% { stroke-dashoffset: 0 } }
+@keyframes dq-confetti { 0% { transform: translateY(-20px) rotate(0); opacity: 0 } 15% { opacity: 1 } 100% { transform: translateY(110vh) rotate(540deg); opacity: .9 } }
+.dq-float { animation: dq-float 6s ease-in-out infinite }
+.dq-float-slow { animation: dq-float-slow 8s ease-in-out infinite }
+.dq-pop { animation: dq-pop .7s cubic-bezier(.34,1.56,.64,1) both }
+.dq-rise { animation: dq-rise .6s ease-out both }
+.dq-fade { animation: dq-fade .4s ease-out both }
+.dq-draw { stroke-dasharray: 60; animation: dq-draw .9s .3s ease-out both }
+.dq-confetti { animation: dq-confetti 3s linear infinite }
