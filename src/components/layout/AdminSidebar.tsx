@@ -40,7 +40,7 @@ import { ChangePasswordModal } from "@/components/auth/ChangePasswordModal"
 
 export function AdminSidebar() {
     const pathname = usePathname()
-    const { hasPermission, isLoading } = usePermissions()
+    const { hasPermission, isLoading, profile } = usePermissions()
 
     // Filter items based on permissions
     const visibleItems = sidebarItems.filter(item => {
@@ -63,7 +63,7 @@ export function AdminSidebar() {
             </div>
 
             <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
-                {isLoading ? (
+                {isLoading && !profile ? (
                     <div className="space-y-3">
                         {[1, 2, 3, 4, 5].map(i => (
                             <Skeleton key={i} className="h-12 w-full" />

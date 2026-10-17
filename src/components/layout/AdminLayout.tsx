@@ -30,14 +30,14 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
                     <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-indigo-600 via-blue-500 to-emerald-400" />
                     <h2 className="text-lg font-semibold dq-gradient-text">Panel de Control</h2>
                     <div className="flex items-center gap-2">
-                        {isLoading ? (
+                        {isLoading && !lab ? (
                             <Skeleton className="h-5 w-40" />
                         ) : (
                             <span className="text-sm font-semibold text-primary">
                                 {lab?.name || "Laboratorio Central"}
                             </span>
                         )}
-                        {!isLoading && profile && (
+                        {profile && (
                             <div className="flex items-center gap-3 border-l pl-3 ml-1 border-muted">
                                 <span className="text-sm text-muted-foreground font-medium">
                                     {profile.full_name || "Usuario"}
