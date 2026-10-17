@@ -62,22 +62,35 @@ export default function LabLoginPage() {
             return
         }
 
-        // Nombre para el mensaje de bienvenida
+        // Nombre para el mensaje de bienvenida y destino por rol
         let name: string | null = data.user?.user_metadata?.full_name || null
+        let targetUrl = "/app/dashboard"
+
         try {
             if (data.user) {
                 const { data: profile } = await supabase
                     .from("profiles")
-                    .select("full_name")
+                    .select("full_name, role")
                     .eq("id", data.user.id)
                     .single()
+
                 if (profile?.full_name) name = profile.full_name
+
+                if (profile?.role === "SUPER_ADMIN") {
+                    targetUrl = "/superadmin/dashboard"
+                } else if (profile?.role === "DOCTOR") {
+                    targetUrl = "/doctor"
+                } else if (profile?.role === "PATIENT") {
+                    targetUrl = "/portal"
+                }
             }
         } catch { /* usa el valor por defecto */ }
 
         setWelcomeName(name)
         setWelcome(true)
-        setTimeout(() => router.push("/app/dashboard"), 2400)
+        setTimeout(() => {
+            window.location.href = targetUrl
+        }, 2400)
     }
 
     return (

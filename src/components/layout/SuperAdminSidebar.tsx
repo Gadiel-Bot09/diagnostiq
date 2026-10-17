@@ -48,7 +48,7 @@ export function SuperAdminSidebar() {
 
     async function handleSignOut() {
         await supabase.auth.signOut()
-        router.push("/app/login")
+        window.location.href = "/app/login"
     }
 
     return (
