@@ -6,8 +6,27 @@ import { useQuery } from "@tanstack/react-query"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
 import {
-    FileText, Download, Microscope, Clock, CheckCircle2, Search, Eye,
-    Building2, CalendarDays, UploadCloud, ChevronRight, Loader2, Sparkles, Info,
+    FileText,
+    Download,
+    Microscope,
+    Clock,
+    CheckCircle2,
+    Search,
+    Eye,
+    Building2,
+    CalendarDays,
+    ChevronRight,
+    ChevronDown,
+    Loader2,
+    Sparkles,
+    Info,
+    Folder,
+    FolderOpen,
+    Calendar,
+    X,
+    Filter,
+    RotateCcw,
+    Layers,
 } from "lucide-react"
 import Link from "next/link"
 
@@ -17,78 +36,131 @@ import { ChangePasswordModal } from "@/components/auth/ChangePasswordModal"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useToast } from "@/components/ui/use-toast"
 
-const GENERAL_EXAM = "Otros resultados"
-
-// Paleta rotativa por tipo de examen (colores del logo: índigo, azul, cian, esmeralda)
+// Paleta rotativa por tipo de examen (colores del logo DiagnostiQ)
 const PALETTE = [
-    { bar: "from-indigo-500 to-blue-500", soft: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: "bg-indigo-100 text-indigo-600" },
-    { bar: "from-cyan-500 to-sky-500", soft: "bg-cyan-50 text-cyan-700 border-cyan-200", icon: "bg-cyan-100 text-cyan-600" },
-    { bar: "from-emerald-500 to-teal-500", soft: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: "bg-emerald-100 text-emerald-600" },
-    { bar: "from-violet-500 to-fuchsia-500", soft: "bg-violet-50 text-violet-700 border-violet-200", icon: "bg-violet-100 text-violet-600" },
-    { bar: "from-amber-500 to-orange-500", soft: "bg-amber-50 text-amber-700 border-amber-200", icon: "bg-amber-100 text-amber-600" },
-    { bar: "from-rose-500 to-pink-500", soft: "bg-rose-50 text-rose-700 border-rose-200", icon: "bg-rose-100 text-rose-600" },
+    { soft: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: "bg-indigo-100 text-indigo-600" },
+    { soft: "bg-cyan-50 text-cyan-700 border-cyan-200", icon: "bg-cyan-100 text-cyan-600" },
+    { soft: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: "bg-emerald-100 text-emerald-600" },
+    { soft: "bg-violet-50 text-violet-700 border-violet-200", icon: "bg-violet-100 text-violet-600" },
+    { soft: "bg-amber-50 text-amber-700 border-amber-200", icon: "bg-amber-100 text-amber-600" },
+    { soft: "bg-rose-50 text-rose-700 border-rose-200", icon: "bg-rose-100 text-rose-600" },
 ]
 
 function safeDate(value?: string | null, pattern = "d 'de' MMM yyyy") {
     if (!value) return null
-    const d = new Date(value.length === 10 ? value + "T00:00:00" : value)
+    const clean = value.length === 10 ? value + "T00:00:00" : value
+    const d = new Date(clean)
     if (isNaN(d.getTime())) return null
     return format(d, pattern, { locale: es })
 }
 
-function fileForExam(order: any, examName: string) {
-    const tests = order.order_tests || []
-    const ot = tests.find((t: any) => t?.tests?.name === examName)
-    const files = order.result_files || []
-    if (files.length === 0) return null
-
-    // 1. Direct match by ot.result_summary_json?.file_id
-    if (ot?.result_summary_json?.file_id) {
-        const found = files.find((f: any) => f.id === ot.result_summary_json.file_id)
-        if (found) return found
-    }
-
-    // 2. Direct match by order_test_id if present on file
-    if (ot) {
-        const matchingFiles = files.filter((f: any) => f.order_test_id === ot.id)
-        if (matchingFiles.length > 0) {
-            return matchingFiles.reduce((a: any, b: any) => ((b.version || 0) > (a.version || 0) ? b : a))
-        }
-    }
-
-    // 3. Fallback for single-exam orders or direct results
-    if (order.direct_exam_name || tests.length <= 1) {
-        return files.reduce((a: any, b: any) => ((b.version || 0) > (a.version || 0) ? b : a))
-    }
-
-    // 4. If test is COMPLETED and only 1 file exists in the order
-    if (ot?.status === 'COMPLETED' && files.length === 1) {
-        return files[0]
-    }
-
-    return null
+interface ExamItem {
+    id: string
+    name: string
+    category?: string | null
+    status: string
+    file: any | null
 }
 
-function examNamesOf(order: any): string[] {
-    if (order.direct_exam_name) return [order.direct_exam_name]
-    const names = (order.order_tests || [])
-        .map((ot: any) => ot?.tests?.name)
-        .filter(Boolean)
-    return names.length > 0 ? Array.from(new Set(names)) : [GENERAL_EXAM]
+function getExamsForOrder(order: any): ExamItem[] {
+    const files = order.result_files || []
+
+    // 1. Caso de examen directo
+    if (order.direct_exam_name) {
+        const file = files.length > 0
+            ? files.reduce((a: any, b: any) => ((b.version || 0) > (a.version || 0) ? b : a))
+            : null
+        return [{
+            id: `direct-${order.id}`,
+            name: order.direct_exam_name,
+            category: "Resultado Directo",
+            status: file ? "COMPLETED" : (order.status || "PENDING"),
+            file,
+        }]
+    }
+
+    // 2. Orden normal con order_tests
+    const orderTests = order.order_tests || []
+    if (orderTests.length > 0) {
+        return orderTests.map((ot: any) => {
+            const testName = ot?.tests?.name || "Examen"
+            const category = ot?.tests?.category || null
+
+            let file: any = null
+
+            // A. Buscar por file_id en result_summary_json
+            if (ot.result_summary_json?.file_id) {
+                file = files.find((f: any) => f.id === ot.result_summary_json.file_id) || null
+            }
+
+            // B. Buscar por order_test_id en result_files
+            if (!file) {
+                const matchingFiles = files.filter((f: any) => f.order_test_id === ot.id)
+                if (matchingFiles.length > 0) {
+                    file = matchingFiles.reduce((a: any, b: any) => ((b.version || 0) > (a.version || 0) ? b : a))
+                }
+            }
+
+            // C. Fallback: Si la orden solo tiene 1 examen o 1 archivo y está completado
+            if (!file && orderTests.length === 1 && files.length > 0) {
+                file = files.reduce((a: any, b: any) => ((b.version || 0) > (a.version || 0) ? b : a))
+            } else if (!file && ot.status === "COMPLETED" && files.length === 1) {
+                file = files[0]
+            }
+
+            const isCompleted = ot.status === "COMPLETED" || !!file
+
+            return {
+                id: ot.id,
+                name: testName,
+                category,
+                status: isCompleted ? "COMPLETED" : "PENDING",
+                file,
+            }
+        })
+    }
+
+    // 3. Fallback para órdenes legacy con archivos
+    if (files.length > 0) {
+        return files.map((f: any, idx: number) => ({
+            id: f.id || `file-${idx}`,
+            name: f.file_name.replace(/\.[^/.]+$/, ""),
+            category: "General",
+            status: "COMPLETED",
+            file: f,
+        }))
+    }
+
+    return [{
+        id: `empty-${order.id}`,
+        name: "Exámenes de la orden",
+        category: null,
+        status: order.status || "PENDING",
+        file: null,
+    }]
 }
 
 export default function PatientDashboard() {
     const supabase = createClient()
     const { toast } = useToast()
+
+    // Filtros
     const [search, setSearch] = useState("")
-    const [activeExam, setActiveExam] = useState<string>("ALL")
+    const [dateFilter, setDateFilter] = useState("")
+    const [statusFilter, setStatusFilter] = useState<"ALL" | "READY" | "PENDING">("ALL")
+    const [examFilter, setExamFilter] = useState<string>("ALL")
+
+    // Estado de carpetas (ordenId -> abierto/cerrado)
+    const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({})
+
     const [loadingKey, setLoadingKey] = useState<string | null>(null)
     const [preview, setPreview] = useState<{ url: string; name: string; subtitle?: string } | null>(null)
 
-    const { data: orders, isLoading } = useQuery({
+    const { data: orders = [], isLoading } = useQuery({
         queryKey: ["patient-orders"],
         queryFn: async () => {
             const res = await fetch("/api/portal/orders")
@@ -127,35 +199,129 @@ export default function PatientDashboard() {
         }
     })
 
-    // Una "tarjeta" por (orden, tipo de examen), agrupadas por tipo de examen
-    const groups = useMemo(() => {
-        const term = search.trim().toLowerCase()
-        const map = new Map<string, any[]>()
-        for (const order of orders || []) {
-            for (const exam of examNamesOf(order)) {
-                if (term) {
-                    const haystack = `${exam} ${order.order_number} ${order.labs?.name || ""}`.toLowerCase()
-                    if (!haystack.includes(term)) continue
-                }
-                if (!map.has(exam)) map.set(exam, [])
-                map.get(exam)!.push(order)
-            }
-        }
-        return Array.from(map.entries())
-            .map(([exam, list]) => ({ exam, list }))
-            .sort((a, b) => b.list.length - a.list.length || a.exam.localeCompare(b.exam))
-    }, [orders, search])
+    // Lista de todas las órdenes con sus exámenes procesados
+    const processedOrders = useMemo(() => {
+        return orders.map((order: any) => {
+            const exams = getExamsForOrder(order)
+            const readyCount = exams.filter(e => !!e.file).length
+            const totalCount = exams.length
+            const isAllReady = totalCount > 0 && readyCount === totalCount
 
-    const allExamNames = useMemo(() => {
-        const set = new Set<string>()
-        for (const order of orders || []) examNamesOf(order).forEach(n => set.add(n))
-        return Array.from(set).sort()
+            // Fecha de realización representativa (de la orden o del primer archivo)
+            const perfDate = order.performed_at
+                ? order.performed_at.slice(0, 10)
+                : (exams.find(e => e.file?.performed_at)?.file?.performed_at?.slice(0, 10) || null)
+
+            const orderDate = order.ordered_at
+                ? new Date(order.ordered_at).toISOString().slice(0, 10)
+                : null
+
+            return {
+                ...order,
+                exams,
+                readyCount,
+                totalCount,
+                isAllReady,
+                perfDate,
+                orderDate,
+            }
+        })
     }, [orders])
 
-    const colorOf = (exam: string) => PALETTE[Math.max(0, allExamNames.indexOf(exam)) % PALETTE.length]
-    const visibleGroups = activeExam === "ALL" ? groups : groups.filter(g => g.exam === activeExam)
-    const totalOrders = orders?.length || 0
-    const readyCount = groups.reduce((acc, g) => acc + g.list.filter(o => !!fileForExam(o, g.exam)).length, 0)
+    // Tipos de examen únicos presentes en las órdenes
+    const allUniqueExamNames = useMemo(() => {
+        const set = new Set<string>()
+        processedOrders.forEach((o: any) => {
+            o.exams.forEach((e: any) => set.add(e.name))
+        })
+        return Array.from(set).sort()
+    }, [processedOrders])
+
+    // Asignación de colores por nombre de examen
+    const colorOf = (name: string) => PALETTE[Math.max(0, allUniqueExamNames.indexOf(name)) % PALETTE.length]
+
+    // Aplicación de filtros: búsqueda de texto, fecha, estado y tipo de examen
+    const filteredOrders = useMemo(() => {
+        return processedOrders.filter((order: any) => {
+            // 1. Filtro por fecha de realización o de orden
+            if (dateFilter) {
+                const matchesDate =
+                    order.perfDate === dateFilter ||
+                    order.orderDate === dateFilter ||
+                    (order.result_files || []).some((f: any) => f.performed_at?.slice(0, 10) === dateFilter)
+
+                if (!matchesDate) return false
+            }
+
+            // 2. Filtro de búsqueda (número de orden, laboratorio o nombre de examen)
+            if (search.trim()) {
+                const term = search.trim().toLowerCase()
+                const orderNum = (order.order_number || "").toLowerCase()
+                const labName = (order.labs?.name || "").toLowerCase()
+                const directName = (order.direct_exam_name || "").toLowerCase()
+                const examMatches = order.exams.some((e: any) =>
+                    e.name.toLowerCase().includes(term) ||
+                    (e.category || "").toLowerCase().includes(term)
+                )
+
+                if (!orderNum.includes(term) && !labName.includes(term) && !directName.includes(term) && !examMatches) {
+                    return false
+                }
+            }
+
+            // 3. Filtro por estado
+            if (statusFilter === "READY" && order.readyCount === 0) return false
+            if (statusFilter === "PENDING" && order.isAllReady) return false
+
+            // 4. Filtro por tipo de examen
+            if (examFilter !== "ALL") {
+                const hasExam = order.exams.some((e: any) => e.name === examFilter)
+                if (!hasExam) return false
+            }
+
+            return true
+        })
+    }, [processedOrders, search, dateFilter, statusFilter, examFilter])
+
+    // Métricas para contadores
+    const totalOrders = processedOrders.length
+    const readyOrdersCount = processedOrders.filter((o: any) => o.readyCount > 0).length
+    const pendingOrdersCount = processedOrders.filter((o: any) => !o.isAllReady).length
+    const totalExamsReady = processedOrders.reduce((acc: number, o: any) => acc + o.readyCount, 0)
+
+    const hasActiveFilters = Boolean(search.trim() || dateFilter || statusFilter !== "ALL" || examFilter !== "ALL")
+
+    const resetFilters = () => {
+        setSearch("")
+        setDateFilter("")
+        setStatusFilter("ALL")
+        setExamFilter("ALL")
+    }
+
+    // Toggle de carpeta individual (por defecto abiertas si no se han tocado)
+    const isOrderOpen = (orderId: string) => {
+        if (expandedOrders[orderId] !== undefined) return expandedOrders[orderId]
+        return true // abiertas por defecto para ver todos los exámenes de inmediato
+    }
+
+    const toggleOrder = (orderId: string) => {
+        setExpandedOrders(prev => ({
+            ...prev,
+            [orderId]: !isOrderOpen(orderId),
+        }))
+    }
+
+    const expandAll = () => {
+        const allOpen: Record<string, boolean> = {}
+        filteredOrders.forEach((o: any) => { allOpen[o.id] = true })
+        setExpandedOrders(allOpen)
+    }
+
+    const collapseAll = () => {
+        const allClosed: Record<string, boolean> = {}
+        filteredOrders.forEach((o: any) => { allClosed[o.id] = false })
+        setExpandedOrders(allClosed)
+    }
 
     const handleSignOut = async () => {
         await supabase.auth.signOut()
@@ -169,23 +335,29 @@ export default function PatientDashboard() {
         return data.url as string
     }
 
-    // Al tocar un registro se abre de inmediato el documento del examen específico
-    const openResult = async (order: any, exam: string) => {
-        const file = fileForExam(order, exam)
-        if (!file) {
-            toast({ title: "Aún en proceso", description: `El laboratorio todavía no ha cargado el resultado para ${exam}.` })
+    // Abrir visor PDF para un examen específico
+    const openResult = async (order: any, exam: ExamItem) => {
+        if (!exam.file) {
+            toast({
+                title: "Examen en proceso",
+                description: `El resultado para "${exam.name}" todavía está siendo procesado por el laboratorio.`,
+            })
             return
         }
-        const key = `${order.id}:${exam}`
+
+        const key = `${order.id}:${exam.id}`
         setLoadingKey(key)
         try {
-            const url = await fetchUrl(file.id, true)
-            const performed = safeDate(file.performed_at || order.performed_at, "dd/MM/yyyy")
-            const uploaded = safeDate(file.uploaded_at, "dd/MM/yyyy")
+            const url = await fetchUrl(exam.file.id, true)
+            const performed = safeDate(exam.file.performed_at || order.performed_at, "dd/MM/yyyy")
+            const uploaded = safeDate(exam.file.uploaded_at, "dd/MM/yyyy")
             setPreview({
                 url,
-                name: `${exam} · #${order.order_number}`,
-                subtitle: [performed && `Realizado: ${performed}`, uploaded && `Cargado: ${uploaded}`].filter(Boolean).join("  ·  "),
+                name: `${exam.name} · #${order.order_number}`,
+                subtitle: [
+                    performed && `Realizado: ${performed}`,
+                    uploaded && `Cargado: ${uploaded}`,
+                ].filter(Boolean).join("  ·  "),
             })
         } catch (e: any) {
             toast({ variant: "destructive", title: "No se pudo abrir", description: e.message })
@@ -194,247 +366,562 @@ export default function PatientDashboard() {
         }
     }
 
-    const downloadResult = async (e: React.MouseEvent, order: any, exam: string) => {
+    // Descargar PDF de un examen
+    const downloadResult = async (e: React.MouseEvent, order: any, exam: ExamItem) => {
         e.stopPropagation()
-        const file = fileForExam(order, exam)
-        if (!file) return
+        if (!exam.file) return
         try {
-            const url = await fetchUrl(file.id, false)
+            const url = await fetchUrl(exam.file.id, false)
             window.open(url, "_blank")
         } catch (err: any) {
             toast({ variant: "destructive", title: "Error de descarga", description: err.message })
         }
     }
 
+    // Descargar todos los resultados listos de una orden
+    const downloadAllOrderFiles = async (order: any) => {
+        const readyExams = order.exams.filter((e: any) => !!e.file)
+        if (readyExams.length === 0) return
+
+        toast({
+            title: "Descargando resultados",
+            description: `Iniciando la descarga de ${readyExams.length} archivo(s)...`,
+        })
+
+        for (const ex of readyExams) {
+            try {
+                const url = await fetchUrl(ex.file.id, false)
+                window.open(url, "_blank")
+            } catch (err: any) {
+                console.error("Error al descargar:", err)
+            }
+        }
+    }
+
     return (
-        <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-cyan-50">
-            {/* Header */}
-            <header className="sticky top-0 z-20 border-b border-indigo-100 bg-white/80 backdrop-blur">
+        <div className="min-h-screen bg-gradient-to-br from-indigo-50/70 via-slate-50 to-cyan-50/60 pb-12">
+            {/* Header Superior */}
+            <header className="sticky top-0 z-20 border-b border-indigo-100 bg-white/85 backdrop-blur-md shadow-xs">
                 <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-indigo-600 via-blue-500 to-emerald-400" />
-                <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-8">
+                <div className="mx-auto flex max-w-5xl flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between lg:px-6">
                     <div className="flex items-center gap-3">
-                        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-600 to-cyan-500 text-white shadow-lg shadow-indigo-500/30">
+                        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-600 to-cyan-500 text-white shadow-md shadow-indigo-500/25">
                             <Microscope className="h-5 w-5" />
                         </div>
                         <div>
-                            <h1 className="text-xl font-bold tracking-tight text-slate-900">Mis Resultados</h1>
-                            <p className="text-xs text-slate-500">Toca un resultado para verlo al instante</p>
+                            <h1 className="text-xl font-bold tracking-tight text-slate-900">Mis Resultados Médicos</h1>
+                            <p className="text-xs text-slate-500">Expedientes organizados por número de orden</p>
                         </div>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2.5">
                         {isLoadingUser ? (
-                            <Skeleton className="h-8 w-36" />
+                            <Skeleton className="h-8 w-32" />
                         ) : userProfile && (
                             <div className="hidden text-right sm:block">
-                                <p className="text-sm font-semibold text-indigo-700">{userProfile.labName}</p>
-                                <p className="text-[11px] font-medium uppercase text-slate-500">{userProfile.full_name}</p>
-                            </div>
-                        )}
-                        {userProfile && (
-                            <div className="hidden h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-cyan-500 text-sm font-bold uppercase text-white shadow md:flex">
-                                {userProfile.full_name?.substring(0, 2)}
+                                <p className="text-sm font-semibold text-indigo-700 leading-tight">{userProfile.labName}</p>
+                                <p className="text-[11px] font-medium text-slate-500 truncate max-w-[180px]">{userProfile.full_name}</p>
                             </div>
                         )}
                         <div className="flex items-center gap-2 border-l border-indigo-100 pl-3">
                             <ChangePasswordModal />
-                            <Button variant="outline" size="sm" onClick={handleSignOut}>Cerrar Sesión</Button>
+                            <Button variant="outline" size="sm" onClick={handleSignOut} className="text-xs h-9">
+                                Cerrar Sesión
+                            </Button>
                         </div>
                     </div>
                 </div>
             </header>
 
-            <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 lg:px-8">
+            <main className="mx-auto max-w-5xl space-y-6 px-4 py-6 lg:px-6">
                 <PasswordChangeBanner />
 
-                {/* Resumen */}
+                {/* Tarjetas de Resumen KPI */}
                 <section className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                    <div className="rounded-2xl bg-gradient-to-br from-indigo-600 to-blue-500 p-4 text-white shadow-lg shadow-indigo-500/20">
-                        <p className="text-xs font-medium text-indigo-100">Órdenes</p>
-                        <p className="mt-1 text-3xl font-bold">{totalOrders}</p>
+                    <div className="rounded-2xl bg-gradient-to-br from-indigo-600 to-blue-600 p-4 text-white shadow-md shadow-indigo-500/15">
+                        <div className="flex items-center justify-between opacity-80 text-xs font-medium">
+                            <span>Órdenes / Expedientes</span>
+                            <Folder className="h-4 w-4" />
+                        </div>
+                        <p className="mt-1 text-2xl sm:text-3xl font-extrabold tracking-tight">{totalOrders}</p>
                     </div>
-                    <div className="rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-500 p-4 text-white shadow-lg shadow-emerald-500/20">
-                        <p className="text-xs font-medium text-emerald-100">Resultados listos</p>
-                        <p className="mt-1 text-3xl font-bold">{readyCount}</p>
+
+                    <div className="rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 p-4 text-white shadow-md shadow-emerald-500/15">
+                        <div className="flex items-center justify-between opacity-80 text-xs font-medium">
+                            <span>Exámenes con resultado</span>
+                            <CheckCircle2 className="h-4 w-4" />
+                        </div>
+                        <p className="mt-1 text-2xl sm:text-3xl font-extrabold tracking-tight">{totalExamsReady}</p>
                     </div>
-                    <div className="col-span-2 rounded-2xl bg-gradient-to-br from-cyan-500 to-sky-500 p-4 text-white shadow-lg shadow-cyan-500/20 sm:col-span-1">
-                        <p className="text-xs font-medium text-cyan-100">Tipos de examen</p>
-                        <p className="mt-1 text-3xl font-bold">{allExamNames.length}</p>
+
+                    <div className="col-span-2 rounded-2xl bg-gradient-to-br from-cyan-600 to-sky-600 p-4 text-white shadow-md shadow-cyan-500/15 sm:col-span-1">
+                        <div className="flex items-center justify-between opacity-80 text-xs font-medium">
+                            <span>Tipos de examen</span>
+                            <Layers className="h-4 w-4" />
+                        </div>
+                        <p className="mt-1 text-2xl sm:text-3xl font-extrabold tracking-tight">{allUniqueExamNames.length}</p>
                     </div>
                 </section>
 
-                {/* Buscador + filtros por tipo de examen */}
-                <section className="space-y-3 rounded-2xl border border-indigo-100 bg-white/90 p-4 shadow-sm">
-                    <div className="relative">
-                        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                        <Input
-                            value={search}
-                            onChange={(e) => setSearch(e.target.value)}
-                            placeholder="Buscar por examen, número de orden o laboratorio..."
-                            className="h-11 rounded-xl border-indigo-100 bg-indigo-50/40 pl-9"
-                        />
-                    </div>
-                    {allExamNames.length > 1 && (
-                        <div className="flex flex-wrap gap-2">
-                            <button
-                                onClick={() => setActiveExam("ALL")}
-                                className={`rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-all ${activeExam === "ALL"
-                                    ? "border-transparent bg-gradient-to-r from-indigo-600 to-cyan-500 text-white shadow-md"
-                                    : "border-indigo-100 bg-white text-slate-600 hover:bg-indigo-50"}`}
-                            >
-                                Todos
-                            </button>
-                            {allExamNames.map((exam) => {
-                                const count = groups.find(g => g.exam === exam)?.list.length || 0
-                                const active = activeExam === exam
-                                return (
+                {/* Bloque de Búsqueda y Filtros */}
+                <section className="space-y-4 rounded-2xl border border-indigo-100/80 bg-white p-4 sm:p-5 shadow-sm">
+                    {/* Fila 1: Buscador de texto + Selector de fecha */}
+                    <div className="grid gap-3 sm:grid-cols-12">
+                        {/* Buscador de número de orden o examen */}
+                        <div className="relative sm:col-span-7">
+                            <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                            <Input
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                                placeholder="Buscar por número de orden (ej: #20261017-1555), examen..."
+                                className="h-11 rounded-xl border-indigo-100 bg-slate-50/60 pl-10 pr-9 text-sm focus-visible:bg-white"
+                            />
+                            {search && (
+                                <button
+                                    onClick={() => setSearch("")}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                                    title="Borrar búsqueda"
+                                >
+                                    <X className="h-3.5 w-3.5" />
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Filtro por fecha de realización */}
+                        <div className="relative sm:col-span-5">
+                            <div className="flex items-center gap-2 rounded-xl border border-indigo-100 bg-indigo-50/40 px-3 py-1.5 focus-within:bg-white focus-within:border-indigo-300 transition-all">
+                                <Calendar className="h-4 w-4 text-indigo-600 shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                    <label htmlFor="portalDateFilter" className="block text-[10px] font-bold uppercase tracking-wider text-indigo-900/80 leading-none">
+                                        Fecha de examen
+                                    </label>
+                                    <input
+                                        id="portalDateFilter"
+                                        type="date"
+                                        value={dateFilter}
+                                        onChange={(e) => setDateFilter(e.target.value)}
+                                        className="w-full bg-transparent text-xs font-semibold text-slate-800 outline-none cursor-pointer"
+                                    />
+                                </div>
+                                {dateFilter && (
                                     <button
-                                        key={exam}
-                                        onClick={() => setActiveExam(active ? "ALL" : exam)}
-                                        className={`rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-all ${active
-                                            ? "border-transparent bg-gradient-to-r from-indigo-600 to-cyan-500 text-white shadow-md"
-                                            : `${colorOf(exam).soft} hover:shadow-sm`}`}
+                                        onClick={() => setDateFilter("")}
+                                        className="rounded-full p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-200/50"
+                                        title="Limpiar fecha"
                                     >
-                                        {exam} <span className="ml-1 opacity-70">{count}</span>
+                                        <X className="h-3.5 w-3.5" />
                                     </button>
-                                )
-                            })}
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Fila 2: Filtro por estado y Tipo de Examen */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1 border-t border-slate-100">
+                        {/* Estado: Todas / Listas / En proceso */}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mr-1 flex items-center gap-1">
+                                <Filter className="h-3 w-3" /> Estado:
+                            </span>
+                            <button
+                                onClick={() => setStatusFilter("ALL")}
+                                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                                    statusFilter === "ALL"
+                                        ? "bg-slate-900 text-white shadow-xs"
+                                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                }`}
+                            >
+                                Todas ({totalOrders})
+                            </button>
+                            <button
+                                onClick={() => setStatusFilter("READY")}
+                                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                                    statusFilter === "READY"
+                                        ? "bg-emerald-600 text-white shadow-xs"
+                                        : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200"
+                                }`}
+                            >
+                                ✓ Con resultados ({readyOrdersCount})
+                            </button>
+                            <button
+                                onClick={() => setStatusFilter("PENDING")}
+                                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                                    statusFilter === "PENDING"
+                                        ? "bg-amber-600 text-white shadow-xs"
+                                        : "bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200"
+                                }`}
+                            >
+                                ⏳ En proceso ({pendingOrdersCount})
+                            </button>
+                        </div>
+
+                        {/* Botones de expandir / colapsar carpetas */}
+                        <div className="flex items-center gap-2 self-end sm:self-auto">
+                            <button
+                                onClick={expandAll}
+                                className="text-xs font-medium text-indigo-600 hover:text-indigo-800 hover:underline"
+                            >
+                                Abrir todas
+                            </button>
+                            <span className="text-slate-300">·</span>
+                            <button
+                                onClick={collapseAll}
+                                className="text-xs font-medium text-slate-500 hover:text-slate-700 hover:underline"
+                            >
+                                Plegar todas
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Fila 3: Filtro rápido por tipo de examen */}
+                    {allUniqueExamNames.length > 1 && (
+                        <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                                Filtrar por tipo de examen:
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                                <button
+                                    onClick={() => setExamFilter("ALL")}
+                                    className={`rounded-full border px-3 py-1 text-xs font-semibold transition-all ${
+                                        examFilter === "ALL"
+                                            ? "border-indigo-600 bg-indigo-600 text-white shadow-xs"
+                                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                                    }`}
+                                >
+                                    Todos los tipos
+                                </button>
+                                {allUniqueExamNames.map((examName) => {
+                                    const count = processedOrders.filter((o: any) =>
+                                        o.exams.some((e: any) => e.name === examName)
+                                    ).length
+                                    const active = examFilter === examName
+                                    const color = colorOf(examName)
+                                    return (
+                                        <button
+                                            key={examName}
+                                            onClick={() => setExamFilter(active ? "ALL" : examName)}
+                                            className={`rounded-full border px-3 py-1 text-xs font-semibold transition-all ${
+                                                active
+                                                    ? "border-indigo-600 bg-indigo-600 text-white shadow-xs"
+                                                    : `${color.soft} hover:shadow-xs`
+                                            }`}
+                                        >
+                                            {examName} <span className="opacity-75 font-normal">({count})</span>
+                                        </button>
+                                    )
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Banner cuando hay filtros activos */}
+                    {hasActiveFilters && (
+                        <div className="flex items-center justify-between rounded-xl bg-indigo-50/70 border border-indigo-100 px-3.5 py-2 text-xs text-indigo-900">
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold">Filtros aplicados:</span>
+                                {search && <Badge variant="secondary" className="bg-white text-indigo-700">Texto: "{search}"</Badge>}
+                                {dateFilter && <Badge variant="secondary" className="bg-white text-indigo-700">Fecha: {safeDate(dateFilter, "dd/MM/yyyy")}</Badge>}
+                                {statusFilter !== "ALL" && (
+                                    <Badge variant="secondary" className="bg-white text-indigo-700">
+                                        {statusFilter === "READY" ? "Con resultados" : "En proceso"}
+                                    </Badge>
+                                )}
+                                {examFilter !== "ALL" && <Badge variant="secondary" className="bg-white text-indigo-700">Examen: {examFilter}</Badge>}
+                                <span className="text-slate-500 font-medium">({filteredOrders.length} {filteredOrders.length === 1 ? "orden encontrada" : "órdenes encontradas"})</span>
+                            </div>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={resetFilters}
+                                className="h-7 text-xs gap-1 text-indigo-700 hover:text-indigo-900 hover:bg-indigo-100/60"
+                            >
+                                <RotateCcw className="h-3 w-3" /> Limpiar
+                            </Button>
                         </div>
                     )}
                 </section>
 
-                {/* Contenido agrupado */}
+                {/* Listado de Órdenes en Forma de Carpeta */}
                 {isLoading ? (
-                    <div className="space-y-3">
-                        <Skeleton className="h-24 w-full rounded-2xl" />
-                        <Skeleton className="h-24 w-full rounded-2xl" />
-                        <Skeleton className="h-24 w-full rounded-2xl" />
+                    <div className="space-y-4">
+                        <Skeleton className="h-36 w-full rounded-2xl" />
+                        <Skeleton className="h-36 w-full rounded-2xl" />
+                        <Skeleton className="h-36 w-full rounded-2xl" />
                     </div>
-                ) : visibleGroups.length > 0 ? (
-                    <div className="space-y-8">
-                        {visibleGroups.map(({ exam, list }) => {
-                            const color = colorOf(exam)
+                ) : filteredOrders.length > 0 ? (
+                    <div className="space-y-5">
+                        {filteredOrders.map((order: any) => {
+                            const isOpen = isOrderOpen(order.id)
+                            const isComplete = order.isAllReady
+                            const perfDateFormatted = safeDate(order.perfDate, "d 'de' MMMM 'de' yyyy")
+                            const orderDateFormatted = safeDate(order.ordered_at, "d 'de' MMMM 'de' yyyy")
+
                             return (
-                                <section key={exam} className="space-y-3">
-                                    <div className="flex items-center gap-3">
-                                        <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${color.icon}`}>
-                                            <Sparkles className="h-4 w-4" />
-                                        </div>
-                                        <h2 className="text-base font-bold text-slate-900">{exam}</h2>
-                                        <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${color.soft}`}>
-                                            {list.length} {list.length === 1 ? "resultado" : "resultados"}
-                                        </span>
-                                        <div className="h-px flex-1 bg-gradient-to-r from-indigo-100 to-transparent" />
-                                    </div>
-
-                                    <div className="grid gap-3 md:grid-cols-2">
-                                        {list.map((order: any) => {
-                                            const file = fileForExam(order, exam)
-                                            const key = `${order.id}:${exam}`
-                                            const isOpening = loadingKey === key
-                                            const performed = safeDate(file?.performed_at || order.performed_at)
-                                            const uploaded = safeDate(file?.uploaded_at)
-                                            const ready = !!file
-                                            return (
+                                <article
+                                    key={order.id}
+                                    className={`rounded-2xl border bg-white shadow-sm transition-all overflow-hidden ${
+                                        isComplete
+                                            ? "border-emerald-200/80 hover:border-emerald-300"
+                                            : "border-indigo-100 hover:border-indigo-250"
+                                    }`}
+                                >
+                                    {/* Cabecera de la Carpeta de Orden */}
+                                    <div
+                                        role="button"
+                                        tabIndex={0}
+                                        onClick={() => toggleOrder(order.id)}
+                                        onKeyDown={(e) => e.key === "Enter" && toggleOrder(order.id)}
+                                        className={`p-4 sm:p-5 cursor-pointer transition-colors select-none ${
+                                            isComplete ? "bg-emerald-50/20 hover:bg-emerald-50/40" : "bg-slate-50/40 hover:bg-indigo-50/30"
+                                        }`}
+                                    >
+                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                            {/* Lado izquierdo: Icono de Carpeta + Número de Orden + Trazabilidad */}
+                                            <div className="flex items-start gap-3.5 min-w-0">
                                                 <div
-                                                    key={key}
-                                                    role="button"
-                                                    tabIndex={0}
-                                                    onClick={() => openResult(order, exam)}
-                                                    onKeyDown={(e) => e.key === "Enter" && openResult(order, exam)}
-                                                    className={`group relative overflow-hidden rounded-2xl border bg-white p-4 pl-5 shadow-sm transition-all ${ready
-                                                        ? "cursor-pointer border-indigo-100 hover:-translate-y-0.5 hover:border-indigo-300 hover:shadow-lg hover:shadow-indigo-500/10"
-                                                        : "cursor-default border-slate-200 opacity-90"}`}
+                                                    className={`h-11 w-11 rounded-2xl flex items-center justify-center shrink-0 shadow-xs border ${
+                                                        isComplete
+                                                            ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+                                                            : "bg-indigo-100 text-indigo-700 border-indigo-200"
+                                                    }`}
                                                 >
-                                                    <div className={`absolute inset-y-0 left-0 w-1.5 bg-gradient-to-b ${ready ? color.bar : "from-slate-300 to-slate-200"}`} />
-                                                    <div className="flex items-start justify-between gap-3">
-                                                        <div className="min-w-0 space-y-1.5">
-                                                            <div className="flex items-center gap-2">
-                                                                <span className="font-mono text-sm font-bold text-slate-900">#{order.order_number}</span>
-                                                                {ready ? (
-                                                                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
-                                                                        <CheckCircle2 className="h-3 w-3" /> Resultado Listo
-                                                                    </span>
-                                                                ) : (
-                                                                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
-                                                                        <Clock className="h-3 w-3" /> En Proceso
-                                                                    </span>
-                                                                )}
-                                                            </div>
-                                                            <p className="flex items-center gap-1.5 truncate text-xs text-slate-500">
-                                                                <Building2 className="h-3.5 w-3.5 shrink-0" /> {order.labs?.name}
-                                                            </p>
-                                                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
-                                                                {performed && (
-                                                                    <span className="flex items-center gap-1"><CalendarDays className="h-3 w-3" /> Realizado: <b className="text-slate-700">{performed}</b></span>
-                                                                )}
-                                                                {uploaded && (
-                                                                    <span className="flex items-center gap-1"><UploadCloud className="h-3 w-3" /> Cargado: <b className="text-slate-700">{uploaded}</b></span>
-                                                                )}
-                                                                {!performed && !uploaded && (
-                                                                    <span className="flex items-center gap-1"><CalendarDays className="h-3 w-3" /> Orden: <b className="text-slate-700">{safeDate(order.ordered_at) || "—"}</b></span>
-                                                                )}
-                                                            </div>
-                                                        </div>
+                                                    {isOpen ? <FolderOpen className="h-5 w-5" /> : <Folder className="h-5 w-5" />}
+                                                </div>
 
-                                                        <div className="flex shrink-0 flex-col items-end gap-2">
-                                                            {ready ? (
-                                                                <span className={`flex h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold text-white shadow bg-gradient-to-r ${color.bar} transition-transform group-hover:scale-105`}>
-                                                                    {isOpening ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
-                                                                    Ver
-                                                                </span>
-                                                            ) : (
-                                                                <span className="flex h-9 items-center gap-1.5 rounded-xl bg-slate-100 px-3 text-xs font-medium text-slate-500">
-                                                                    <Clock className="h-4 w-4" /> En proceso
-                                                                </span>
-                                                            )}
-                                                        </div>
+                                                <div className="min-w-0 space-y-1">
+                                                    <div className="flex items-center gap-2.5 flex-wrap">
+                                                        <span className="font-mono text-base sm:text-lg font-bold text-slate-900 tracking-tight">
+                                                            Orden #{order.order_number}
+                                                        </span>
+                                                        {isComplete ? (
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 border border-emerald-200">
+                                                                <CheckCircle2 className="h-3 w-3" /> Todos los resultados listos
+                                                            </span>
+                                                        ) : (
+                                                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800 border border-amber-200">
+                                                                <Clock className="h-3 w-3" /> En Proceso ({order.readyCount}/{order.totalCount} listos)
+                                                            </span>
+                                                        )}
                                                     </div>
 
-                                                    <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5">
-                                                        <Link
-                                                            href={`/portal/orders/${order.id}`}
-                                                            onClick={(e) => e.stopPropagation()}
-                                                            className="flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-indigo-600"
-                                                        >
-                                                            Ver detalle de la orden <ChevronRight className="h-3 w-3" />
-                                                        </Link>
-                                                        {ready && (
-                                                            <button
-                                                                onClick={(e) => downloadResult(e, order, exam)}
-                                                                className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-indigo-600 hover:bg-indigo-50"
-                                                            >
-                                                                <Download className="h-3.5 w-3.5" /> Descargar
-                                                            </button>
+                                                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+                                                        {order.labs?.name && (
+                                                            <span className="flex items-center gap-1.5 font-medium text-slate-700">
+                                                                <Building2 className="h-3.5 w-3.5 text-indigo-500 shrink-0" />
+                                                                {order.labs.name}
+                                                            </span>
+                                                        )}
+                                                        {perfDateFormatted && (
+                                                            <span className="flex items-center gap-1 text-slate-600 font-medium">
+                                                                <CalendarDays className="h-3.5 w-3.5 text-indigo-500 shrink-0" />
+                                                                Realizado: <strong className="text-slate-800">{perfDateFormatted}</strong>
+                                                            </span>
+                                                        )}
+                                                        {!perfDateFormatted && orderDateFormatted && (
+                                                            <span className="flex items-center gap-1 text-slate-500">
+                                                                <CalendarDays className="h-3.5 w-3.5 shrink-0" />
+                                                                Orden generada: {orderDateFormatted}
+                                                            </span>
                                                         )}
                                                     </div>
                                                 </div>
-                                            )
-                                        })}
+                                            </div>
+
+                                            {/* Lado derecho: Botón desplegable / Resumen */}
+                                            <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                                                <span className="text-xs text-slate-500 font-medium">
+                                                    {order.totalCount} {order.totalCount === 1 ? "examen" : "exámenes"}
+                                                </span>
+
+                                                <div className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-indigo-100 bg-white text-xs font-semibold text-indigo-700 shadow-2xs group-hover:bg-indigo-50">
+                                                    <span>{isOpen ? "Ocultar" : "Ver exámenes"}</span>
+                                                    <ChevronDown
+                                                        className={`h-4 w-4 transition-transform duration-200 ${
+                                                            isOpen ? "rotate-180" : ""
+                                                        }`}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
-                                </section>
+
+                                    {/* Contenido desplegable de la Carpeta (Exámenes de la orden) */}
+                                    {isOpen && (
+                                        <div className="border-t border-slate-100 bg-slate-50/50 p-4 sm:p-5 space-y-4">
+                                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
+                                                <p className="text-xs font-bold uppercase tracking-wider text-slate-600 flex items-center gap-2">
+                                                    <Microscope className="h-4 w-4 text-indigo-600" />
+                                                    Exámenes solicitados en este expediente ({order.totalCount}):
+                                                </p>
+
+                                                {order.readyCount > 1 && (
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation()
+                                                            downloadAllOrderFiles(order)
+                                                        }}
+                                                        className="h-7 text-xs gap-1.5 text-indigo-700 border-indigo-200 bg-white hover:bg-indigo-50 font-semibold shadow-2xs self-start sm:self-auto"
+                                                    >
+                                                        <Download className="h-3 w-3" /> Descargar todos los PDFs ({order.readyCount})
+                                                    </Button>
+                                                )}
+                                            </div>
+
+                                            {/* Lista de Exámenes individuales de la orden */}
+                                            <div className="space-y-2.5">
+                                                {order.exams.map((exam: ExamItem, idx: number) => {
+                                                    const isReady = !!exam.file
+                                                    const key = `${order.id}:${exam.id}`
+                                                    const isOpening = loadingKey === key
+                                                    const color = colorOf(exam.name)
+
+                                                    return (
+                                                        <div
+                                                            key={exam.id}
+                                                            className={`rounded-xl border p-3.5 sm:p-4 bg-white transition-all shadow-2xs ${
+                                                                isReady
+                                                                    ? "border-emerald-150 hover:border-emerald-300"
+                                                                    : "border-slate-200 bg-white/80"
+                                                            }`}
+                                                        >
+                                                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                                                {/* Título de examen y estado */}
+                                                                <div className="flex items-start gap-3 min-w-0">
+                                                                    <div className={`h-8 w-8 rounded-lg flex items-center justify-center shrink-0 text-xs font-bold ${color.soft}`}>
+                                                                        {idx + 1}
+                                                                    </div>
+                                                                    <div className="min-w-0 space-y-0.5">
+                                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                                            <h3 className="font-bold text-sm text-slate-900 leading-snug">
+                                                                                {exam.name}
+                                                                            </h3>
+                                                                            {isReady ? (
+                                                                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 border border-emerald-200">
+                                                                                    <CheckCircle2 className="h-3 w-3" /> Resultado Listo
+                                                                                </span>
+                                                                            ) : (
+                                                                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 border border-amber-200">
+                                                                                    <Clock className="h-3 w-3" /> En Proceso
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                        {exam.category && (
+                                                                            <p className="text-xs text-slate-500">{exam.category}</p>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+
+                                                                {/* Acciones para este examen */}
+                                                                <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                                                                    {isReady ? (
+                                                                        <>
+                                                                            <Button
+                                                                                onClick={() => openResult(order, exam)}
+                                                                                className="h-8 px-3 text-xs gap-1.5 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white font-semibold shadow-xs"
+                                                                                disabled={isOpening}
+                                                                            >
+                                                                                {isOpening ? (
+                                                                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                                                ) : (
+                                                                                    <Eye className="h-3.5 w-3.5" />
+                                                                                )}
+                                                                                Ver Documento
+                                                                            </Button>
+                                                                            <Button
+                                                                                variant="outline"
+                                                                                size="sm"
+                                                                                onClick={(e) => downloadResult(e, order, exam)}
+                                                                                className="h-8 px-2.5 text-xs gap-1.5 text-slate-700 border-slate-200 hover:bg-slate-50"
+                                                                            >
+                                                                                <Download className="h-3.5 w-3.5" />
+                                                                                <span className="hidden sm:inline">Descargar</span>
+                                                                            </Button>
+                                                                        </>
+                                                                    ) : (
+                                                                        <span className="inline-flex items-center gap-1.5 text-xs text-amber-800 bg-amber-50/80 border border-amber-200/80 rounded-lg px-3 py-1 font-medium">
+                                                                            <Clock className="h-3.5 w-3.5 text-amber-600" />
+                                                                            El laboratorio está procesando este examen
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Metadatos del archivo cargado */}
+                                                            {isReady && exam.file && (
+                                                                <div className="mt-2.5 pt-2 border-t border-slate-100 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                                                                    <span className="flex items-center gap-1 font-medium text-slate-700 truncate max-w-[240px]">
+                                                                        <FileText className="h-3.5 w-3.5 text-rose-500 shrink-0" />
+                                                                        {exam.file.file_name}
+                                                                    </span>
+                                                                    <span>v{exam.file.version}</span>
+                                                                    {exam.file.size_bytes && (
+                                                                        <span>{(exam.file.size_bytes / 1024).toFixed(0)} KB</span>
+                                                                    )}
+                                                                    {exam.file.uploaded_at && (
+                                                                        <span>Cargado: {safeDate(exam.file.uploaded_at)}</span>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )
+                                                })}
+                                            </div>
+
+                                            {/* Pie de la Carpeta */}
+                                            <div className="pt-2 px-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-slate-200/60 text-xs text-slate-500">
+                                                <span className="text-[11px] text-slate-400">
+                                                    Identificador de orden: #{order.order_number}
+                                                </span>
+                                                <Link
+                                                    href={`/portal/orders/${order.id}`}
+                                                    className="inline-flex items-center gap-1 font-semibold text-indigo-600 hover:text-indigo-800 hover:underline"
+                                                >
+                                                    Ver trazabilidad y detalle completo de la orden
+                                                    <ChevronRight className="h-3.5 w-3.5" />
+                                                </Link>
+                                            </div>
+                                        </div>
+                                    )}
+                                </article>
                             )
                         })}
                     </div>
                 ) : (
-                    <div className="space-y-3 rounded-2xl border border-dashed border-indigo-200 bg-white/70 py-14 text-center">
-                        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-indigo-50 text-indigo-400">
-                            {search ? <Search className="h-6 w-6" /> : <FileText className="h-6 w-6" />}
+                    <div className="space-y-3 rounded-2xl border border-dashed border-indigo-200 bg-white/80 py-16 text-center shadow-xs">
+                        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-500">
+                            {hasActiveFilters ? <Search className="h-6 w-6" /> : <Folder className="h-6 w-6" />}
                         </div>
-                        <h3 className="text-lg font-semibold text-slate-800">{search ? "Sin coincidencias" : "No hay órdenes"}</h3>
-                        <p className="mx-auto max-w-sm text-sm text-slate-500">
-                            {search
-                                ? "Prueba con otro nombre de examen o número de orden."
-                                : "Por ahora no tienes exámenes registrados. Si acabas de realizarte uno, espera a que el laboratorio lo registre."}
+                        <h3 className="text-lg font-bold text-slate-800">
+                            {hasActiveFilters ? "No se encontraron expedientes con estos filtros" : "No tienes órdenes registradas aún"}
+                        </h3>
+                        <p className="mx-auto max-w-sm text-xs text-slate-500">
+                            {hasActiveFilters
+                                ? "Prueba a cambiar el número de orden, la fecha seleccionada o los filtros de estado."
+                                : "Tus resultados y órdenes médicas aparecerán aquí tan pronto como el laboratorio las registre."}
                         </p>
+                        {hasActiveFilters && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={resetFilters}
+                                className="mt-2 text-xs text-indigo-700 border-indigo-200 hover:bg-indigo-50"
+                            >
+                                Restablecer todos los filtros
+                            </Button>
+                        )}
                     </div>
                 )}
 
-                <p className="flex items-start gap-2 rounded-xl bg-white/70 p-3 text-[11px] text-slate-500">
-                    <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-400" />
-                    Para interpretar correctamente estos resultados, consulta a tu médico tratante. No te automediques basándote en esta información.
-                </p>
+                <div className="rounded-xl border border-indigo-100 bg-white/70 p-3.5 text-xs text-slate-500 flex items-start gap-2.5">
+                    <Info className="h-4 w-4 text-indigo-500 shrink-0 mt-0.5" />
+                    <span>
+                        Para interpretar adecuadamente estos resultados, consulte con su médico tratante. No suspenda ni modifique tratamientos basándose únicamente en esta información.
+                    </span>
+                </div>
             </main>
 
+            {/* Modal de Previsualización Oficial de PDF */}
             <PdfPreviewModal
                 open={!!preview}
                 onOpenChange={(open) => !open && setPreview(null)}
