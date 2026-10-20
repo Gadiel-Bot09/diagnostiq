@@ -79,7 +79,12 @@ export default function PatientsPage() {
                 .from("patients")
                 .select("*, patient_accounts(id)")
                 .order("created_at", { ascending: false })
-            if (searchTerm) query = query.ilike("full_name", `%${searchTerm}%`)
+            if (searchTerm) {
+                const safe = searchTerm.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚüÜñÑ\s-]/g, "").trim()
+                if (safe) {
+                    query = query.or(`full_name.ilike.%${safe}%,document_number.ilike.%${safe}%`)
+                }
+            }
             const { data, error } = await query
             if (error) throw error
             return data as Patient[]
@@ -225,7 +230,7 @@ export default function PatientsPage() {
                             <div className="relative w-full md:w-72">
                                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                                 <Input
-                                    placeholder="Buscar por nombre..."
+                                    placeholder="Buscar por nombre o documento..."
                                     className="pl-9"
                                     value={searchTerm}
                                     onChange={(e) => setSearchTerm(e.target.value)}

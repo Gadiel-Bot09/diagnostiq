@@ -2,8 +2,8 @@
 "use client"
 
 import { useQuery } from "@tanstack/react-query"
-import { Search, FileUp, MoreVertical, Eye, Calendar, Microscope } from "lucide-react"
-import { useState } from "react"
+import { Search, FileUp, MoreVertical, Eye, Calendar, Microscope, X } from "lucide-react"
+import { useState, useMemo } from "react"
 import Link from "next/link"
 import { format } from "date-fns"
 import { es } from "date-fns/locale"
@@ -30,13 +30,43 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 
+function normalizeText(text: string): string {
+    return text
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+}
+
+function getSearchVariants(term: string): string[] {
+    const clean = term.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚüÜñÑ\s-]/g, "").trim()
+    const variants = new Set<string>([clean])
+
+    const unaccented = clean.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    variants.add(unaccented)
+
+    if (unaccented.length <= 25) {
+        const vowelMap: Record<string, string> = { a: "á", e: "é", i: "í", o: "ó", u: "ú" }
+        const lower = unaccented.toLowerCase()
+        for (let i = 0; i < lower.length; i++) {
+            const char = lower[i]
+            if (vowelMap[char]) {
+                variants.add(lower.slice(0, i) + vowelMap[char] + lower.slice(i + 1))
+            }
+        }
+    }
+
+    return Array.from(variants).filter((v) => v.length > 0)
+}
+
 export default function LabOrdersPage() {
     const supabase = createClient()
     const { hasPermission } = usePermissions()
     const [searchTerm, setSearchTerm] = useState("")
 
+    const cleanSearch = searchTerm.replace(/^[#\s]+/, "").trim()
+
     const { data: orders, isLoading } = useQuery({
-        queryKey: ["lab-orders", searchTerm],
+        queryKey: ["lab-orders", cleanSearch],
         queryFn: async () => {
             let query = supabase
                 .from("orders")
@@ -51,15 +81,69 @@ export default function LabOrdersPage() {
         `)
                 .order("ordered_at", { ascending: false })
 
-            if (searchTerm) {
-                query = query.or(`order_number.ilike.%${searchTerm}%,patients.full_name.ilike.%${searchTerm}%`)
+            const safeTerm = cleanSearch.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚüÜñÑ\s-]/g, "").trim()
+
+            if (safeTerm) {
+                // 1. Find matching patients by full_name or document_number
+                const variants = getSearchVariants(safeTerm)
+                const tokens = safeTerm.split(/\s+/).filter(Boolean)
+
+                const patientConditions = [
+                    ...variants.map((v) => `full_name.ilike.%${v}%`),
+                    ...tokens.map((t) => `full_name.ilike.%${t}%`),
+                    `document_number.ilike.%${safeTerm}%`,
+                ]
+                const patientOr = Array.from(new Set(patientConditions)).join(",")
+
+                const { data: matchedPatients, error: patientError } = await supabase
+                    .from("patients")
+                    .select("id")
+                    .or(patientOr)
+                    .limit(100)
+
+                if (patientError) {
+                    console.error("Error buscando pacientes:", patientError)
+                }
+
+                const patientIds = matchedPatients?.map((p) => p.id) || []
+
+                // 2. Build order search conditions
+                const orderConditions = [
+                    `order_number.ilike.%${safeTerm}%`,
+                    `direct_exam_name.ilike.%${safeTerm}%`,
+                ]
+
+                if (patientIds.length > 0) {
+                    orderConditions.push(`patient_id.in.(${patientIds.join(",")})`)
+                }
+
+                query = query.or(orderConditions.join(","))
             }
 
             const { data, error } = await query
             if (error) throw error
             return data
-        }
+        },
     })
+
+    const filteredOrders = useMemo(() => {
+        if (!orders) return []
+        const term = cleanSearch
+        if (!term) return orders
+
+        const normalizedTerm = normalizeText(term)
+        const tokens = normalizedTerm.split(/\s+/).filter(Boolean)
+
+        return orders.filter((order: any) => {
+            const orderNum = (order.order_number || "").toString().toLowerCase()
+            const directExam = normalizeText(order.direct_exam_name || "")
+            const patientName = normalizeText(order.patients?.full_name || "")
+            const docNum = (order.patients?.document_number || "").toString().toLowerCase()
+            const fullCombined = `${orderNum} ${patientName} ${docNum} ${directExam}`
+
+            return tokens.every((token) => fullCombined.includes(token))
+        })
+    }, [orders, cleanSearch])
 
     return (
         <AdminLayout>
@@ -85,21 +169,31 @@ export default function LabOrdersPage() {
                                 <CardTitle>Cola de Procesamiento</CardTitle>
                                 <CardDescription>Visualiza el estado actual de todas las órdenes emitidas.</CardDescription>
                             </div>
-                            <div className="relative w-full md:w-72">
+                            <div className="relative w-full md:w-80">
                                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                                 <Input
-                                    placeholder="Buscar por No. o Paciente..."
-                                    className="pl-9"
+                                    placeholder="Buscar por paciente, doc. u orden..."
+                                    className="pl-9 pr-8"
                                     value={searchTerm}
                                     onChange={(e) => setSearchTerm(e.target.value)}
                                 />
+                                {searchTerm && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setSearchTerm("")}
+                                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-0.5 rounded-full hover:bg-muted"
+                                        title="Limpiar búsqueda"
+                                    >
+                                        <X className="h-4 w-4" />
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </CardHeader>
                     <CardContent>
                         {isLoading ? (
                             <div className="text-center py-10">Cargando órdenes...</div>
-                        ) : orders && orders.length > 0 ? (
+                        ) : filteredOrders && filteredOrders.length > 0 ? (
                             <Table>
                                 <TableHeader>
                                     <TableRow>
@@ -111,7 +205,7 @@ export default function LabOrdersPage() {
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                    {orders.map((order: any) => (
+                                    {filteredOrders.map((order: any) => (
                                         <TableRow key={order.id}>
                                             <TableCell className="font-bold">
                                                 <div className="flex items-center gap-2">
@@ -159,8 +253,17 @@ export default function LabOrdersPage() {
                                 </TableBody>
                             </Table>
                         ) : (
-                            <div className="text-center py-20 border-2 border-dashed rounded-lg">
-                                <p className="text-muted-foreground">No se encontraron órdenes el día de hoy.</p>
+                            <div className="text-center py-16 border-2 border-dashed rounded-lg flex flex-col items-center justify-center gap-2">
+                                <p className="text-muted-foreground font-medium">
+                                    {searchTerm.trim()
+                                        ? `No se encontraron órdenes que coincidan con "${searchTerm.trim()}".`
+                                        : "No se encontraron órdenes el día de hoy."}
+                                </p>
+                                {searchTerm.trim() && (
+                                    <Button variant="outline" size="sm" onClick={() => setSearchTerm("")} className="mt-2">
+                                        Limpiar búsqueda
+                                    </Button>
+                                )}
                             </div>
                         )}
                     </CardContent>
