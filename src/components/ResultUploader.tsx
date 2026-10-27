@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 import { DicomViewerModal } from "@/components/common/DicomViewerModal"
 import { isDicomFile } from "@/lib/dicom"
-import { uploadBinaryWithProgress, uploadWithProgress } from "@/lib/uploadWithProgress"
+import { uploadBinaryWithProgress, uploadWithProgress, uploadPresignedFile } from "@/lib/uploadWithProgress"
 import {
     Select,
     SelectContent,
@@ -207,7 +207,7 @@ export function ResultUploader({
                     totalFiles: files.length,
                 })
 
-                // 1. Obtener Presigned PUT URL directo a MinIO (sólo metadata ~1KB, evita el límite de 4.5MB de Vercel)
+                // 1. Obtener datos de carga directa/multipart a MinIO (evita el límite de 4.5MB de Vercel y timeouts de proxy)
                 const urlRes = await fetch("/api/results/upload-url", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -216,6 +216,7 @@ export function ResultUploader({
                         patientId,
                         labId,
                         fileName: fileToUpload.name,
+                        fileSize: fileToUpload.size,
                         performedAt,
                     }),
                 })
@@ -225,9 +226,9 @@ export function ResultUploader({
                     throw new Error(err.error || `Error al preparar la carga de ${fileToUpload.name}`)
                 }
 
-                const { uploadUrl, filePath, fileType } = await urlRes.json()
+                const initData = await urlRes.json()
 
-                // 2. Subida directa a MinIO por PUT con seguimiento en tiempo real (0% -> 100%)
+                // 2. Subida directa a MinIO (PUT único o S3 Multipart Chunks) con seguimiento en tiempo real (0% -> 100%)
                 const uploadHeaders: Record<string, string> = {}
                 if (fileToUpload.type) {
                     uploadHeaders["Content-Type"] = fileToUpload.type
@@ -237,11 +238,11 @@ export function ResultUploader({
                     uploadHeaders["Content-Type"] = "application/pdf"
                 }
 
-                await uploadBinaryWithProgress(
-                    uploadUrl,
+                const { storagePath } = await uploadPresignedFile(
                     fileToUpload,
+                    initData,
+                    "/api/results/upload-url",
                     {
-                        method: "PUT",
                         headers: uploadHeaders,
                         onProgress: (p) => {
                             setUploadStatus({
@@ -268,9 +269,9 @@ export function ResultUploader({
                         labId,
                         fileName: fileToUpload.name,
                         fileSize: fileToUpload.size,
-                        fileType: fileType || (isDicom ? "DICOM_ZIP" : "PDF"),
+                        fileType: initData.fileType || (isDicom ? "DICOM_ZIP" : "PDF"),
                         mimeType: fileToUpload.type,
-                        storagePath: filePath,
+                        storagePath: storagePath || initData.filePath,
                         performedAt,
                         orderTestId: selectedTestId && selectedTestId !== "GENERAL" ? selectedTestId : null,
                         version,

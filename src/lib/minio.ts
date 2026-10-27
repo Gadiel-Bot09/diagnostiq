@@ -1,4 +1,12 @@
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3"
+import {
+    S3Client,
+    PutObjectCommand,
+    GetObjectCommand,
+    CreateMultipartUploadCommand,
+    UploadPartCommand,
+    CompleteMultipartUploadCommand,
+    AbortMultipartUploadCommand,
+} from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
 let _s3Client: S3Client | null = null;
@@ -62,4 +70,68 @@ export async function getPresignedUploadUrl(filePath: string, contentType?: stri
     })
 
     return getSignedUrl(client, command, { expiresIn })
+}
+
+export async function createMultipartUpload(filePath: string, contentType?: string) {
+    const client = getS3Client()
+    const command = new CreateMultipartUploadCommand({
+        Bucket: BUCKET_NAME,
+        Key: filePath,
+        ...(contentType ? { ContentType: contentType } : {}),
+    })
+    const res = await client.send(command)
+    if (!res.UploadId) throw new Error("No se pudo iniciar la carga multipart en MinIO")
+    return { uploadId: res.UploadId, key: filePath }
+}
+
+export async function getPresignedPartUrls(
+    filePath: string,
+    uploadId: string,
+    partCount: number,
+    expiresIn: number = 7200
+) {
+    const client = getS3Client()
+    const promises = []
+    for (let i = 1; i <= partCount; i++) {
+        const command = new UploadPartCommand({
+            Bucket: BUCKET_NAME,
+            Key: filePath,
+            UploadId: uploadId,
+            PartNumber: i,
+        })
+        promises.push(
+            getSignedUrl(client, command, { expiresIn }).then(url => ({
+                partNumber: i,
+                uploadUrl: url,
+            }))
+        )
+    }
+    return Promise.all(promises)
+}
+
+export async function completeMultipartUpload(
+    filePath: string,
+    uploadId: string,
+    parts: { PartNumber: number; ETag: string }[]
+) {
+    const client = getS3Client()
+    const command = new CompleteMultipartUploadCommand({
+        Bucket: BUCKET_NAME,
+        Key: filePath,
+        UploadId: uploadId,
+        MultipartUpload: {
+            Parts: [...parts].sort((a, b) => a.PartNumber - b.PartNumber),
+        },
+    })
+    return client.send(command)
+}
+
+export async function abortMultipartUpload(filePath: string, uploadId: string) {
+    const client = getS3Client()
+    const command = new AbortMultipartUploadCommand({
+        Bucket: BUCKET_NAME,
+        Key: filePath,
+        UploadId: uploadId,
+    })
+    return client.send(command)
 }

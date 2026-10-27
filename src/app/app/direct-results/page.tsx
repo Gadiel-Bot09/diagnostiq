@@ -26,7 +26,7 @@ import { createClient } from "@/lib/supabase/client"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 import { DOCUMENT_TYPES } from "@/lib/constants/patient"
-import { uploadBinaryWithProgress, uploadWithProgress } from "@/lib/uploadWithProgress"
+import { uploadBinaryWithProgress, uploadWithProgress, uploadPresignedFile } from "@/lib/uploadWithProgress"
 import { isDicomFile } from "@/lib/dicom"
 import Link from "next/link"
 
@@ -295,11 +295,11 @@ export default function DirectResultsPage() {
                 const file = uploadedFiles[i]
                 const isDicom = isDicomFile({ file_name: file.name, mime_type: file.type })
 
-                // 1. Obtener Presigned PUT URL directo a MinIO
+                // 1. Obtener datos de carga directa/multipart a MinIO (evita el límite de 4.5MB de Vercel y timeouts de proxy)
                 const urlRes = await fetch("/api/direct-results/upload-url", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ fileName: file.name }),
+                    body: JSON.stringify({ fileName: file.name, fileSize: file.size }),
                 })
 
                 if (!urlRes.ok) {
@@ -307,9 +307,9 @@ export default function DirectResultsPage() {
                     throw new Error(err.error || `Error al preparar subida de ${file.name}`)
                 }
 
-                const { uploadUrl, storagePath, fileType } = await urlRes.json()
+                const initData = await urlRes.json()
 
-                // 2. Subida directa a MinIO (evita el límite de 4.5MB de Vercel)
+                // 2. Subida directa a MinIO (PUT único o S3 Multipart Chunks) con seguimiento en vivo
                 const headers: Record<string, string> = {}
                 if (file.type) {
                     headers["Content-Type"] = file.type
@@ -319,11 +319,11 @@ export default function DirectResultsPage() {
                     headers["Content-Type"] = "application/pdf"
                 }
 
-                await uploadBinaryWithProgress(
-                    uploadUrl,
+                const { storagePath } = await uploadPresignedFile(
                     file,
+                    initData,
+                    "/api/direct-results/upload-url",
                     {
-                        method: "PUT",
                         headers,
                         onProgress: (p) => {
                             setUploadProgress({
@@ -339,8 +339,8 @@ export default function DirectResultsPage() {
                     name: file.name,
                     size: file.size,
                     type: file.type,
-                    storagePath,
-                    fileType: fileType || (isDicom ? "DICOM_ZIP" : "PDF"),
+                    storagePath: storagePath || initData.storagePath,
+                    fileType: initData.fileType || (isDicom ? "DICOM_ZIP" : "PDF"),
                 })
             }
 
