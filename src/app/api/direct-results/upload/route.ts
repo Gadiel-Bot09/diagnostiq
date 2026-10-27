@@ -58,17 +58,39 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        // 3. Parse form data
-        const formData = await req.formData()
-        const documentType = formData.get("document_type") as string
-        const documentNumber = formData.get("document_number") as string
-        const fullName = formData.get("full_name") as string
-        const email = formData.get("email") as string | null
-        const examName = formData.get("exam_name") as string
-        const files = formData.getAll("files") as File[]
-        const performedAt = formData.get("performed_at") as string
+        // 3. Parse request (supports both JSON for presigned direct MinIO uploads and FormData for legacy)
+        const isJson = req.headers.get("content-type")?.includes("application/json")
+        let documentType = ""
+        let documentNumber = ""
+        let fullName = ""
+        let email: string | null = null
+        let examName = ""
+        let performedAt = ""
+        let rawFiles: File[] = []
+        let presignedFiles: { name: string; size: number; type?: string; storagePath: string; fileType?: string }[] = []
 
-        if (!documentNumber || !fullName || !examName || files.length === 0) {
+        if (isJson) {
+            const body = await req.json()
+            documentType = body.document_type || "CC"
+            documentNumber = body.document_number
+            fullName = body.full_name
+            email = body.email || null
+            examName = body.exam_name
+            performedAt = body.performed_at
+            presignedFiles = body.files || []
+        } else {
+            const formData = await req.formData()
+            documentType = formData.get("document_type") as string
+            documentNumber = formData.get("document_number") as string
+            fullName = formData.get("full_name") as string
+            email = formData.get("email") as string | null
+            examName = formData.get("exam_name") as string
+            rawFiles = formData.getAll("files") as File[]
+            performedAt = formData.get("performed_at") as string
+        }
+
+        const totalFilesCount = isJson ? presignedFiles.length : rawFiles.length
+        if (!documentNumber || !fullName || !examName || totalFilesCount === 0) {
             return NextResponse.json({ error: "Faltan campos requeridos" }, { status: 400 })
         }
 
@@ -273,44 +295,79 @@ export async function POST(req: NextRequest) {
         const { data: lab } = await supabaseAdmin.from("labs").select("name").eq("id", labId).single()
         const labName = lab?.name || "DiagnostiQ"
 
-        for (const file of files) {
-            const buffer = Buffer.from(await file.arrayBuffer())
-            const storagePath = `labs/${labId}/direct/${order.id}/${Date.now()}-${file.name}`
+        if (isJson) {
+            for (const pf of presignedFiles) {
+                const lowerName = (pf.name || "").toLowerCase()
+                const isDicom = lowerName.endsWith(".zip") || lowerName.endsWith(".dcm")
+                const fileType = pf.fileType || (isDicom ? "DICOM_ZIP" : "PDF")
+                const mimeType = pf.type || (isDicom ? "application/zip" : "application/pdf")
 
-            const lowerName = file.name.toLowerCase()
-            const isDicom = lowerName.endsWith(".zip") || lowerName.endsWith(".dcm")
-            const fileType = isDicom ? "DICOM_ZIP" : "PDF"
-            const mimeType = file.type || (isDicom ? "application/zip" : "application/pdf")
+                const filePayload: any = {
+                    order_id: order.id,
+                    patient_id: patient.id,
+                    lab_id: labId,
+                    file_name: pf.name,
+                    file_type: fileType,
+                    storage_path: pf.storagePath,
+                    mime_type: mimeType,
+                    size_bytes: pf.size || 0,
+                    uploaded_by: user.id,
+                    storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
+                    version: 1,
+                    performed_at: performedAt,
+                }
 
-            await uploadToMinio(storagePath, buffer, mimeType)
-
-            const sha256 = crypto.createHash("sha256").update(buffer).digest("hex")
-
-            const filePayload: any = {
-                order_id: order.id,
-                patient_id: patient.id,
-                lab_id: labId,
-                file_name: file.name,
-                file_type: fileType,
-                storage_path: storagePath,
-                mime_type: mimeType,
-                size_bytes: buffer.length,
-                uploaded_by: user.id,
-                storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
-                sha256,
-                version: 1,
-                performed_at: performedAt,
+                let { error: insertError } = await supabaseAdmin.from("result_files").insert(filePayload)
+                if (insertError && insertError.message && insertError.message.includes("file_type")) {
+                    delete filePayload.file_type
+                    const retry = await supabaseAdmin.from("result_files").insert(filePayload)
+                    insertError = retry.error
+                }
+                if (insertError) {
+                    console.error("Result file insert error:", insertError)
+                    throw insertError
+                }
             }
+        } else {
+            for (const file of rawFiles) {
+                const buffer = Buffer.from(await file.arrayBuffer())
+                const storagePath = `labs/${labId}/direct/${order.id}/${Date.now()}-${file.name}`
 
-            let { error: insertError } = await supabaseAdmin.from("result_files").insert(filePayload)
-            if (insertError && insertError.message && insertError.message.includes("file_type")) {
-                delete filePayload.file_type
-                const retry = await supabaseAdmin.from("result_files").insert(filePayload)
-                insertError = retry.error
-            }
-            if (insertError) {
-                console.error("Result file insert error:", insertError)
-                throw insertError
+                const lowerName = file.name.toLowerCase()
+                const isDicom = lowerName.endsWith(".zip") || lowerName.endsWith(".dcm")
+                const fileType = isDicom ? "DICOM_ZIP" : "PDF"
+                const mimeType = file.type || (isDicom ? "application/zip" : "application/pdf")
+
+                await uploadToMinio(storagePath, buffer, mimeType)
+
+                const sha256 = crypto.createHash("sha256").update(buffer).digest("hex")
+
+                const filePayload: any = {
+                    order_id: order.id,
+                    patient_id: patient.id,
+                    lab_id: labId,
+                    file_name: file.name,
+                    file_type: fileType,
+                    storage_path: storagePath,
+                    mime_type: mimeType,
+                    size_bytes: buffer.length,
+                    uploaded_by: user.id,
+                    storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
+                    sha256,
+                    version: 1,
+                    performed_at: performedAt,
+                }
+
+                let { error: insertError } = await supabaseAdmin.from("result_files").insert(filePayload)
+                if (insertError && insertError.message && insertError.message.includes("file_type")) {
+                    delete filePayload.file_type
+                    const retry = await supabaseAdmin.from("result_files").insert(filePayload)
+                    insertError = retry.error
+                }
+                if (insertError) {
+                    console.error("Result file insert error:", insertError)
+                    throw insertError
+                }
             }
         }
 
@@ -324,7 +381,7 @@ export async function POST(req: NextRequest) {
             isNewPatient,
             patient: { id: patient.id, full_name: fullName, document_number: documentNumber },
             order: { id: order.id, order_number: orderNumber },
-            filesUploaded: files.length,
+            filesUploaded: totalFilesCount,
         })
 
     } catch (error: any) {

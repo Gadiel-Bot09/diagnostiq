@@ -26,7 +26,7 @@ import { createClient } from "@/lib/supabase/client"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 import { DOCUMENT_TYPES } from "@/lib/constants/patient"
-import { uploadWithProgress } from "@/lib/uploadWithProgress"
+import { uploadBinaryWithProgress, uploadWithProgress } from "@/lib/uploadWithProgress"
 import { isDicomFile } from "@/lib/dicom"
 import Link from "next/link"
 
@@ -287,30 +287,81 @@ export default function DirectResultsPage() {
         mutationFn: async (values: PatientForm) => {
             if (uploadedFiles.length === 0) throw new Error("Debes subir al menos un archivo (PDF o Tomografía DICOM .zip)")
 
-            const fd = new FormData()
-            fd.append("document_type", values.document_type)
-            fd.append("document_number", values.document_number)
-            fd.append("full_name", values.full_name)
-            if (values.email) fd.append("email", values.email)
-            fd.append("exam_name", values.exam_name)
-            fd.append("performed_at", values.performed_at)
-            uploadedFiles.forEach(f => fd.append("files", f))
-
             setUploadProgress({ percent: 0, loadedMB: 0, totalMB: 0 })
 
-            const json = await uploadWithProgress<UploadResult>(
-                "/api/direct-results/upload",
-                fd,
-                (p) => {
-                    setUploadProgress({
-                        percent: p.percent,
-                        loadedMB: p.loadedMB,
-                        totalMB: p.totalMB,
-                    })
-                }
-            )
+            const uploadedItems: { name: string; size: number; type: string; storagePath: string; fileType: string }[] = []
 
-            return json
+            for (let i = 0; i < uploadedFiles.length; i++) {
+                const file = uploadedFiles[i]
+                const isDicom = isDicomFile({ file_name: file.name, mime_type: file.type })
+
+                // 1. Obtener Presigned PUT URL directo a MinIO
+                const urlRes = await fetch("/api/direct-results/upload-url", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ fileName: file.name }),
+                })
+
+                if (!urlRes.ok) {
+                    const err = await urlRes.json().catch(() => ({}))
+                    throw new Error(err.error || `Error al preparar subida de ${file.name}`)
+                }
+
+                const { uploadUrl, storagePath, fileType } = await urlRes.json()
+
+                // 2. Subida directa a MinIO (evita el límite de 4.5MB de Vercel)
+                const headers: Record<string, string> = {}
+                if (file.type) {
+                    headers["Content-Type"] = file.type
+                } else if (isDicom) {
+                    headers["Content-Type"] = "application/zip"
+                } else {
+                    headers["Content-Type"] = "application/pdf"
+                }
+
+                await uploadBinaryWithProgress(
+                    uploadUrl,
+                    file,
+                    {
+                        method: "PUT",
+                        headers,
+                        onProgress: (p) => {
+                            setUploadProgress({
+                                percent: Math.round(((i + (p.percent / 100)) / uploadedFiles.length) * 100),
+                                loadedMB: p.loadedMB,
+                                totalMB: p.totalMB,
+                            })
+                        }
+                    }
+                )
+
+                uploadedItems.push({
+                    name: file.name,
+                    size: file.size,
+                    type: file.type,
+                    storagePath,
+                    fileType: fileType || (isDicom ? "DICOM_ZIP" : "PDF"),
+                })
+            }
+
+            // 3. Confirmar la orden en Supabase (sólo metadata ~1KB)
+            const res = await fetch("/api/direct-results/upload", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    document_type: values.document_type,
+                    document_number: values.document_number,
+                    full_name: values.full_name,
+                    email: values.email,
+                    exam_name: values.exam_name,
+                    performed_at: values.performed_at,
+                    files: uploadedItems,
+                }),
+            })
+
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) throw new Error(json.error || "Error al registrar resultados directos")
+            return json as UploadResult
         },
         onSuccess: (data) => {
             setUploadProgress(null)

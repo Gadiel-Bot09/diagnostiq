@@ -6,15 +6,29 @@ export interface UploadProgressEvent {
     totalMB: number
 }
 
-export function uploadWithProgress<T = any>(
-    url: string,
-    formData: FormData,
+export interface UploadOptions {
+    method?: string
+    headers?: Record<string, string>
     onProgress?: (progress: UploadProgressEvent) => void
+}
+
+export function uploadBinaryWithProgress<T = any>(
+    url: string,
+    body: Blob | File | FormData | ArrayBuffer,
+    options?: UploadOptions
 ): Promise<T> {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest()
-        xhr.open("POST", url, true)
+        const method = options?.method || "PUT"
+        xhr.open(method, url, true)
 
+        if (options?.headers) {
+            for (const [k, v] of Object.entries(options.headers)) {
+                if (v) xhr.setRequestHeader(k, v)
+            }
+        }
+
+        const onProgress = options?.onProgress
         if (xhr.upload && onProgress) {
             xhr.upload.onprogress = (event) => {
                 if (event.lengthComputable) {
@@ -38,7 +52,7 @@ export function uploadWithProgress<T = any>(
                     const data = JSON.parse(xhr.responseText)
                     resolve(data as T)
                 } catch {
-                    resolve({ success: true } as T)
+                    resolve({ success: true, status: xhr.status } as T)
                 }
             } else {
                 try {
@@ -51,13 +65,21 @@ export function uploadWithProgress<T = any>(
         }
 
         xhr.onerror = () => {
-            reject(new Error("Error de conexión al subir el archivo. Verifica tu conexión a internet."))
+            reject(new Error("Error de conexión al transferir el archivo a MinIO. Verifica tu conexión."))
         }
 
         xhr.ontimeout = () => {
             reject(new Error("Tiempo de espera agotado al subir el archivo."))
         }
 
-        xhr.send(formData)
+        xhr.send(body)
     })
+}
+
+export function uploadWithProgress<T = any>(
+    url: string,
+    formData: FormData,
+    onProgress?: (progress: UploadProgressEvent) => void
+): Promise<T> {
+    return uploadBinaryWithProgress<T>(url, formData, { method: "POST", onProgress })
 }

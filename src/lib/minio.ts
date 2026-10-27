@@ -52,3 +52,14 @@ export async function getPresignedDownloadUrl(filePath: string, expiresIn: numbe
 
     return getSignedUrl(client, command, { expiresIn })
 }
+
+export async function getPresignedUploadUrl(filePath: string, contentType?: string, expiresIn: number = 7200) {
+    const client = getS3Client()
+    const command = new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: filePath,
+        ...(contentType ? { ContentType: contentType } : {}),
+    })
+
+    return getSignedUrl(client, command, { expiresIn })
+}

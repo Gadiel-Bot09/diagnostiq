@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 import { DicomViewerModal } from "@/components/common/DicomViewerModal"
 import { isDicomFile } from "@/lib/dicom"
-import { uploadWithProgress } from "@/lib/uploadWithProgress"
+import { uploadBinaryWithProgress, uploadWithProgress } from "@/lib/uploadWithProgress"
 import {
     Select,
     SelectContent,
@@ -198,18 +198,6 @@ export function ResultUploader({
                 const version = currentVersion + i + (isSuccess ? 0 : (currentVersion > 0 ? 1 : 1))
                 const isDicom = isDicomFile({ file_name: fileToUpload.name, mime_type: fileToUpload.type })
 
-                const formData = new FormData()
-                formData.append("file", fileToUpload)
-                formData.append("orderId", orderId)
-                formData.append("patientId", patientId)
-                formData.append("labId", labId)
-                formData.append("version", version.toString())
-                formData.append("performedAt", performedAt)
-                formData.append("fileType", isDicom ? "DICOM_ZIP" : "PDF")
-                if (selectedTestId && selectedTestId !== "GENERAL") {
-                    formData.append("orderTestId", selectedTestId)
-                }
-
                 setUploadStatus({
                     fileName: fileToUpload.name,
                     percent: 0,
@@ -219,22 +207,80 @@ export function ResultUploader({
                     totalFiles: files.length,
                 })
 
-                await uploadWithProgress(
-                    "/api/results/upload",
-                    formData,
-                    (p) => {
-                        setUploadStatus({
-                            fileName: fileToUpload.name,
-                            percent: p.percent,
-                            loadedMB: p.loadedMB,
-                            totalMB: p.totalMB,
-                            fileIndex: i + 1,
-                            totalFiles: files.length,
-                        })
-                        const overall = Math.round(((i + (p.percent / 100)) / files.length) * 100)
-                        setProgress(overall)
+                // 1. Obtener Presigned PUT URL directo a MinIO (sólo metadata ~1KB, evita el límite de 4.5MB de Vercel)
+                const urlRes = await fetch("/api/results/upload-url", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        orderId,
+                        patientId,
+                        labId,
+                        fileName: fileToUpload.name,
+                        performedAt,
+                    }),
+                })
+
+                if (!urlRes.ok) {
+                    const err = await urlRes.json().catch(() => ({}))
+                    throw new Error(err.error || `Error al preparar la carga de ${fileToUpload.name}`)
+                }
+
+                const { uploadUrl, filePath, fileType } = await urlRes.json()
+
+                // 2. Subida directa a MinIO por PUT con seguimiento en tiempo real (0% -> 100%)
+                const uploadHeaders: Record<string, string> = {}
+                if (fileToUpload.type) {
+                    uploadHeaders["Content-Type"] = fileToUpload.type
+                } else if (isDicom) {
+                    uploadHeaders["Content-Type"] = "application/zip"
+                } else {
+                    uploadHeaders["Content-Type"] = "application/pdf"
+                }
+
+                await uploadBinaryWithProgress(
+                    uploadUrl,
+                    fileToUpload,
+                    {
+                        method: "PUT",
+                        headers: uploadHeaders,
+                        onProgress: (p) => {
+                            setUploadStatus({
+                                fileName: fileToUpload.name,
+                                percent: p.percent,
+                                loadedMB: p.loadedMB,
+                                totalMB: p.totalMB,
+                                fileIndex: i + 1,
+                                totalFiles: files.length,
+                            })
+                            const overall = Math.round(((i + (p.percent / 100)) / files.length) * 100)
+                            setProgress(overall)
+                        }
                     }
                 )
+
+                // 3. Confirmar la carga e insertar registro en base de datos Supabase (sólo metadata ~1KB)
+                const confirmRes = await fetch("/api/results/upload", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        orderId,
+                        patientId,
+                        labId,
+                        fileName: fileToUpload.name,
+                        fileSize: fileToUpload.size,
+                        fileType: fileType || (isDicom ? "DICOM_ZIP" : "PDF"),
+                        mimeType: fileToUpload.type,
+                        storagePath: filePath,
+                        performedAt,
+                        orderTestId: selectedTestId && selectedTestId !== "GENERAL" ? selectedTestId : null,
+                        version,
+                    }),
+                })
+
+                if (!confirmRes.ok) {
+                    const err = await confirmRes.json().catch(() => ({}))
+                    throw new Error(err.error || `Error al registrar ${fileToUpload.name} en el sistema`)
+                }
 
                 successCount++
             }
