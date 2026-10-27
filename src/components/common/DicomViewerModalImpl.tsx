@@ -27,6 +27,7 @@ import {
     Sparkles,
     Palette,
     Eye,
+    Trash2,
 } from "lucide-react"
 import JSZip from "jszip"
 
@@ -98,11 +99,21 @@ export function DicomViewerModalImpl({
     downloadUrl,
     subtitle,
 }: DicomViewerModalProps) {
+    const viewportRef = useRef<HTMLDivElement>(null)
     const containerRef = useRef<HTMLDivElement>(null)
     const dwvAppRef = useRef<any>(null)
     const dwvModuleRef = useRef<any>(null)
     const sliceIndexRef = useRef<number>(0)
     const totalSlicesRef = useRef<number>(0)
+    const activeToolRef = useRef<ToolType>("Scroll")
+
+    // Refs para interacción táctil y ratón ultra-fluida en PC y móviles
+    const isPointerDownRef = useRef(false)
+    const activePointerIdRef = useRef<number | null>(null)
+    const pointerStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+    const pointerLastRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+    const accumulatedDragPxRef = useRef(0)
+    const initialPinchDistRef = useRef<number | null>(null)
 
     const [loading, setLoading] = useState(true)
     const [loadStep, setLoadStep] = useState("Conectando con almacenamiento seguro...")
@@ -112,6 +123,7 @@ export function DicomViewerModalImpl({
     const [activeTool, setActiveTool] = useState<ToolType>("Scroll")
     const [activeWlPreset, setActiveWlPreset] = useState<WlPreset>("default")
     const [activeColorMap, setActiveColorMap] = useState<ColorMapType>("plain")
+    const [hudWl, setHudWl] = useState<{ center: number; width: number } | null>(null)
     const [isPlaying, setIsPlaying] = useState(false)
     const [playbackFps, setPlaybackFps] = useState<number>(25)
     const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -126,6 +138,11 @@ export function DicomViewerModalImpl({
     useEffect(() => {
         totalSlicesRef.current = totalSlices
     }, [totalSlices])
+
+    // Mantener la referencia actualizada de activeTool
+    useEffect(() => {
+        activeToolRef.current = activeTool
+    }, [activeTool])
 
     // Función principal para cambiar de corte usando navegación paso a paso nativa y segura
     const goToSlice = useCallback((targetSlice: number) => {
@@ -309,6 +326,7 @@ export function DicomViewerModalImpl({
 
                     app.setTool("Scroll")
                     setActiveTool("Scroll")
+                    activeToolRef.current = "Scroll"
 
                     try {
                         app.fitToContainer()
@@ -326,12 +344,28 @@ export function DicomViewerModalImpl({
                                 sliceIndexRef.current = cur
                             }
                         }
+                        const vc = getDwvViewController(app)
+                        if (vc && typeof vc.getWindowLevel === "function") {
+                            const wl = vc.getWindowLevel()
+                            if (wl) setHudWl({ center: Math.round(wl.center), width: Math.round(wl.width) })
+                        }
                     } catch (e) {
                         console.warn("Error leyendo corte inicial:", e)
                     }
                 }
 
                 app.addEventListener("loadend", onLoadSuccess)
+
+                app.addEventListener("drawlayeradd", () => {
+                    try {
+                        const lg = getDwvLayerGroup(app)
+                        if (lg && typeof lg.getNumberOfLayers === "function" && lg.getNumberOfLayers() > 1) {
+                            if (activeToolRef.current === "Draw") {
+                                lg.setActiveLayer(1)
+                            }
+                        }
+                    } catch {}
+                })
 
                 app.addEventListener("positionchange", (event: any) => {
                     try {
@@ -434,37 +468,179 @@ export function DicomViewerModalImpl({
         goToSlice(sliceIndexRef.current - 1)
     }, [goToSlice])
 
-    // MEJORA CLAVE 2: Rueda del Ratón Universal en el Lienzo (Mouse Wheel Ultra-Fluido)
+    // MEJORA CLAVE 2: Rueda del Ratón Universal en el Lienzo y Viewport (Mouse Wheel Ultra-Fluido)
     useEffect(() => {
-        const el = containerRef.current
-        if (!el) return
+        if (!open || loading) return
+        const viewport = viewportRef.current
+        if (!viewport) return
+
+        let wheelAccumulator = 0
 
         const onWheel = (e: WheelEvent) => {
             e.preventDefault()
             e.stopPropagation()
             if (totalSlicesRef.current <= 1) return
 
-            const app = dwvAppRef.current
-            const lg = getDwvLayerGroup(app)
+            wheelAccumulator += e.deltaY
+            // Sensibilidad calibrada: trackpads envían pequeños deltaY (~5), ruedas de ratón envían saltos de ~100
+            const threshold = Math.abs(e.deltaY) < 30 ? 20 : 40
+
+            if (Math.abs(wheelAccumulator) >= threshold) {
+                const direction = wheelAccumulator > 0 ? 1 : -1
+                wheelAccumulator = 0
+
+                const app = dwvAppRef.current
+                const lg = getDwvLayerGroup(app)
+                const posHelper = getDwvPositionHelper(app)
+                if (!posHelper) return
+
+                let moved = false
+                if (direction > 0) {
+                    moved = posHelper.incrementPositionAlongScroll()
+                } else {
+                    moved = posHelper.decrementPositionAlongScroll()
+                }
+
+                if (moved) {
+                    if (lg && typeof lg.draw === "function") lg.draw()
+                    const cur = typeof posHelper.getCurrentPositionScrollValue === "function"
+                        ? posHelper.getCurrentPositionScrollValue()
+                        : sliceIndexRef.current
+                    setSliceIndex(cur)
+                    sliceIndexRef.current = cur
+                }
+            }
+        }
+
+        viewport.addEventListener("wheel", onWheel, { passive: false })
+        return () => viewport.removeEventListener("wheel", onWheel)
+    }, [open, loading])
+
+    // MEJORA CLAVE 3: Interacción Gestual Unificada (Ratón en PC y Toque en Móvil)
+    const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (loading || !!errorMsg) return
+        // En modo Medir mm, dejamos que DWV/Konva capture los clics directamente
+        if (activeToolRef.current === "Draw") return
+
+        isPointerDownRef.current = true
+        activePointerIdRef.current = e.pointerId
+        pointerStartRef.current = { x: e.clientX, y: e.clientY }
+        pointerLastRef.current = { x: e.clientX, y: e.clientY }
+        accumulatedDragPxRef.current = 0
+
+        try {
+            e.currentTarget.setPointerCapture(e.pointerId)
+        } catch {}
+    }
+
+    const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (!isPointerDownRef.current || activePointerIdRef.current !== e.pointerId) return
+        if (activeToolRef.current === "Draw") return
+
+        const app = dwvAppRef.current
+        const lg = getDwvLayerGroup(app)
+        const dx = e.clientX - pointerLastRef.current.x
+        const dy = e.clientY - pointerLastRef.current.y
+        pointerLastRef.current = { x: e.clientX, y: e.clientY }
+
+        if (activeToolRef.current === "Scroll") {
+            // Arrastre vertical para navegar cortes como en estaciones de trabajo radiológicas
+            accumulatedDragPxRef.current += dy
+            const threshold = 12 // Cada 12px de arrastre equivale a 1 corte
+
             const posHelper = getDwvPositionHelper(app)
             if (!posHelper) return
 
-            if (e.deltaY > 0) {
-                posHelper.incrementPositionAlongScroll()
-            } else {
-                posHelper.decrementPositionAlongScroll()
+            let moved = false
+            while (accumulatedDragPxRef.current <= -threshold) {
+                if (!posHelper.incrementPositionAlongScroll()) break
+                accumulatedDragPxRef.current += threshold
+                moved = true
             }
-            if (lg && typeof lg.draw === "function") lg.draw()
-            const cur = typeof posHelper.getCurrentPositionScrollValue === "function" ? posHelper.getCurrentPositionScrollValue() : sliceIndexRef.current
-            setSliceIndex(cur)
-            sliceIndexRef.current = cur
+            while (accumulatedDragPxRef.current >= threshold) {
+                if (!posHelper.decrementPositionAlongScroll()) break
+                accumulatedDragPxRef.current -= threshold
+                moved = true
+            }
+
+            if (moved) {
+                if (lg && typeof lg.draw === "function") lg.draw()
+                const cur = typeof posHelper.getCurrentPositionScrollValue === "function"
+                    ? posHelper.getCurrentPositionScrollValue()
+                    : sliceIndexRef.current
+                setSliceIndex(cur)
+                sliceIndexRef.current = cur
+            }
+        } else if (activeToolRef.current === "ZoomAndPan") {
+            // Mover/Encuadrar la tomografía en tiempo real
+            if (app && typeof app.translate === "function") {
+                app.translate(dx, dy)
+            }
+        } else if (activeToolRef.current === "WindowLevel") {
+            // Ajustar brillo y contraste dinámico (W/L)
+            const vc = getDwvViewController(app)
+            const dwv = dwvModuleRef.current
+            if (vc && dwv?.WindowLevel) {
+                const cur = vc.getWindowLevel()
+                if (cur) {
+                    const scale = 5 // Factor de sensibilidad suave para CT óseo
+                    const newCenter = cur.center - (dy * scale)
+                    const newWidth = Math.max(10, cur.width + (dx * scale))
+                    vc.setWindowLevel(new dwv.WindowLevel(newCenter, newWidth))
+                    if (lg && typeof lg.draw === "function") lg.draw()
+                    setHudWl({ center: Math.round(newCenter), width: Math.round(newWidth) })
+                }
+            }
         }
+    }
 
-        el.addEventListener("wheel", onWheel, { passive: false })
-        return () => el.removeEventListener("wheel", onWheel)
-    }, [])
+    const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (activePointerIdRef.current === e.pointerId) {
+            isPointerDownRef.current = false
+            activePointerIdRef.current = null
+            try {
+                e.currentTarget.releasePointerCapture(e.pointerId)
+            } catch {}
+        }
+    }
 
-    // MEJORA CLAVE 3: Navegación por Teclado (Flechas, Espacio para Play, PageUp/Down)
+    // Gesto de Pellizco con 2 dedos en Pantallas Táctiles y Móviles (Pinch to Zoom)
+    const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+        if (e.touches.length === 2) {
+            const t1 = e.touches[0]
+            const t2 = e.touches[1]
+            initialPinchDistRef.current = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY)
+        }
+    }
+
+    const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+        if (e.touches.length === 2 && initialPinchDistRef.current !== null) {
+            e.preventDefault()
+            const t1 = e.touches[0]
+            const t2 = e.touches[1]
+            const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY)
+            const diff = dist - initialPinchDistRef.current
+
+            if (Math.abs(diff) > 6) {
+                const app = dwvAppRef.current
+                if (app && typeof app.zoom === "function") {
+                    const cx = (t1.clientX + t2.clientX) / 2
+                    const cy = (t1.clientY + t2.clientY) / 2
+                    const step = diff > 0 ? 0.08 : -0.08
+                    app.zoom(step, cx, cy)
+                }
+                initialPinchDistRef.current = dist
+            }
+        }
+    }
+
+    const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+        if (e.touches.length < 2) {
+            initialPinchDistRef.current = null
+        }
+    }
+
+    // MEJORA CLAVE 4: Navegación por Teclado (Flechas, Espacio para Play, PageUp/Down)
     useEffect(() => {
         if (!open) return
 
@@ -499,7 +675,7 @@ export function DicomViewerModalImpl({
         return () => window.removeEventListener("keydown", onKeyDown)
     }, [open, goToSlice, handleNextSlice, handlePrevSlice])
 
-    // MEJORA CLAVE 4: Reproductor de Cine Automático (Cine Loop Nativo 3D)
+    // MEJORA CLAVE 5: Reproductor de Cine Automático (Cine Loop Nativo 3D)
     useEffect(() => {
         if (!isPlaying) return
 
@@ -526,19 +702,50 @@ export function DicomViewerModalImpl({
         return () => clearInterval(interval)
     }, [isPlaying, playbackFps])
 
-    // Cambio de herramienta de interacción
+    // Cambio de herramienta de interacción con activación correcta de capas en DWV
     const handleToolChange = (tool: ToolType) => {
         setActiveTool(tool)
+        activeToolRef.current = tool
         const app = dwvAppRef.current
-        if (app) {
-            try {
-                app.setTool(tool)
-                if (tool === "Draw") {
-                    app.setToolFeatures({ shapeName: "Ruler" })
+        if (!app) return
+
+        try {
+            app.setTool(tool)
+            const lg = getDwvLayerGroup(app)
+
+            if (tool === "Draw") {
+                app.setToolFeatures({ shapeName: "Ruler" })
+                // Si la capa de dibujo ya existe en DWV, activarla para recibir eventos Konva
+                if (lg && typeof lg.getNumberOfLayers === "function" && lg.getNumberOfLayers() > 1) {
+                    lg.setActiveLayer(1)
                 }
-            } catch (err) {
-                console.warn("Error changing tool:", err)
+            } else {
+                // Si salimos de Draw, restablecer la capa activa a la capa de visualización 0
+                if (lg && typeof lg.setActiveLayer === "function") {
+                    lg.setActiveLayer(0)
+                }
             }
+        } catch (err) {
+            console.warn("Error changing tool:", err)
+        }
+    }
+
+    // Limpiar todas las mediciones dibujadas en pantalla
+    const handleClearDrawings = () => {
+        const app = dwvAppRef.current
+        if (!app) return
+        const lg = getDwvLayerGroup(app)
+        if (!lg) return
+        try {
+            const drawLayers = typeof lg.getDrawLayers === "function" ? lg.getDrawLayers() : []
+            drawLayers.forEach((dl: any) => {
+                if (typeof dl.deleteDraws === "function") {
+                    dl.deleteDraws()
+                }
+            })
+            if (typeof lg.draw === "function") lg.draw()
+        } catch (e) {
+            console.warn("Error clearing drawings:", e)
         }
     }
 
@@ -554,6 +761,7 @@ export function DicomViewerModalImpl({
         try {
             if (preset === "default") {
                 vc.resetWindowLevel()
+                setHudWl(null)
             } else {
                 const dwv = dwvModuleRef.current
                 const WindowLevelClass = dwv?.WindowLevel
@@ -572,6 +780,7 @@ export function DicomViewerModalImpl({
                     width = 400
                 }
                 vc.setWindowLevel(new WindowLevelClass(center, width))
+                setHudWl({ center, width })
             }
             if (lg && typeof lg.draw === "function") lg.draw()
         } catch (e) {
@@ -650,6 +859,15 @@ export function DicomViewerModalImpl({
             document.exitFullscreen().catch(() => {})
             setIsFullscreen(false)
         }
+    }
+
+    const getViewportCursor = () => {
+        if (loading || !!errorMsg) return "cursor-wait"
+        if (activeTool === "Scroll") return "cursor-ns-resize"
+        if (activeTool === "ZoomAndPan") return "cursor-grab active:cursor-grabbing"
+        if (activeTool === "WindowLevel") return "cursor-ew-resize"
+        if (activeTool === "Draw") return "cursor-crosshair"
+        return "cursor-default"
     }
 
     return (
@@ -784,6 +1002,19 @@ export function DicomViewerModalImpl({
                             <span>Medir (mm)</span>
                         </Button>
 
+                        {activeTool === "Draw" && (
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-[11px] text-rose-400 hover:text-rose-300 hover:bg-rose-950/40 gap-1 border border-rose-500/20"
+                                onClick={handleClearDrawings}
+                                title="Borrar todas las medidas realizadas"
+                            >
+                                <Trash2 className="h-3 w-3" />
+                                <span>Borrar Medidas</span>
+                            </Button>
+                        )}
+
                         <div className="h-4 w-px bg-slate-700 mx-1 hidden sm:block" />
 
                         {/* Botones de Zoom rápido */}
@@ -904,8 +1135,52 @@ export function DicomViewerModalImpl({
                     </div>
                 </div>
 
-                {/* 3. Lienzo de Renderizado WebGL con HUD Médico */}
-                <div className="flex-1 relative flex items-center justify-center bg-black overflow-hidden select-none">
+                {/* 3. Lienzo de Renderizado WebGL con HUD Médico y Control de Gestos */}
+                <div
+                    ref={viewportRef}
+                    onPointerDown={handlePointerDown}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerUp}
+                    onPointerCancel={handlePointerUp}
+                    onTouchStart={handleTouchStart}
+                    onTouchMove={handleTouchMove}
+                    onTouchEnd={handleTouchEnd}
+                    className={`flex-1 relative flex items-center justify-center bg-black overflow-hidden select-none touch-none ${getViewportCursor()}`}
+                >
+                    {/* Estilos globales requeridos para apilamiento perfecto y respuesta táctil en DWV */}
+                    <style jsx global>{`
+                        #dwv-layer-container {
+                            touch-action: none !important;
+                            user-select: none !important;
+                            -webkit-user-select: none !important;
+                        }
+                        #dwv-layer-container .layerGroup {
+                            position: relative !important;
+                            width: 100% !important;
+                            height: 100% !important;
+                            display: flex !important;
+                            justify-content: center !important;
+                            align-items: center !important;
+                            touch-action: none !important;
+                        }
+                        #dwv-layer-container .layer {
+                            position: absolute !important;
+                            top: 0 !important;
+                            left: 0 !important;
+                            width: 100% !important;
+                            height: 100% !important;
+                            display: flex !important;
+                            justify-content: center !important;
+                            align-items: center !important;
+                            touch-action: none !important;
+                        }
+                        #dwv-layer-container canvas {
+                            touch-action: none !important;
+                            display: block !important;
+                            margin: auto !important;
+                        }
+                    `}</style>
+
                     {loading && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 z-30 gap-3.5 p-6 text-center">
                             <div className="relative">
@@ -977,11 +1252,16 @@ export function DicomViewerModalImpl({
                                 L
                             </div>
 
-                            {/* Guía de Rueda y Teclado */}
-                            <div className="absolute bottom-3 left-3 z-10 pointer-events-none hidden sm:flex items-center gap-1.5 bg-slate-950/70 border border-slate-800/80 rounded-lg px-2.5 py-1 backdrop-blur-xs text-[10px] text-slate-400 font-sans shadow-md">
-                                <span>Rueda del ratón: desplazar cortes</span>
-                                <span>·</span>
-                                <span>Espacio: Reproducir</span>
+                            {/* Guía y Modo Activo en el HUD */}
+                            <div className="absolute bottom-3 left-3 z-10 pointer-events-none flex flex-wrap items-center gap-2 bg-slate-950/80 border border-slate-800/80 rounded-lg px-2.5 py-1.5 backdrop-blur-xs text-[11px] text-slate-300 shadow-md">
+                                <span className="font-semibold text-blue-400">
+                                    {activeTool === "Scroll" && "Modo Cortes: Rueda o arrastre vertical para navegar"}
+                                    {activeTool === "ZoomAndPan" && "Modo Mover: Arrastre para mover · Pellizque o use +/- para zoom"}
+                                    {activeTool === "WindowLevel" && (hudWl ? `Contraste: Centro ${hudWl.center} · Ancho ${hudWl.width}` : "Modo Contraste: Arrastre horizontal (ancho) y vertical (brillo)")}
+                                    {activeTool === "Draw" && "Modo Medición: Clic y arrastre sobre el hueso para trazar la regla en mm"}
+                                </span>
+                                <span className="text-slate-500 hidden sm:inline">·</span>
+                                <span className="text-slate-400 hidden sm:inline">Rueda: cortes · Espacio: Reproducir</span>
                             </div>
                         </>
                     )}
@@ -990,7 +1270,7 @@ export function DicomViewerModalImpl({
                     <div
                         id="dwv-layer-container"
                         ref={containerRef}
-                        className="w-full h-full relative overflow-hidden flex items-center justify-center cursor-crosshair"
+                        className="w-full h-full relative overflow-hidden flex items-center justify-center touch-none"
                     />
                 </div>
 
