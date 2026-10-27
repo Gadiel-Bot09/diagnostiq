@@ -15,6 +15,7 @@ import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 import { DicomViewerModal } from "@/components/common/DicomViewerModal"
 import { isDicomFile } from "@/lib/dicom"
 import { uploadBinaryWithProgress, uploadWithProgress, uploadPresignedFile } from "@/lib/uploadWithProgress"
+import { cleanDicomZip } from "@/lib/dicomZipCleaner"
 import {
     Select,
     SelectContent,
@@ -59,6 +60,7 @@ export function ResultUploader({
         totalMB: number
         fileIndex: number
         totalFiles: number
+        statusText?: string
     } | null>(null)
     const [isSuccess, setIsSuccess] = useState(false)
     const todayStr = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10) // hora Colombia
@@ -116,13 +118,13 @@ export function ResultUploader({
             fileRejections.forEach(rej => {
                 const name = rej.file.name.toLowerCase()
                 if (name.endsWith('.zip') || name.endsWith('.dcm') || name.endsWith('.pdf')) {
-                    if (rej.file.size <= 350 * 1024 * 1024) {
+                    if (rej.file.size <= 800 * 1024 * 1024) {
                         recovered.push(rej.file)
                     } else {
                         toast({
                             variant: "destructive",
                             title: "Archivo demasiado grande",
-                            description: `El archivo ${rej.file.name} (${(rej.file.size / (1024 * 1024)).toFixed(1)} MB) supera el límite máximo de 350 MB.`,
+                            description: `El archivo ${rej.file.name} (${(rej.file.size / (1024 * 1024)).toFixed(1)} MB) supera el límite máximo de 800 MB.`,
                         })
                     }
                 } else {
@@ -163,7 +165,7 @@ export function ResultUploader({
             'application/x-compressed': ['.zip'],
             'multipart/x-zip': ['.zip'],
         },
-        maxSize: 350 * 1024 * 1024, // 350 MB límite seguro para tomografías volumétricas
+        maxSize: 800 * 1024 * 1024, // 800 MB límite (con limpieza automática de instaladores)
         disabled: isUploading || isSuccess
     })
 
@@ -194,9 +196,32 @@ export function ResultUploader({
             let successCount = 0
 
             for (let i = 0; i < files.length; i++) {
-                const fileToUpload = files[i]
+                let fileToUpload = files[i]
                 const version = currentVersion + i + (isSuccess ? 0 : (currentVersion > 0 ? 1 : 1))
                 const isDicom = isDicomFile({ file_name: fileToUpload.name, mime_type: fileToUpload.type })
+
+                // Opción 2: Si es un archivo ZIP, analizar y limpiar instaladores de PC innecesarios
+                if (fileToUpload.name.toLowerCase().endsWith(".zip")) {
+                    setUploadStatus({
+                        fileName: fileToUpload.name,
+                        percent: 0,
+                        loadedMB: 0,
+                        totalMB: fileToUpload.size / (1024 * 1024),
+                        fileIndex: i + 1,
+                        totalFiles: files.length,
+                        statusText: "Analizando tomografía para descartar instaladores de PC...",
+                    })
+                    const cleanRes = await cleanDicomZip(fileToUpload, (msg, pct) => {
+                        setUploadStatus(prev => prev ? { ...prev, percent: Math.min(99, pct), statusText: msg } : null)
+                    })
+                    if (cleanRes.cleaned) {
+                        fileToUpload = cleanRes.file
+                        toast({
+                            title: "Tomografía optimizada",
+                            description: `Se descartaron ${cleanRes.savedMB.toFixed(1)} MB de instaladores de PC. El archivo se redujo a ${(cleanRes.newSize / (1024 * 1024)).toFixed(1)} MB.`,
+                        })
+                    }
+                }
 
                 setUploadStatus({
                     fileName: fileToUpload.name,
@@ -205,6 +230,7 @@ export function ResultUploader({
                     totalMB: fileToUpload.size / (1024 * 1024),
                     fileIndex: i + 1,
                     totalFiles: files.length,
+                    statusText: "Conectando con almacenamiento seguro...",
                 })
 
                 // 1. Obtener datos de carga directa/multipart a MinIO (evita el límite de 4.5MB de Vercel y timeouts de proxy)
@@ -411,7 +437,11 @@ export function ResultUploader({
 
                     {/* Dynamic Status Note */}
                     <div className="pt-1">
-                        {(uploadStatus?.percent ?? 0) >= 99 ? (
+                        {uploadStatus?.statusText ? (
+                            <p className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 animate-pulse">
+                                {uploadStatus.statusText}
+                            </p>
+                        ) : (uploadStatus?.percent ?? 0) >= 99 ? (
                             <p className="text-xs font-semibold text-amber-600 dark:text-amber-400 animate-pulse">
                                 Archivo transferido al 100%. Guardando y verificando en MinIO... Un momento por favor.
                             </p>
@@ -451,7 +481,7 @@ export function ResultUploader({
                             <p className="text-sm text-muted-foreground max-w-md mx-auto mt-1">
                                 {files.length > 0
                                     ? `Tamaño total: ${(files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)} MB`
-                                    : "Admite informes PDF y series tomográficas completas en formato .ZIP (hasta 350 MB)"}
+                                    : "Admite informes PDF y series tomográficas completas en formato .ZIP (hasta 800 MB con optimización automática)"}
                             </p>
                         </div>
                     </div>

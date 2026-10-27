@@ -28,6 +28,7 @@ import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 import { DOCUMENT_TYPES } from "@/lib/constants/patient"
 import { uploadBinaryWithProgress, uploadWithProgress, uploadPresignedFile } from "@/lib/uploadWithProgress"
 import { isDicomFile } from "@/lib/dicom"
+import { cleanDicomZip } from "@/lib/dicomZipCleaner"
 import Link from "next/link"
 
 const patientSchema = z.object({
@@ -239,13 +240,13 @@ export default function DirectResultsPage() {
             rejections.forEach(rej => {
                 const name = rej.file.name.toLowerCase()
                 if (name.endsWith('.zip') || name.endsWith('.dcm') || name.endsWith('.pdf')) {
-                    if (rej.file.size <= 350 * 1024 * 1024) {
+                    if (rej.file.size <= 800 * 1024 * 1024) {
                         recovered.push(rej.file)
                     } else {
                         toast({
                             variant: "destructive",
                             title: "Archivo demasiado grande",
-                            description: `El archivo ${rej.file.name} supera el límite de 350 MB.`,
+                            description: `El archivo ${rej.file.name} supera el límite de 800 MB.`,
                         })
                     }
                 }
@@ -277,7 +278,7 @@ export default function DirectResultsPage() {
             "multipart/x-zip": [".zip"],
         },
         multiple: true,
-        maxSize: 350 * 1024 * 1024,
+        maxSize: 800 * 1024 * 1024,
     })
 
     const removeFile = (idx: number) => setUploadedFiles(prev => prev.filter((_, i) => i !== idx))
@@ -292,8 +293,31 @@ export default function DirectResultsPage() {
             const uploadedItems: { name: string; size: number; type: string; storagePath: string; fileType: string }[] = []
 
             for (let i = 0; i < uploadedFiles.length; i++) {
-                const file = uploadedFiles[i]
+                let file = uploadedFiles[i]
                 const isDicom = isDicomFile({ file_name: file.name, mime_type: file.type })
+
+                // Opción 2: Si es un archivo ZIP, analizar y limpiar instaladores de PC innecesarios
+                if (file.name.toLowerCase().endsWith(".zip")) {
+                    setUploadProgress({
+                        percent: 0,
+                        loadedMB: 0,
+                        totalMB: file.size / (1024 * 1024),
+                    })
+                    const cleanRes = await cleanDicomZip(file, (_msg, pct) => {
+                        setUploadProgress({
+                            percent: Math.min(99, pct),
+                            loadedMB: 0,
+                            totalMB: file.size / (1024 * 1024),
+                        })
+                    })
+                    if (cleanRes.cleaned) {
+                        file = cleanRes.file
+                        toast({
+                            title: "Tomografía optimizada",
+                            description: `Se descartaron ${cleanRes.savedMB.toFixed(1)} MB de instaladores de PC. El archivo se redujo a ${(cleanRes.newSize / (1024 * 1024)).toFixed(1)} MB.`,
+                        })
+                    }
+                }
 
                 // 1. Obtener datos de carga directa/multipart a MinIO (evita el límite de 4.5MB de Vercel y timeouts de proxy)
                 const urlRes = await fetch("/api/direct-results/upload-url", {
