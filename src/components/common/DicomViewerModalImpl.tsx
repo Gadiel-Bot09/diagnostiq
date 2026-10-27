@@ -43,6 +43,53 @@ type ToolType = "Scroll" | "ZoomAndPan" | "WindowLevel" | "Draw"
 type WlPreset = "default" | "bone" | "enamel" | "soft"
 type ColorMapType = "plain" | "invPlain" | "hot" | "rainbow"
 
+// Helpers para acceder a los controladores internos del motor DWV
+function getDwvLayerGroup(app: any) {
+    if (!app) return null
+    try {
+        if (typeof app.getActiveLayerGroup === "function") {
+            const lg = app.getActiveLayerGroup()
+            if (lg) return lg
+        }
+        if (typeof app.getLayerGroupByDivId === "function") {
+            const lg = app.getLayerGroupByDivId("dwv-layer-container")
+            if (lg) return lg
+        }
+    } catch {}
+    return null
+}
+
+function getDwvViewController(app: any) {
+    if (!app) return null
+    try {
+        const lg = getDwvLayerGroup(app)
+        if (!lg) return null
+        const vl =
+            (typeof lg.getActiveViewLayer === "function" && lg.getActiveViewLayer()) ||
+            (typeof lg.getBaseViewLayer === "function" && lg.getBaseViewLayer()) ||
+            (typeof lg.getViewLayers === "function" && lg.getViewLayers()?.[0]) ||
+            null
+        return vl && typeof vl.getViewController === "function" ? vl.getViewController() : null
+    } catch {}
+    return null
+}
+
+function getDwvPositionHelper(app: any) {
+    if (!app) return null
+    try {
+        const lg = getDwvLayerGroup(app)
+        if (lg && typeof lg.getPositionHelper === "function") {
+            const helper = lg.getPositionHelper()
+            if (helper) return helper
+        }
+        const vc = getDwvViewController(app)
+        if (vc && typeof vc.getPositionHelper === "function") {
+            return vc.getPositionHelper()
+        }
+    } catch {}
+    return null
+}
+
 export function DicomViewerModalImpl({
     open,
     onOpenChange,
@@ -87,15 +134,22 @@ export function DicomViewerModalImpl({
         if (!app || total <= 0) return
 
         const clamped = Math.max(0, Math.min(total - 1, targetSlice))
-        const vc = app.getViewController()
-        if (!vc) return
+        const lg = getDwvLayerGroup(app)
+        const vc = getDwvViewController(app)
+        const posHelper = getDwvPositionHelper(app)
 
         try {
-            const posHelper = vc.getPositionHelper ? vc.getPositionHelper() : null
             if (posHelper && typeof posHelper.getCurrentPositionAtScrollValue === "function") {
                 const targetPos = posHelper.getCurrentPositionAtScrollValue(clamped)
                 if (targetPos) {
-                    vc.setCurrentPosition(targetPos)
+                    if (typeof posHelper.setCurrentPositionSafe === "function") {
+                        posHelper.setCurrentPositionSafe(targetPos)
+                    } else if (vc && typeof vc.setCurrentPosition === "function") {
+                        vc.setCurrentPosition(targetPos)
+                    }
+                    if (lg && typeof lg.draw === "function") {
+                        lg.draw()
+                    }
                     setSliceIndex(clamped)
                     sliceIndexRef.current = clamped
                     return
@@ -103,21 +157,26 @@ export function DicomViewerModalImpl({
             }
 
             // Fallback: Modificar la dimensión de scroll del índice preservando todas las dimensiones del volumen
-            const curIndex = vc.getCurrentIndex ? vc.getCurrentIndex() : null
-            if (curIndex) {
-                const vals = curIndex.getValues()
-                const scrollDim = typeof vc.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 2
-                vals[scrollDim] = clamped
-                const dwv = dwvModuleRef.current
-                if (dwv && dwv.Index) {
-                    const newIndex = new dwv.Index(vals)
-                    const geometry = app.getImage()?.getGeometry()
-                    if (geometry) {
-                        const worldPos = geometry.indexToWorld(newIndex)
-                        vc.setCurrentPosition(worldPos)
-                        setSliceIndex(clamped)
-                        sliceIndexRef.current = clamped
-                        return
+            if (vc && typeof vc.getCurrentIndex === "function") {
+                const curIndex = vc.getCurrentIndex()
+                if (curIndex) {
+                    const vals = curIndex.getValues()
+                    const scrollDim = typeof vc.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 2
+                    vals[scrollDim] = clamped
+                    const dwv = dwvModuleRef.current
+                    if (dwv && dwv.Index) {
+                        const newIndex = new dwv.Index(vals)
+                        const geometry = app.getImage()?.getGeometry()
+                        if (geometry) {
+                            const worldPos = geometry.indexToWorld(newIndex)
+                            vc.setCurrentPosition(worldPos)
+                            if (lg && typeof lg.draw === "function") {
+                                lg.draw()
+                            }
+                            setSliceIndex(clamped)
+                            sliceIndexRef.current = clamped
+                            return
+                        }
                     }
                 }
             }
@@ -281,11 +340,15 @@ export function DicomViewerModalImpl({
                     setSliceIndex(middleSlice)
                     sliceIndexRef.current = middleSlice
                     try {
-                        const vc = app.getViewController()
-                        const posHelper = vc?.getPositionHelper ? vc.getPositionHelper() : null
+                        const vc = getDwvViewController(app)
+                        const posHelper = getDwvPositionHelper(app)
+                        const lg = getDwvLayerGroup(app)
                         if (posHelper && typeof posHelper.getCurrentPositionAtScrollValue === "function") {
                             const midPos = posHelper.getCurrentPositionAtScrollValue(middleSlice)
-                            if (midPos) vc.setCurrentPosition(midPos)
+                            if (midPos && vc) {
+                                vc.setCurrentPosition(midPos)
+                                if (lg && typeof lg.draw === "function") lg.draw()
+                            }
                         }
                     } catch (e) {
                         console.warn("Error setting initial middle slice:", e)
@@ -296,7 +359,7 @@ export function DicomViewerModalImpl({
 
                 app.addEventListener("positionchange", (event: any) => {
                     try {
-                        const vc = app.getViewController()
+                        const vc = getDwvViewController(app)
                         const scrollDim = typeof vc?.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 2
                         if (event?.value?.[0]?.[scrollDim] !== undefined) {
                             const idx = event.value[0][scrollDim]
@@ -352,24 +415,28 @@ export function DicomViewerModalImpl({
     // Navegación secuencial precisa con el PositionHelper nativo
     const handleNextSlice = useCallback(() => {
         const app = dwvAppRef.current
-        const vc = app?.getViewController()
-        const posHelper = vc?.getPositionHelper ? vc.getPositionHelper() : null
+        const lg = getDwvLayerGroup(app)
+        const posHelper = getDwvPositionHelper(app)
+
         if (posHelper && typeof posHelper.incrementPositionAlongScroll === "function") {
-            posHelper.incrementPositionAlongScroll()
-        } else {
-            goToSlice(sliceIndexRef.current + 1)
+            const moved = posHelper.incrementPositionAlongScroll()
+            if (lg && typeof lg.draw === "function") lg.draw()
+            if (moved) return
         }
+        goToSlice(sliceIndexRef.current + 1)
     }, [goToSlice])
 
     const handlePrevSlice = useCallback(() => {
         const app = dwvAppRef.current
-        const vc = app?.getViewController()
-        const posHelper = vc?.getPositionHelper ? vc.getPositionHelper() : null
+        const lg = getDwvLayerGroup(app)
+        const posHelper = getDwvPositionHelper(app)
+
         if (posHelper && typeof posHelper.decrementPositionAlongScroll === "function") {
-            posHelper.decrementPositionAlongScroll()
-        } else {
-            goToSlice(sliceIndexRef.current - 1)
+            const moved = posHelper.decrementPositionAlongScroll()
+            if (lg && typeof lg.draw === "function") lg.draw()
+            if (moved) return
         }
+        goToSlice(sliceIndexRef.current - 1)
     }, [goToSlice])
 
     // MEJORA CLAVE 2: Rueda del Ratón Universal en el Lienzo (Mouse Wheel Ultra-Fluido)
@@ -383,18 +450,20 @@ export function DicomViewerModalImpl({
             if (totalSlicesRef.current <= 1) return
 
             const app = dwvAppRef.current
-            const vc = app?.getViewController()
-            const posHelper = vc?.getPositionHelper ? vc.getPositionHelper() : null
+            const lg = getDwvLayerGroup(app)
+            const posHelper = getDwvPositionHelper(app)
 
             if (e.deltaY > 0) {
                 if (posHelper && typeof posHelper.incrementPositionAlongScroll === "function") {
                     posHelper.incrementPositionAlongScroll()
+                    if (lg && typeof lg.draw === "function") lg.draw()
                 } else {
                     goToSlice(sliceIndexRef.current + 1)
                 }
             } else {
                 if (posHelper && typeof posHelper.decrementPositionAlongScroll === "function") {
                     posHelper.decrementPositionAlongScroll()
+                    if (lg && typeof lg.draw === "function") lg.draw()
                 } else {
                     goToSlice(sliceIndexRef.current - 1)
                 }
@@ -449,16 +518,18 @@ export function DicomViewerModalImpl({
             if (total <= 1) return
 
             const app = dwvAppRef.current
-            const vc = app?.getViewController()
-            const posHelper = vc?.getPositionHelper ? vc.getPositionHelper() : null
+            const lg = getDwvLayerGroup(app)
+            const vc = getDwvViewController(app)
+            const posHelper = getDwvPositionHelper(app)
 
             if (posHelper && typeof posHelper.incrementPositionAlongScroll === "function") {
                 const moved = posHelper.incrementPositionAlongScroll()
                 if (!moved) {
                     // Si llegó al último corte, volver al primer corte para bucle continuo
                     const startPos = posHelper.getCurrentPositionAtScrollValue(0)
-                    if (startPos) vc.setCurrentPosition(startPos)
+                    if (startPos && vc) vc.setCurrentPosition(startPos)
                 }
+                if (lg && typeof lg.draw === "function") lg.draw()
                 return
             }
 
@@ -490,7 +561,8 @@ export function DicomViewerModalImpl({
         setActiveWlPreset(preset)
         const app = dwvAppRef.current
         if (!app) return
-        const vc = app.getViewController()
+        const vc = getDwvViewController(app)
+        const lg = getDwvLayerGroup(app)
         if (!vc) return
 
         try {
@@ -515,6 +587,7 @@ export function DicomViewerModalImpl({
                 }
                 vc.setWindowLevel(new WindowLevelClass(center, width))
             }
+            if (lg && typeof lg.draw === "function") lg.draw()
         } catch (e) {
             console.warn("Error setting WL preset:", e)
         }
@@ -525,13 +598,16 @@ export function DicomViewerModalImpl({
         setActiveColorMap(cm)
         const app = dwvAppRef.current
         if (!app) return
+        const vc = getDwvViewController(app)
+        const lg = getDwvLayerGroup(app)
+
         try {
-            const vc = app.getViewController()
             if (vc && typeof vc.setColourMap === "function") {
                 vc.setColourMap(cm)
             } else if (typeof app.setColourMap === "function") {
                 app.setColourMap(cm)
             }
+            if (lg && typeof lg.draw === "function") lg.draw()
         } catch (e) {
             console.warn("Error setting colour map:", e)
         }
@@ -541,11 +617,13 @@ export function DicomViewerModalImpl({
     const handleZoomIn = () => {
         const app = dwvAppRef.current
         const el = containerRef.current
+        const lg = getDwvLayerGroup(app)
         if (app && el) {
             try {
                 const cx = el.clientWidth / 2
                 const cy = el.clientHeight / 2
                 app.zoom(0.2, cx, cy)
+                if (lg && typeof lg.draw === "function") lg.draw()
             } catch {}
         }
     }
@@ -553,11 +631,13 @@ export function DicomViewerModalImpl({
     const handleZoomOut = () => {
         const app = dwvAppRef.current
         const el = containerRef.current
+        const lg = getDwvLayerGroup(app)
         if (app && el) {
             try {
                 const cx = el.clientWidth / 2
                 const cy = el.clientHeight / 2
                 app.zoom(-0.2, cx, cy)
+                if (lg && typeof lg.draw === "function") lg.draw()
             } catch {}
         }
     }
@@ -568,6 +648,8 @@ export function DicomViewerModalImpl({
             try {
                 app.resetZoomPan()
                 app.fitToContainer()
+                const lg = getDwvLayerGroup(app)
+                if (lg && typeof lg.draw === "function") lg.draw()
                 handleWlPresetChange("default")
                 handleColorMapChange("plain")
             } catch {}
