@@ -55,6 +55,7 @@ export function DicomViewerModalImpl({
     const dwvAppRef = useRef<any>(null)
     const dwvModuleRef = useRef<any>(null)
     const sliceIndexRef = useRef<number>(0)
+    const totalSlicesRef = useRef<number>(0)
 
     const [loading, setLoading] = useState(true)
     const [loadStep, setLoadStep] = useState("Conectando con almacenamiento seguro...")
@@ -74,11 +75,17 @@ export function DicomViewerModalImpl({
         sliceIndexRef.current = sliceIndex
     }, [sliceIndex])
 
-    // Función principal para cambiar de corte
-    const goToSlice = useCallback((targetSlice: number) => {
-        if (!dwvAppRef.current || !dwvModuleRef.current || totalSlices <= 0) return
+    // Mantener la referencia actualizada de totalSlices
+    useEffect(() => {
+        totalSlicesRef.current = totalSlices
+    }, [totalSlices])
 
-        const clamped = Math.max(0, Math.min(totalSlices - 1, targetSlice))
+    // Función principal para cambiar de corte (estable sin dependencias dinámicas)
+    const goToSlice = useCallback((targetSlice: number) => {
+        const total = totalSlicesRef.current
+        if (!dwvAppRef.current || !dwvModuleRef.current || total <= 0) return
+
+        const clamped = Math.max(0, Math.min(total - 1, targetSlice))
         setSliceIndex(clamped)
         sliceIndexRef.current = clamped
 
@@ -97,7 +104,7 @@ export function DicomViewerModalImpl({
                 } catch {}
             }
         }
-    }, [totalSlices])
+    }, [])
 
     // Carga inicial y montaje de cortes DICOM
     useEffect(() => {
@@ -224,8 +231,11 @@ export function DicomViewerModalImpl({
                     },
                 })
 
+                let hasLoaded = false
                 const onLoadSuccess = () => {
-                    if (isCancelled) return
+                    if (isCancelled || hasLoaded) return
+                    hasLoaded = true
+
                     let nSlices = dcmFiles.length
                     try {
                         const image = app.getImage()
@@ -234,6 +244,7 @@ export function DicomViewerModalImpl({
                         }
                     } catch {}
 
+                    totalSlicesRef.current = nSlices
                     setTotalSlices(nSlices)
                     setLoading(false)
                     setLoadProgress(100)
@@ -245,27 +256,32 @@ export function DicomViewerModalImpl({
                         app.fitToContainer()
                     } catch {}
 
-                    // MEJORA CLAVE 1: Iniciar automáticamente en el centro de la tomografía
-                    // En lugar del corte 1 (cráneo vacío y oscuro), salta a la zona de maxilar/dientes
+                    // Iniciar automáticamente en el centro de la tomografía (Zona Dental / Maxilar)
                     const middleSlice = Math.floor(nSlices / 2)
-                    setTimeout(() => {
-                        if (!isCancelled) {
-                            goToSlice(middleSlice)
+                    setSliceIndex(middleSlice)
+                    sliceIndexRef.current = middleSlice
+                    try {
+                        const IndexClass = dwv.Index
+                        const vc = app.getViewController()
+                        if (vc) {
+                            vc.setCurrentIndex(new IndexClass([0, 0, middleSlice]))
                         }
-                    }, 50)
+                    } catch {}
                 }
 
-                app.addEventListener("load", onLoadSuccess)
                 app.addEventListener("loadend", onLoadSuccess)
 
                 app.addEventListener("positionchange", (event: any) => {
                     if (event?.value?.[0]?.[2] !== undefined) {
-                        setSliceIndex(event.value[0][2])
+                        const idx = event.value[0][2]
+                        setSliceIndex(idx)
+                        sliceIndexRef.current = idx
                     }
                 })
                 app.addEventListener("slicechange", (event: any) => {
                     if (typeof event?.value === "number") {
                         setSliceIndex(event.value)
+                        sliceIndexRef.current = event.value
                     }
                 })
 
@@ -307,10 +323,9 @@ export function DicomViewerModalImpl({
                 containerRef.current.innerHTML = ""
             }
         }
-    }, [open, zipUrl, goToSlice])
+    }, [open, zipUrl])
 
     // MEJORA CLAVE 2: Rueda del Ratón Universal en el Lienzo (Mouse Wheel)
-    // Funciona en cualquier momento sin importar la herramienta activa
     useEffect(() => {
         const el = containerRef.current
         if (!el) return
@@ -318,9 +333,8 @@ export function DicomViewerModalImpl({
         const onWheel = (e: WheelEvent) => {
             e.preventDefault()
             e.stopPropagation()
-            if (totalSlices <= 1) return
+            if (totalSlicesRef.current <= 1) return
 
-            // Sensibilidad suave
             const direction = e.deltaY > 0 ? 1 : -1
             const step = e.shiftKey ? 5 : (Math.abs(e.deltaY) > 80 ? 2 : 1)
             const target = sliceIndexRef.current + direction * step
@@ -329,7 +343,7 @@ export function DicomViewerModalImpl({
 
         el.addEventListener("wheel", onWheel, { passive: false })
         return () => el.removeEventListener("wheel", onWheel)
-    }, [goToSlice, totalSlices])
+    }, [goToSlice])
 
     // MEJORA CLAVE 3: Navegación por Teclado (Flechas, Espacio para Play, PageUp/Down)
     useEffect(() => {
@@ -358,25 +372,27 @@ export function DicomViewerModalImpl({
                 goToSlice(0)
             } else if (e.key === "End") {
                 e.preventDefault()
-                goToSlice(totalSlices - 1)
+                goToSlice(totalSlicesRef.current - 1)
             }
         }
 
         window.addEventListener("keydown", onKeyDown)
         return () => window.removeEventListener("keydown", onKeyDown)
-    }, [open, goToSlice, totalSlices])
+    }, [open, goToSlice])
 
     // MEJORA CLAVE 4: Reproductor de Cine Automático (Cine Loop)
     useEffect(() => {
-        if (!isPlaying || totalSlices <= 1) return
+        if (!isPlaying) return
 
         const interval = setInterval(() => {
-            const next = sliceIndexRef.current + 1 >= totalSlices ? 0 : sliceIndexRef.current + 1
+            const total = totalSlicesRef.current
+            if (total <= 1) return
+            const next = sliceIndexRef.current + 1 >= total ? 0 : sliceIndexRef.current + 1
             goToSlice(next)
         }, 1000 / playbackFps)
 
         return () => clearInterval(interval)
-    }, [isPlaying, totalSlices, playbackFps, goToSlice])
+    }, [isPlaying, playbackFps, goToSlice])
 
     // Cambio de herramienta de interacción
     const handleToolChange = (tool: ToolType) => {
