@@ -313,6 +313,7 @@ export async function POST(req: NextRequest) {
                     size_bytes: pf.size || 0,
                     uploaded_by: user.id,
                     storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
+                    sha256: (pf as any).sha256 || crypto.createHash("sha256").update(`${order.id}-${pf.name}-${pf.size || 0}-${pf.storagePath}`).digest("hex"),
                     version: 1,
                     performed_at: performedAt,
                 }

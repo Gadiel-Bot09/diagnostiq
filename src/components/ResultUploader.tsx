@@ -286,6 +286,16 @@ export function ResultUploader({
                 )
 
                 // 3. Confirmar la carga e insertar registro en base de datos Supabase (sólo metadata ~1KB)
+                let clientSha256 = ""
+                try {
+                    if (fileToUpload.size <= 50 * 1024 * 1024 && typeof crypto !== "undefined" && crypto.subtle) {
+                        const hashBuf = await crypto.subtle.digest("SHA-256", await fileToUpload.arrayBuffer())
+                        clientSha256 = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("")
+                    }
+                } catch {
+                    // Fallback automático en servidor si hay límite de memoria en navegador
+                }
+
                 const confirmRes = await fetch("/api/results/upload", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -301,6 +311,7 @@ export function ResultUploader({
                         performedAt,
                         orderTestId: selectedTestId && selectedTestId !== "GENERAL" ? selectedTestId : null,
                         version,
+                        sha256: clientSha256 || undefined,
                     }),
                 })
 

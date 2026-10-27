@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { uploadToMinio } from "@/lib/minio"
 import { createServerClient } from "@supabase/ssr"
 import { sendNewResultsEmail } from "@/lib/email"
+import crypto from "crypto"
 
 export async function POST(req: NextRequest) {
     try {
@@ -125,7 +126,7 @@ export async function POST(req: NextRequest) {
             uploaded_by: user.id,
             version: parseInt(version || "1", 10),
             storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
-            sha256: hashHex || null,
+            sha256: hashHex || crypto.createHash("sha256").update(`${orderId}-${fileInfo.name}-${fileInfo.size}-${uploadedPath}`).digest("hex"),
             performed_at: performedAt,
         }
         if (orderTestId) {
