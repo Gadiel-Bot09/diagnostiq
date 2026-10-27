@@ -21,6 +21,7 @@ import {
     RefreshCw,
     FlaskConical,
     Eye,
+    Layers,
 } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
@@ -39,6 +40,8 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { useToast } from "@/components/ui/use-toast"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
+import { DicomViewerModal } from "@/components/common/DicomViewerModal"
+import { isDicomFile } from "@/lib/dicom"
 import Link from "next/link"
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
@@ -74,6 +77,7 @@ export default function AdminOrderDetailPage() {
     const [isDownloading, setIsDownloading] = useState(false)
     const [previewFile, setPreviewFile] = useState<{ url: string; name: string; subtitle?: string } | null>(null)
     const [previewingId, setPreviewingId] = useState<string | null>(null)
+    const [dicomModal, setDicomModal] = useState<{ url: string; downloadUrl: string; name: string; subtitle?: string } | null>(null)
 
     const { data: order, isLoading } = useQuery({
         queryKey: ["admin-order-detail", id],
@@ -190,13 +194,30 @@ export default function AdminOrderDetailPage() {
             }
 
             const uploaderName = file.uploaded_by ? uploadersMap.get(file.uploaded_by) : null
+            const isDicom = isDicomFile(file.file_name, file.file_type)
             const subtitle = `v${file.version} · ${file.size_bytes ? (file.size_bytes / 1024).toFixed(0) + " KB" : ""}${uploaderName ? ` · Cargado por: ${uploaderName}` : ""}`
 
-            setPreviewFile({
-                url: previewUrl,
-                name: file.file_name,
-                subtitle,
-            })
+            if (isDicom) {
+                let downloadUrl = previewUrl
+                try {
+                    const dlRes = await fetch(`/api/results/download?fileId=${file.id}`)
+                    const dlData = await dlRes.json()
+                    if (dlData.url) downloadUrl = dlData.url
+                } catch {}
+                const subtitle = `v${file.version} · Tomografía 3D (DICOM)${file.size_bytes ? ` · ${(file.size_bytes / (1024 * 1024)).toFixed(1)} MB` : ""}${uploaderName ? ` · Cargado por: ${uploaderName}` : ""}`
+                setDicomModal({
+                    url: previewUrl,
+                    downloadUrl,
+                    name: file.file_name,
+                    subtitle,
+                })
+            } else {
+                setPreviewFile({
+                    url: previewUrl,
+                    name: file.file_name,
+                    subtitle,
+                })
+            }
         } catch (err: any) {
             toast({ variant: "destructive", title: "Error de previsualización", description: err.message })
         } finally {
@@ -453,12 +474,12 @@ export default function AdminOrderDetailPage() {
                         <Card>
                             <CardHeader>
                                 <CardTitle className="flex items-center gap-2">
-                                    <FileText className="h-5 w-5 text-rose-500" />
-                                    Reportes en PDF
+                                    <FileText className="h-5 w-5 text-blue-600" />
+                                    Resultados y Archivos Adjuntos
                                     <Badge variant="secondary" className="ml-auto">{resultFiles.length}</Badge>
                                 </CardTitle>
                                 <CardDescription>
-                                    Historial de todos los archivos cargados para esta orden.
+                                    Historial de todos los archivos y tomografías cargados para esta orden.
                                 </CardDescription>
                             </CardHeader>
                             <CardContent>
@@ -466,17 +487,27 @@ export default function AdminOrderDetailPage() {
                                     <div className="space-y-3">
                                         {resultFiles.map((file: any) => {
                                             const linkedTest = orderTests.find((ot: any) => ot.result_summary_json?.file_id === file.id || ot.id === file.order_test_id)
+                                            const isDicom = isDicomFile(file.file_name, file.file_type)
                                             return (
                                                 <div
                                                     key={file.id}
                                                     className="flex items-center gap-4 p-4 border rounded-xl bg-card hover:bg-muted/30 transition-colors"
                                                 >
-                                                    <div className="bg-rose-50 p-2.5 rounded-lg">
-                                                        <FileText className="h-5 w-5 text-rose-500" />
+                                                    <div className={isDicom ? "bg-purple-50 p-2.5 rounded-lg" : "bg-rose-50 p-2.5 rounded-lg"}>
+                                                        {isDicom ? (
+                                                            <Layers className="h-5 w-5 text-purple-600" />
+                                                        ) : (
+                                                            <FileText className="h-5 w-5 text-rose-500" />
+                                                        )}
                                                     </div>
                                                     <div className="flex-1 min-w-0">
                                                         <div className="flex items-center gap-2 flex-wrap">
                                                             <p className="font-semibold text-sm truncate">{file.file_name}</p>
+                                                            {isDicom && (
+                                                                <Badge variant="outline" className="text-[10px] bg-purple-50 text-purple-700 border-purple-200 font-semibold">
+                                                                    Tomografía 3D (DICOM)
+                                                                </Badge>
+                                                            )}
                                                             {linkedTest ? (
                                                                 <Badge variant="secondary" className="text-[10px] bg-blue-50 text-blue-700 border-blue-200">
                                                                     Examen: {linkedTest.tests?.name}
@@ -488,7 +519,7 @@ export default function AdminOrderDetailPage() {
                                                             )}
                                                         </div>
                                                         <p className="text-xs text-muted-foreground mt-0.5">
-                                                            v{file.version} · {file.size_bytes ? `${(file.size_bytes / 1024).toFixed(0)} KB · ` : ""}{file.uploaded_at ? format(new Date(file.uploaded_at), "dd/MM/yyyy HH:mm") : "—"}
+                                                            v{file.version} · {file.size_bytes ? `${isDicom ? (file.size_bytes / (1024 * 1024)).toFixed(1) + " MB" : (file.size_bytes / 1024).toFixed(0) + " KB"} · ` : ""}{file.uploaded_at ? format(new Date(file.uploaded_at), "dd/MM/yyyy HH:mm") : "—"}
                                                             {file.uploaded_by && uploadersMap.get(file.uploaded_by) && (
                                                                 <span className="ml-1.5 text-indigo-600 font-medium">
                                                                     · Cargado por: {uploadersMap.get(file.uploaded_by)}
@@ -497,16 +528,29 @@ export default function AdminOrderDetailPage() {
                                                         </p>
                                                     </div>
                                                     <div className="flex items-center gap-2 shrink-0">
-                                                        <Button
-                                                            variant="outline"
-                                                            size="sm"
-                                                            className="gap-1.5 h-8 text-xs text-blue-700 border-blue-200 bg-blue-50/40 hover:bg-blue-100/60"
-                                                            onClick={() => handlePreview(file)}
-                                                            disabled={previewingId === file.id}
-                                                        >
-                                                            {previewingId === file.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
-                                                            Previsualizar
-                                                        </Button>
+                                                        {isDicom ? (
+                                                            <Button
+                                                                variant="outline"
+                                                                size="sm"
+                                                                className="gap-1.5 h-8 text-xs text-purple-700 border-purple-200 bg-purple-50 hover:bg-purple-100 font-semibold shadow-xs"
+                                                                onClick={() => handlePreview(file)}
+                                                                disabled={previewingId === file.id}
+                                                            >
+                                                                {previewingId === file.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />}
+                                                                Ver Tomografía 3D
+                                                            </Button>
+                                                        ) : (
+                                                            <Button
+                                                                variant="outline"
+                                                                size="sm"
+                                                                className="gap-1.5 h-8 text-xs text-blue-700 border-blue-200 bg-blue-50/40 hover:bg-blue-100/60"
+                                                                onClick={() => handlePreview(file)}
+                                                                disabled={previewingId === file.id}
+                                                            >
+                                                                {previewingId === file.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
+                                                                Previsualizar
+                                                            </Button>
+                                                        )}
                                                         <Button
                                                             variant="outline"
                                                             size="sm"
