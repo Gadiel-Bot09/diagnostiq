@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react"
 import { useDropzone } from "react-dropzone"
-import { FileUp, FileText, X, Loader2, CheckCircle, Eye, ArrowRight } from "lucide-react"
+import { FileUp, FileText, X, Loader2, CheckCircle, Eye, ArrowRight, Layers, Microscope } from "lucide-react"
 import { useRouter } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
@@ -12,6 +12,8 @@ import { Progress } from "@/components/ui/progress"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
+import { DicomViewerModal } from "@/components/common/DicomViewerModal"
+import { isDicomFile } from "@/lib/dicom"
 import {
     Select,
     SelectContent,
@@ -19,7 +21,6 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select"
-import { Microscope } from "lucide-react"
 
 export interface OrderTestOption {
     id: string
@@ -59,18 +60,30 @@ export function ResultUploader({
         return ""
     })
     const [previewModal, setPreviewModal] = useState<{ url: string; name: string; subtitle?: string; isBlob?: boolean } | null>(null)
+    const [dicomPreviewModal, setDicomPreviewModal] = useState<{ url: string; name: string; subtitle?: string; isBlob?: boolean } | null>(null)
     const { toast } = useToast()
     const supabase = createClient()
     const router = useRouter()
 
     const openLocalPreview = (file: File) => {
         const objectUrl = URL.createObjectURL(file)
-        setPreviewModal({
-            url: objectUrl,
-            name: file.name,
-            subtitle: `${(file.size / 1024).toFixed(0)} KB · Archivo listo para subir`,
-            isBlob: true,
-        })
+        const isDicom = isDicomFile({ file_name: file.name, mime_type: file.type })
+
+        if (isDicom) {
+            setDicomPreviewModal({
+                url: objectUrl,
+                name: file.name,
+                subtitle: `${(file.size / 1024 / 1024).toFixed(1)} MB · Tomografía DICOM`,
+                isBlob: true,
+            })
+        } else {
+            setPreviewModal({
+                url: objectUrl,
+                name: file.name,
+                subtitle: `${(file.size / 1024).toFixed(0)} KB · Archivo listo para subir`,
+                isBlob: true,
+            })
+        }
     }
 
     const closePreview = () => {
@@ -78,6 +91,13 @@ export function ResultUploader({
             URL.revokeObjectURL(previewModal.url)
         }
         setPreviewModal(null)
+    }
+
+    const closeDicomPreview = () => {
+        if (dicomPreviewModal?.isBlob && dicomPreviewModal.url) {
+            URL.revokeObjectURL(dicomPreviewModal.url)
+        }
+        setDicomPreviewModal(null)
     }
 
     const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -90,7 +110,13 @@ export function ResultUploader({
 
     const { getRootProps, getInputProps, isDragActive } = useDropzone({
         onDrop,
-        accept: { 'application/pdf': ['.pdf'] },
+        accept: {
+            'application/pdf': ['.pdf'],
+            'application/zip': ['.zip'],
+            'application/x-zip-compressed': ['.zip'],
+            'application/dicom': ['.dcm'],
+        },
+        maxSize: 350 * 1024 * 1024, // 350 MB límite seguro para tomografías volumétricas
         disabled: isUploading || isSuccess
     })
 
@@ -111,10 +137,11 @@ export function ResultUploader({
 
         try {
             let successCount = 0
-            
+
             for (let i = 0; i < files.length; i++) {
                 const fileToUpload = files[i]
                 const version = currentVersion + i + (isSuccess ? 0 : (currentVersion > 0 ? 1 : 1))
+                const isDicom = isDicomFile({ file_name: fileToUpload.name, mime_type: fileToUpload.type })
 
                 // Subir usando FormData a la API Route de MinIO
                 const formData = new FormData()
@@ -124,6 +151,7 @@ export function ResultUploader({
                 formData.append("labId", labId)
                 formData.append("version", version.toString())
                 formData.append("performedAt", performedAt)
+                formData.append("fileType", isDicom ? "DICOM_ZIP" : "PDF")
                 if (selectedTestId && selectedTestId !== "GENERAL") {
                     formData.append("orderTestId", selectedTestId)
                 }
@@ -137,7 +165,7 @@ export function ResultUploader({
                     const err = await uploadResponse.json()
                     throw new Error(err.error || `Error al subir el archivo ${fileToUpload.name}`)
                 }
-                
+
                 successCount++
                 setProgress(Math.round(((i + 1) / files.length) * 100))
             }
@@ -163,6 +191,7 @@ export function ResultUploader({
     }
 
     const activeTest = orderTests?.find(t => t.id === selectedTestId)
+    const hasDicomFiles = files.some(f => isDicomFile({ file_name: f.name, mime_type: f.type }))
 
     return (
         <div className="space-y-4">
@@ -192,7 +221,7 @@ export function ResultUploader({
                         </SelectContent>
                     </Select>
                     <p className="text-xs text-blue-700/80">
-                        Cada examen dentro de la misma orden puede tener su propio documento PDF adjunto.
+                        Cada examen dentro de la misma orden puede tener su propio documento PDF o tomografía 3D adjunta.
                     </p>
                 </div>
             )}
@@ -212,7 +241,7 @@ export function ResultUploader({
                     className="max-w-xs bg-white"
                 />
                 <p className="text-xs text-muted-foreground">
-                    Día en que se tomaron/realizaron los exámenes. La fecha de cargue y la de la orden se registran automáticamente.
+                    Día en que se tomaron/realizaron los exámenes o la tomografía.
                 </p>
             </div>
 
@@ -232,15 +261,22 @@ export function ResultUploader({
                     ) : isUploading ? (
                         <Loader2 className="h-12 w-12 text-primary animate-spin" />
                     ) : (
-                        <FileUp className={`h-12 w-12 ${isDragActive ? 'text-primary' : 'text-muted-foreground'}`} />
+                        <div className="flex items-center gap-2 text-primary">
+                            <FileUp className={`h-10 w-10 ${isDragActive ? 'text-primary' : 'text-muted-foreground'}`} />
+                            <Layers className="h-10 w-10 text-indigo-500" />
+                        </div>
                     )}
 
                     <div>
                         <p className="text-lg font-semibold">
-                            {files.length > 0 ? `${files.length} archivo(s) seleccionado(s)` : (isDragActive ? "Suelta los archivos aquí" : "Arrastra los reportes PDF")}
+                            {files.length > 0
+                                ? `${files.length} archivo(s) seleccionado(s)`
+                                : (isDragActive ? "Suelta los archivos aquí" : "Arrastra reportes PDF o Tomografías DICOM (.zip)")}
                         </p>
-                        <p className="text-sm text-muted-foreground">
-                            {files.length > 0 ? `Tamaño total: ${(files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)} MB` : "O haz clic para seleccionar"}
+                        <p className="text-sm text-muted-foreground max-w-md mx-auto mt-1">
+                            {files.length > 0
+                                ? `Tamaño total: ${(files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)} MB`
+                                : "Admite informes PDF y series tomográficas completas en formato .ZIP (hasta 350 MB)"}
                         </p>
                     </div>
                 </div>
@@ -248,50 +284,68 @@ export function ResultUploader({
 
             {/* Selected files list with preview button */}
             {files.length > 0 && !isUploading && !isSuccess && (
-                <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-                    {files.map((f, idx) => (
-                        <div key={idx} className="flex items-center justify-between p-2.5 border rounded-lg text-sm bg-muted/30">
-                            <div className="flex items-center gap-2 truncate pr-2">
-                                <FileText className="h-4 w-4 text-rose-500 shrink-0" />
-                                <span className="truncate font-medium">{f.name}</span>
-                                <span className="text-xs text-muted-foreground shrink-0">({(f.size / 1024).toFixed(0)} KB)</span>
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-2">
+                    {files.map((f, idx) => {
+                        const isDicom = isDicomFile({ file_name: f.name, mime_type: f.type })
+                        return (
+                            <div key={idx} className="flex items-center justify-between p-2.5 border rounded-lg text-sm bg-muted/30">
+                                <div className="flex items-center gap-2 truncate pr-2">
+                                    {isDicom ? (
+                                        <Layers className="h-4 w-4 text-indigo-600 shrink-0" />
+                                    ) : (
+                                        <FileText className="h-4 w-4 text-rose-500 shrink-0" />
+                                    )}
+                                    <span className="truncate font-medium">{f.name}</span>
+                                    <span className="text-xs text-muted-foreground shrink-0">
+                                        ({(f.size / (1024 * 1024)).toFixed(1)} MB)
+                                    </span>
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium border ${
+                                        isDicom
+                                            ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                                            : "bg-rose-50 text-rose-700 border-rose-200"
+                                    }`}>
+                                        {isDicom ? "Tomografía DICOM" : "Informe PDF"}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 px-2.5 text-xs gap-1 text-blue-700 border-blue-200 bg-blue-50/50 hover:bg-blue-100"
+                                        onClick={() => openLocalPreview(f)}
+                                    >
+                                        <Eye className="h-3.5 w-3.5" />
+                                        Previsualizar
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() => removeFile(idx)}
+                                        className="h-7 w-7 text-destructive hover:bg-destructive/10"
+                                    >
+                                        <X className="h-4 w-4" />
+                                    </Button>
+                                </div>
                             </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-7 px-2.5 text-xs gap-1 text-blue-700 border-blue-200 bg-blue-50/50 hover:bg-blue-100"
-                                    onClick={() => openLocalPreview(f)}
-                                >
-                                    <Eye className="h-3.5 w-3.5" />
-                                    Previsualizar
-                                </Button>
-                                <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => removeFile(idx)}
-                                    className="h-7 w-7 text-destructive hover:bg-destructive/10"
-                                >
-                                    <X className="h-4 w-4" />
-                                </Button>
-                            </div>
-                        </div>
-                    ))}
+                        )
+                    })}
                 </div>
             )}
 
             {isUploading && (
                 <div className="space-y-2">
                     <Progress value={progress} className="h-1.5" />
-                    <p className="text-[10px] text-center font-bold text-primary uppercase tracking-widest">Cargando datos a la nube...</p>
+                    <p className="text-[10px] text-center font-bold text-primary uppercase tracking-widest">
+                        Cargando datos a la nube... {progress}%
+                    </p>
                 </div>
             )}
 
             {files.length > 0 && !isUploading && !isSuccess && (
-                <Button className="w-full py-6 text-lg" onClick={handleUpload}>
-                    Subir como Versión Oficial
+                <Button className="w-full py-6 text-lg bg-primary hover:bg-primary/90" onClick={handleUpload}>
+                    {hasDicomFiles ? "Subir Tomografía / Resultados Oficiales" : "Subir como Versión Oficial"}
                 </Button>
             )}
 
@@ -304,8 +358,8 @@ export function ResultUploader({
                         </p>
                         <p className="text-xs text-emerald-700">
                             {activeTest
-                                ? `El PDF ha sido asociado al examen "${activeTest.name}". Puedes previsualizarlo o continuar con los demás exámenes.`
-                                : "El PDF ha sido registrado en el sistema. Puedes previsualizarlo o ir a la vista general de la orden."
+                                ? `El archivo ha sido asociado al examen "${activeTest.name}". Puedes previsualizarlo o continuar con los demás exámenes.`
+                                : "El archivo ha sido registrado en el sistema. Puedes previsualizarlo o ir a la vista general de la orden."
                             }
                         </p>
                     </div>
@@ -319,7 +373,7 @@ export function ResultUploader({
                                 onClick={() => openLocalPreview(files[0])}
                             >
                                 <Eye className="h-4 w-4" />
-                                Previsualizar documento
+                                Previsualizar resultado
                             </Button>
                         )}
                         <Button
@@ -344,7 +398,7 @@ export function ResultUploader({
                             }}
                         >
                             <Microscope className="h-4 w-4" />
-                            Cargar PDF para el siguiente examen pendiente
+                            Cargar archivo para el siguiente examen pendiente
                         </Button>
                     )}
 
@@ -360,12 +414,22 @@ export function ResultUploader({
                 </div>
             )}
 
+            {/* Modal de Previsualización Oficial de PDF */}
             <PdfPreviewModal
                 open={!!previewModal}
                 onOpenChange={(open) => !open && closePreview()}
                 title={previewModal?.name || ""}
                 url={previewModal?.url || null}
                 subtitle={previewModal?.subtitle}
+            />
+
+            {/* Modal de Previsualización Web 3D de Tomografía DICOM */}
+            <DicomViewerModal
+                open={!!dicomPreviewModal}
+                onOpenChange={(open) => !open && closeDicomPreview()}
+                title={dicomPreviewModal?.name || "Tomografía DICOM 3D"}
+                zipUrl={dicomPreviewModal?.url || null}
+                subtitle={dicomPreviewModal?.subtitle}
             />
         </div>
     )

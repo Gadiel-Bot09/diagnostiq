@@ -61,6 +61,9 @@ export async function POST(req: NextRequest) {
         const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
 
         const orderTestId = (formData.get("orderTestId") as string) || null
+        const lowerName = file.name.toLowerCase()
+        const isDicom = lowerName.endsWith(".zip") || lowerName.endsWith(".dcm")
+        const fileType = (formData.get("fileType") as string) || (isDicom ? "DICOM_ZIP" : "PDF")
 
         // Insert into result_files in Supabase
         const filePayload: any = {
@@ -68,8 +71,9 @@ export async function POST(req: NextRequest) {
             patient_id: patientId,
             lab_id: labId,
             file_name: file.name,
+            file_type: fileType,
             storage_path: uploadedPath,
-            mime_type: file.type,
+            mime_type: file.type || (isDicom ? "application/zip" : "application/pdf"),
             size_bytes: file.size,
             uploaded_by: user.id,
             version: parseInt(version || "1", 10),
@@ -87,9 +91,10 @@ export async function POST(req: NextRequest) {
             .select()
             .single()
 
-        // Graceful fallback if order_test_id column hasn't been added to result_files yet
-        if (dbError && dbError.message && dbError.message.includes("order_test_id")) {
-            delete filePayload.order_test_id
+        // Graceful fallback if order_test_id or file_type column hasn't been added to result_files yet
+        if (dbError && dbError.message && (dbError.message.includes("order_test_id") || dbError.message.includes("file_type"))) {
+            if (dbError.message.includes("order_test_id")) delete filePayload.order_test_id
+            if (dbError.message.includes("file_type")) delete filePayload.file_type
             const retry = await supabase
                 .from("result_files")
                 .insert(filePayload)

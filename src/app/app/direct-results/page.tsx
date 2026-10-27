@@ -235,7 +235,15 @@ export default function DirectResultsPage() {
     }, [])
 
     const { getRootProps, getInputProps, isDragActive } = useDropzone({
-        onDrop, accept: { "application/pdf": [".pdf"] }, multiple: true
+        onDrop,
+        accept: {
+            "application/pdf": [".pdf"],
+            "application/zip": [".zip"],
+            "application/x-zip-compressed": [".zip"],
+            "application/dicom": [".dcm"],
+        },
+        multiple: true,
+        maxSize: 350 * 1024 * 1024,
     })
 
     const removeFile = (idx: number) => setUploadedFiles(prev => prev.filter((_, i) => i !== idx))
@@ -243,7 +251,7 @@ export default function DirectResultsPage() {
     // ──────────────────── Submit ────────────────────
     const uploadMutation = useMutation({
         mutationFn: async (values: PatientForm) => {
-            if (uploadedFiles.length === 0) throw new Error("Debes subir al menos un archivo PDF")
+            if (uploadedFiles.length === 0) throw new Error("Debes subir al menos un archivo (PDF o Tomografía DICOM .zip)")
 
             const fd = new FormData()
             fd.append("document_type", values.document_type)

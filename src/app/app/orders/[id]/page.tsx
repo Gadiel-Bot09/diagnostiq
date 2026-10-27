@@ -633,6 +633,16 @@ export default function AdminOrderDetailPage() {
                 url={previewFile?.url || null}
                 subtitle={previewFile?.subtitle}
             />
+
+            {/* Modal de Visualización 3D Universal de Tomografía DICOM */}
+            <DicomViewerModal
+                open={!!dicomModal}
+                onOpenChange={(open) => !open && setDicomModal(null)}
+                title={dicomModal?.name || "Tomografía DICOM 3D"}
+                zipUrl={dicomModal?.url || null}
+                downloadUrl={dicomModal?.downloadUrl}
+                subtitle={dicomModal?.subtitle}
+            />
         </AdminLayout>
     )
 }

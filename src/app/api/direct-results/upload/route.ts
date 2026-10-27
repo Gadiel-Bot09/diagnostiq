@@ -277,24 +277,37 @@ export async function POST(req: NextRequest) {
             const buffer = Buffer.from(await file.arrayBuffer())
             const storagePath = `labs/${labId}/direct/${order.id}/${Date.now()}-${file.name}`
 
-            await uploadToMinio(storagePath, buffer, file.type || "application/pdf")
+            const lowerName = file.name.toLowerCase()
+            const isDicom = lowerName.endsWith(".zip") || lowerName.endsWith(".dcm")
+            const fileType = isDicom ? "DICOM_ZIP" : "PDF"
+            const mimeType = file.type || (isDicom ? "application/zip" : "application/pdf")
+
+            await uploadToMinio(storagePath, buffer, mimeType)
 
             const sha256 = crypto.createHash("sha256").update(buffer).digest("hex")
 
-            const { error: insertError } = await supabaseAdmin.from("result_files").insert({
+            const filePayload: any = {
                 order_id: order.id,
                 patient_id: patient.id,
                 lab_id: labId,
                 file_name: file.name,
+                file_type: fileType,
                 storage_path: storagePath,
-                mime_type: file.type || "application/pdf",
+                mime_type: mimeType,
                 size_bytes: buffer.length,
                 uploaded_by: user.id,
                 storage_bucket: process.env.MINIO_BUCKET || "diagnostiq-results",
                 sha256,
                 version: 1,
                 performed_at: performedAt,
-            })
+            }
+
+            let { error: insertError } = await supabaseAdmin.from("result_files").insert(filePayload)
+            if (insertError && insertError.message && insertError.message.includes("file_type")) {
+                delete filePayload.file_type
+                const retry = await supabaseAdmin.from("result_files").insert(filePayload)
+                insertError = retry.error
+            }
             if (insertError) {
                 console.error("Result file insert error:", insertError)
                 throw insertError

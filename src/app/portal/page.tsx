@@ -34,6 +34,8 @@ import { createClient } from "@/lib/supabase/client"
 import { PasswordChangeBanner } from "@/components/portal/PasswordChangeBanner"
 import { ChangePasswordModal } from "@/components/auth/ChangePasswordModal"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
+import { DicomViewerModal } from "@/components/common/DicomViewerModal"
+import { isDicomFile } from "@/lib/dicom"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -159,6 +161,7 @@ export default function PatientDashboard() {
 
     const [loadingKey, setLoadingKey] = useState<string | null>(null)
     const [preview, setPreview] = useState<{ url: string; name: string; subtitle?: string } | null>(null)
+    const [dicomPreview, setDicomPreview] = useState<{ url: string; downloadUrl: string; name: string; subtitle?: string } | null>(null)
 
     const { data: orders = [], isLoading } = useQuery({
         queryKey: ["patient-orders"],
@@ -351,14 +354,29 @@ export default function PatientDashboard() {
             const url = await fetchUrl(exam.file.id, true)
             const performed = safeDate(exam.file.performed_at || order.performed_at, "dd/MM/yyyy")
             const uploaded = safeDate(exam.file.uploaded_at, "dd/MM/yyyy")
-            setPreview({
-                url,
-                name: `${exam.name} · #${order.order_number}`,
-                subtitle: [
-                    performed && `Realizado: ${performed}`,
-                    uploaded && `Cargado: ${uploaded}`,
-                ].filter(Boolean).join("  ·  "),
-            })
+            const subtitle = [
+                performed && `Realizado: ${performed}`,
+                uploaded && `Cargado: ${uploaded}`,
+            ].filter(Boolean).join("  ·  ")
+
+            if (isDicomFile(exam.file)) {
+                let downloadUrl = url
+                try {
+                    downloadUrl = await fetchUrl(exam.file.id, false)
+                } catch {}
+                setDicomPreview({
+                    url,
+                    downloadUrl,
+                    name: `${exam.name} · #${order.order_number}`,
+                    subtitle,
+                })
+            } else {
+                setPreview({
+                    url,
+                    name: `${exam.name} · #${order.order_number}`,
+                    subtitle,
+                })
+            }
         } catch (e: any) {
             toast({ variant: "destructive", title: "No se pudo abrir", description: e.message })
         } finally {
@@ -823,10 +841,12 @@ export default function PatientDashboard() {
                                                                             >
                                                                                 {isOpening ? (
                                                                                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                                                ) : isDicomFile(exam.file) ? (
+                                                                                    <Layers className="h-3.5 w-3.5" />
                                                                                 ) : (
                                                                                     <Eye className="h-3.5 w-3.5" />
                                                                                 )}
-                                                                                Ver Documento
+                                                                                {isDicomFile(exam.file) ? "Ver Tomografía 3D" : "Ver Documento"}
                                                                             </Button>
                                                                             <Button
                                                                                 variant="outline"
@@ -851,9 +871,18 @@ export default function PatientDashboard() {
                                                             {isReady && exam.file && (
                                                                 <div className="mt-2.5 pt-2 border-t border-slate-100 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
                                                                     <span className="flex items-center gap-1 font-medium text-slate-700 truncate max-w-[240px]">
-                                                                        <FileText className="h-3.5 w-3.5 text-rose-500 shrink-0" />
+                                                                        {isDicomFile(exam.file) ? (
+                                                                            <Layers className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                                                                        ) : (
+                                                                            <FileText className="h-3.5 w-3.5 text-rose-500 shrink-0" />
+                                                                        )}
                                                                         {exam.file.file_name}
                                                                     </span>
+                                                                    {isDicomFile(exam.file) && (
+                                                                        <span className="bg-indigo-50 text-indigo-700 font-semibold px-1.5 py-0.2 rounded border border-indigo-200">
+                                                                            Tomografía 3D (DICOM)
+                                                                        </span>
+                                                                    )}
                                                                     <span>v{exam.file.version}</span>
                                                                     {exam.file.size_bytes && (
                                                                         <span>{(exam.file.size_bytes / 1024).toFixed(0)} KB</span>
@@ -928,6 +957,16 @@ export default function PatientDashboard() {
                 title={preview?.name || ""}
                 url={preview?.url || null}
                 subtitle={preview?.subtitle}
+            />
+
+            {/* Modal de Visualización 3D Universal de Tomografía DICOM */}
+            <DicomViewerModal
+                open={!!dicomPreview}
+                onOpenChange={(open) => !open && setDicomPreview(null)}
+                title={dicomPreview?.name || "Tomografía DICOM 3D"}
+                zipUrl={dicomPreview?.url || null}
+                downloadUrl={dicomPreview?.downloadUrl}
+                subtitle={dicomPreview?.subtitle}
             />
         </div>
     )

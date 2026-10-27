@@ -6,8 +6,10 @@ import { es } from "date-fns/locale"
 import {
     Search, FileText, Download, User, Hash,
     Calendar, ChevronRight, Microscope, AlertCircle,
-    Eye, Badge as BadgeIcon, Loader2, UploadCloud
+    Eye, Badge as BadgeIcon, Loader2, UploadCloud, Layers
 } from "lucide-react"
+import { DicomViewerModal } from "@/components/common/DicomViewerModal"
+import { isDicomFile } from "@/lib/dicom"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -51,6 +53,7 @@ export default function DoctorPage() {
     const [hasSearched, setHasSearched] = useState(false)
     const [downloadingId, setDownloadingId] = useState<string | null>(null)
     const [previewFile, setPreviewFile] = useState<{ url: string, name: string, type: string } | null>(null)
+    const [dicomModal, setDicomModal] = useState<{ url: string; downloadUrl: string; name: string } | null>(null)
     const [previewingId, setPreviewingId] = useState<string | null>(null)
 
     // ── Search ──
@@ -107,7 +110,18 @@ export default function DoctorPage() {
             const res = await fetch(`/api/results/download?fileId=${fileId}&preview=true`)
             const data = await res.json()
             if (!res.ok) throw new Error(data.error)
-            setPreviewFile({ url: data.url, name: fileName, type: mimeType })
+
+            if (isDicomFile({ file_name: fileName, mime_type: mimeType })) {
+                let downloadUrl = data.url
+                try {
+                    const dlRes = await fetch(`/api/results/download?fileId=${fileId}`)
+                    const dlData = await dlRes.json()
+                    if (dlData.url) downloadUrl = dlData.url
+                } catch {}
+                setDicomModal({ url: data.url, downloadUrl, name: fileName })
+            } else {
+                setPreviewFile({ url: data.url, name: fileName, type: mimeType })
+            }
         } catch (err: any) {
             toast({ variant: "destructive", title: "Error de previsualización", description: err.message })
         } finally {
@@ -260,8 +274,17 @@ export default function DoctorPage() {
                                                         {order.result_files.map(file => (
                                                             <div key={file.id} className="flex items-center justify-between bg-slate-50 rounded-lg px-3 py-2 border">
                                                                 <div className="flex items-center gap-2 min-w-0">
-                                                                    <FileText className="h-3.5 w-3.5 text-rose-500 flex-shrink-0" />
+                                                                    {isDicomFile(file) ? (
+                                                                        <Layers className="h-3.5 w-3.5 text-indigo-600 flex-shrink-0" />
+                                                                    ) : (
+                                                                        <FileText className="h-3.5 w-3.5 text-rose-500 flex-shrink-0" />
+                                                                    )}
                                                                     <span className="text-sm font-medium truncate max-w-xs">{file.file_name}</span>
+                                                                    {isDicomFile(file) && (
+                                                                        <span className="text-[10px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-200 font-medium">
+                                                                            Tomografía 3D
+                                                                        </span>
+                                                                    )}
                                                                     <span className="text-xs text-muted-foreground flex-shrink-0">
                                                                         {(file.size_bytes / 1024).toFixed(0)} KB
                                                                     </span>
@@ -269,16 +292,23 @@ export default function DoctorPage() {
                                                                 <div className="flex items-center gap-1">
                                                                     <Button
                                                                         size="sm"
-                                                                        variant="ghost"
-                                                                        className="h-7 gap-1.5 text-xs text-blue-700 hover:text-blue-800 hover:bg-blue-50 flex-shrink-0"
+                                                                        variant={isDicomFile(file) ? "default" : "ghost"}
+                                                                        className={`h-7 gap-1.5 text-xs flex-shrink-0 ${
+                                                                            isDicomFile(file)
+                                                                                ? "bg-blue-600 hover:bg-blue-700 text-white font-medium"
+                                                                                : "text-blue-700 hover:text-blue-800 hover:bg-blue-50"
+                                                                        }`}
                                                                         onClick={() => handlePreview(file.id, file.file_name, file.mime_type)}
                                                                         disabled={previewingId === file.id || downloadingId === file.id}
                                                                     >
-                                                                        {previewingId === file.id
-                                                                            ? <Loader2 className="h-3 w-3 animate-spin" />
-                                                                            : <Eye className="h-3 w-3" />
-                                                                        }
-                                                                        Ver
+                                                                        {previewingId === file.id ? (
+                                                                            <Loader2 className="h-3 w-3 animate-spin" />
+                                                                        ) : isDicomFile(file) ? (
+                                                                            <Layers className="h-3 w-3" />
+                                                                        ) : (
+                                                                            <Eye className="h-3 w-3" />
+                                                                        )}
+                                                                        {isDicomFile(file) ? "Ver 3D" : "Ver"}
                                                                     </Button>
                                                                     <Button
                                                                         size="sm"
@@ -320,6 +350,15 @@ export default function DoctorPage() {
                     <p className="text-sm mt-1">Los resultados aparecerán aquí ordenados del más reciente al más antiguo</p>
                 </div>
             )}
+            {/* Modal de Visualización 3D Universal de Tomografía DICOM */}
+            <DicomViewerModal
+                open={!!dicomModal}
+                onOpenChange={(open) => !open && setDicomModal(null)}
+                title={dicomModal?.name || "Tomografía DICOM 3D"}
+                zipUrl={dicomModal?.url || null}
+                downloadUrl={dicomModal?.downloadUrl}
+            />
+
             {/* Preview Modal */}
             <Dialog open={!!previewFile} onOpenChange={(open) => !open && setPreviewFile(null)}>
                 <DialogContent className="max-w-4xl h-[90vh] flex flex-col p-4">
