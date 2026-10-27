@@ -10,7 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
     UploadCloud, Search, UserPlus, CheckCircle2, FileText,
     X, AlertCircle, ArrowRight, User, Hash, Mail, Beaker,
-    Plus, Pencil, Trash2, Settings, Sparkles, Eye
+    Plus, Pencil, Trash2, Settings, Sparkles, Eye, Layers
 } from "lucide-react"
 
 import { AdminLayout } from "@/components/layout/AdminLayout"
@@ -26,6 +26,8 @@ import { createClient } from "@/lib/supabase/client"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 import { DOCUMENT_TYPES } from "@/lib/constants/patient"
+import { uploadWithProgress } from "@/lib/uploadWithProgress"
+import { isDicomFile } from "@/lib/dicom"
 import Link from "next/link"
 
 const patientSchema = z.object({
@@ -178,6 +180,7 @@ export default function DirectResultsPage() {
     const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
     const [uploadResult, setUploadResult] = useState<UploadResult | null>(null)
     const [previewModal, setPreviewModal] = useState<{ url: string; name: string; subtitle?: string; isBlob?: boolean } | null>(null)
+    const [uploadProgress, setUploadProgress] = useState<{ percent: number; loadedMB: number; totalMB: number } | null>(null)
 
     const openDirectPreview = (file: File) => {
         const objectUrl = URL.createObjectURL(file)
@@ -230,9 +233,36 @@ export default function DirectResultsPage() {
     }
 
     // ──────────────────── File dropzone ────────────────────
-    const onDrop = useCallback((accepted: File[]) => {
-        setUploadedFiles(prev => [...prev, ...accepted.filter(f => f.type === "application/pdf")])
-    }, [])
+    const onDrop = useCallback((accepted: File[], rejections: any[]) => {
+        const recovered: File[] = []
+        if (rejections && rejections.length > 0) {
+            rejections.forEach(rej => {
+                const name = rej.file.name.toLowerCase()
+                if (name.endsWith('.zip') || name.endsWith('.dcm') || name.endsWith('.pdf')) {
+                    if (rej.file.size <= 350 * 1024 * 1024) {
+                        recovered.push(rej.file)
+                    } else {
+                        toast({
+                            variant: "destructive",
+                            title: "Archivo demasiado grande",
+                            description: `El archivo ${rej.file.name} supera el límite de 350 MB.`,
+                        })
+                    }
+                }
+            })
+        }
+        const valid = [...accepted, ...recovered]
+        if (valid.length > 0) {
+            setUploadedFiles(prev => {
+                const existing = new Set(prev.map(f => `${f.name}-${f.size}`))
+                return [...prev, ...valid.filter(f => !existing.has(`${f.name}-${f.size}`))]
+            })
+            toast({
+                title: "Archivo(s) seleccionado(s)",
+                description: `${valid.length} archivo(s) listo(s) para cargar.`,
+            })
+        }
+    }, [toast])
 
     const { getRootProps, getInputProps, isDragActive } = useDropzone({
         onDrop,
@@ -240,7 +270,11 @@ export default function DirectResultsPage() {
             "application/pdf": [".pdf"],
             "application/zip": [".zip"],
             "application/x-zip-compressed": [".zip"],
+            "application/x-zip": [".zip"],
+            "application/octet-stream": [".zip", ".dcm", ".rar"],
             "application/dicom": [".dcm"],
+            "application/x-compressed": [".zip"],
+            "multipart/x-zip": [".zip"],
         },
         multiple: true,
         maxSize: 350 * 1024 * 1024,
@@ -262,16 +296,29 @@ export default function DirectResultsPage() {
             fd.append("performed_at", values.performed_at)
             uploadedFiles.forEach(f => fd.append("files", f))
 
-            const res = await fetch("/api/direct-results/upload", { method: "POST", body: fd })
-            const json = await res.json()
-            if (!res.ok) throw new Error(json.error || "Error al cargar resultados")
-            return json as UploadResult
+            setUploadProgress({ percent: 0, loadedMB: 0, totalMB: 0 })
+
+            const json = await uploadWithProgress<UploadResult>(
+                "/api/direct-results/upload",
+                fd,
+                (p) => {
+                    setUploadProgress({
+                        percent: p.percent,
+                        loadedMB: p.loadedMB,
+                        totalMB: p.totalMB,
+                    })
+                }
+            )
+
+            return json
         },
         onSuccess: (data) => {
+            setUploadProgress(null)
             setUploadResult(data)
             setStep("done")
         },
         onError: (err: any) => {
+            setUploadProgress(null)
             toast({ variant: "destructive", title: "Error", description: err.message })
         }
     })
@@ -509,65 +556,131 @@ export default function DirectResultsPage() {
                             </CardContent>
                         </Card>
 
-                        {/* File dropzone */}
+                        {/* File dropzone or Upload Progress */}
                         <Card>
                             <CardHeader className="pb-4">
-                                <CardTitle className="text-base flex items-center gap-2"><FileText className="h-4 w-4" />Archivos PDF *</CardTitle>
-                                <CardDescription>Puedes subir múltiples PDFs a la vez.</CardDescription>
+                                <CardTitle className="text-base flex items-center gap-2">
+                                    <FileText className="h-4 w-4 text-blue-600" />
+                                    Archivos de Resultados (PDF o Tomografía DICOM)
+                                </CardTitle>
+                                <CardDescription>Admite informes PDF y paquetes de tomografía volumétrica en .ZIP (hasta 350 MB).</CardDescription>
                             </CardHeader>
-                            <CardContent className="space-y-3">
-                                <div
-                                    {...getRootProps()}
-                                    className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${isDragActive ? "border-primary bg-primary/5" : "border-muted-foreground/30 hover:border-primary/50 hover:bg-muted/30"}`}
-                                >
-                                    <input {...getInputProps()} />
-                                    <UploadCloud className="h-10 w-10 mx-auto mb-3 text-muted-foreground" />
-                                    {isDragActive ? (
-                                        <p className="text-primary font-medium">Suelta los archivos aquí...</p>
-                                    ) : (
-                                        <>
-                                            <p className="font-medium text-muted-foreground">Arrastra PDFs aquí o haz clic para seleccionar</p>
-                                            <p className="text-xs text-muted-foreground mt-1">Solo archivos .pdf · Múltiples archivos permitidos</p>
-                                        </>
-                                    )}
-                                </div>
-
-                                {uploadedFiles.length > 0 && (
-                                    <div className="space-y-2">
-                                        {uploadedFiles.map((f, i) => (
-                                            <div key={i} className="flex items-center justify-between bg-muted/40 rounded-lg px-3 py-2">
-                                                <div className="flex items-center gap-2 min-w-0 pr-2">
-                                                    <FileText className="h-4 w-4 text-rose-500 flex-shrink-0" />
-                                                    <span className="text-sm font-medium truncate max-w-xs">{f.name}</span>
-                                                    <Badge variant="outline" className="text-xs shrink-0">{(f.size / 1024).toFixed(0)} KB</Badge>
-                                                </div>
-                                                <div className="flex items-center gap-1.5 shrink-0">
-                                                    <Button
-                                                        type="button"
-                                                        variant="outline"
-                                                        size="sm"
-                                                        className="h-7 px-2.5 text-xs gap-1 text-blue-700 border-blue-200 bg-blue-50/50 hover:bg-blue-100"
-                                                        onClick={() => openDirectPreview(f)}
-                                                    >
-                                                        <Eye className="h-3.5 w-3.5" />
-                                                        Previsualizar
-                                                    </Button>
-                                                    <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:bg-destructive/10" onClick={() => removeFile(i)}>
-                                                        <X className="h-3.5 w-3.5" />
-                                                    </Button>
-                                                </div>
+                            <CardContent className="space-y-4">
+                                {uploadMutation.isPending ? (
+                                    <div className="rounded-2xl border-2 border-primary/30 bg-gradient-to-b from-blue-50/70 via-indigo-50/30 to-white dark:from-slate-900/60 dark:to-slate-950 p-6 sm:p-8 text-center space-y-4 shadow-sm animate-in fade-in duration-200">
+                                        <div className="relative mx-auto w-16 h-16 flex items-center justify-center">
+                                            <span className="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
+                                            <div className="relative w-14 h-14 rounded-full bg-primary text-white flex items-center justify-center shadow-md">
+                                                <UploadCloud className="h-7 w-7 animate-bounce" />
                                             </div>
-                                        ))}
+                                        </div>
+
+                                        <div>
+                                            <h3 className="text-xl font-bold text-foreground">
+                                                Subiendo Archivos a la Nube
+                                            </h3>
+                                            <p className="text-xs text-muted-foreground mt-1">
+                                                Transfiriendo {uploadedFiles.length} archivo(s) de resultado al almacenamiento seguro.
+                                            </p>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <div className="flex items-baseline justify-center gap-2">
+                                                <span className="text-5xl font-black text-primary tracking-tight">
+                                                    {uploadProgress?.percent ?? 0}%
+                                                </span>
+                                                {uploadProgress && uploadProgress.totalMB > 0 && (
+                                                    <span className="text-sm font-semibold text-muted-foreground">
+                                                        ({uploadProgress.loadedMB.toFixed(1)} MB / {uploadProgress.totalMB.toFixed(1)} MB)
+                                                    </span>
+                                                )}
+                                            </div>
+
+                                            <div className="w-full max-w-md mx-auto bg-slate-200 dark:bg-slate-800 h-3.5 rounded-full overflow-hidden p-0.5 shadow-inner">
+                                                <div
+                                                    className="h-full bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 rounded-full transition-all duration-150 ease-out shadow-sm"
+                                                    style={{ width: `${Math.max(uploadProgress?.percent ?? 0, 3)}%` }}
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <p className="text-xs text-muted-foreground pt-1">
+                                            {(uploadProgress?.percent ?? 0) >= 99
+                                                ? "Archivos transferidos al 100%. Guardando registros en el servidor... Un momento."
+                                                : "Por favor no cierres ni recargues esta ventana mientras se completa la carga."}
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <div
+                                        {...getRootProps()}
+                                        className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${isDragActive ? "border-primary bg-primary/5" : "border-muted-foreground/30 hover:border-primary/50 hover:bg-muted/30"}`}
+                                    >
+                                        <input {...getInputProps()} />
+                                        <div className="flex items-center justify-center gap-2 mb-3">
+                                            <UploadCloud className="h-9 w-9 text-blue-600" />
+                                            <Layers className="h-9 w-9 text-indigo-500" />
+                                        </div>
+                                        {isDragActive ? (
+                                            <p className="text-primary font-medium">Suelta los archivos aquí...</p>
+                                        ) : (
+                                            <>
+                                                <p className="font-semibold text-foreground text-base">Arrastra informes PDF o Tomografías DICOM (.zip)</p>
+                                                <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
+                                                    Admite informes PDF y series tomográficas completas en formato .ZIP o .DCM (hasta 350 MB)
+                                                </p>
+                                            </>
+                                        )}
+                                    </div>
+                                )}
+
+                                {uploadedFiles.length > 0 && !uploadMutation.isPending && (
+                                    <div className="space-y-2">
+                                        {uploadedFiles.map((f, i) => {
+                                            const isDicom = isDicomFile({ file_name: f.name, mime_type: f.type })
+                                            return (
+                                                <div key={i} className="flex items-center justify-between bg-muted/40 rounded-lg px-3 py-2 border">
+                                                    <div className="flex items-center gap-2 min-w-0 pr-2">
+                                                        {isDicom ? (
+                                                            <Layers className="h-4 w-4 text-purple-600 flex-shrink-0" />
+                                                        ) : (
+                                                            <FileText className="h-4 w-4 text-rose-500 flex-shrink-0" />
+                                                        )}
+                                                        <span className="text-sm font-medium truncate max-w-xs">{f.name}</span>
+                                                        <Badge variant="outline" className={`text-xs shrink-0 ${isDicom ? "bg-purple-50 text-purple-700 border-purple-200" : ""}`}>
+                                                            {isDicom
+                                                                ? `${(f.size / (1024 * 1024)).toFixed(1)} MB · DICOM 3D`
+                                                                : `${(f.size / 1024).toFixed(0)} KB · PDF`
+                                                            }
+                                                        </Badge>
+                                                    </div>
+                                                    <div className="flex items-center gap-1.5 shrink-0">
+                                                        <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            size="sm"
+                                                            className="h-7 px-2.5 text-xs gap-1 text-blue-700 border-blue-200 bg-blue-50/50 hover:bg-blue-100"
+                                                            onClick={() => openDirectPreview(f)}
+                                                        >
+                                                            <Eye className="h-3.5 w-3.5" />
+                                                            Previsualizar
+                                                        </Button>
+                                                        <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:bg-destructive/10" onClick={() => removeFile(i)}>
+                                                            <X className="h-3.5 w-3.5" />
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            )
+                                        })}
                                     </div>
                                 )}
                             </CardContent>
                         </Card>
 
                         <div className="flex justify-between pt-2">
-                            <Button type="button" variant="outline" onClick={reset}>← Volver a buscar</Button>
-                            <Button type="submit" disabled={uploadMutation.isPending} className="gap-2 px-8">
+                            <Button type="button" variant="outline" onClick={reset} disabled={uploadMutation.isPending}>← Volver a buscar</Button>
+                            <Button type="submit" disabled={uploadMutation.isPending || uploadedFiles.length === 0} className="gap-2 px-8">
                                 {uploadMutation.isPending ? (
-                                    <>Cargando resultados...</>
+                                    <>Subiendo {uploadProgress?.percent ?? 0}%...</>
                                 ) : (
                                     <><UploadCloud className="h-4 w-4" /> Cargar Resultados</>
                                 )}

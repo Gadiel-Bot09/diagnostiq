@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react"
 import { useDropzone } from "react-dropzone"
-import { FileUp, FileText, X, Loader2, CheckCircle, Eye, ArrowRight, Layers, Microscope } from "lucide-react"
+import { FileUp, FileText, X, Loader2, CheckCircle, Eye, ArrowRight, Layers, Microscope, UploadCloud } from "lucide-react"
 import { useRouter } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label"
 import { PdfPreviewModal } from "@/components/common/PdfPreviewModal"
 import { DicomViewerModal } from "@/components/common/DicomViewerModal"
 import { isDicomFile } from "@/lib/dicom"
+import { uploadWithProgress } from "@/lib/uploadWithProgress"
 import {
     Select,
     SelectContent,
@@ -51,6 +52,14 @@ export function ResultUploader({
     const [files, setFiles] = useState<File[]>([])
     const [isUploading, setIsUploading] = useState(false)
     const [progress, setProgress] = useState(0)
+    const [uploadStatus, setUploadStatus] = useState<{
+        fileName: string
+        percent: number
+        loadedMB: number
+        totalMB: number
+        fileIndex: number
+        totalFiles: number
+    } | null>(null)
     const [isSuccess, setIsSuccess] = useState(false)
     const todayStr = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString().slice(0, 10) // hora Colombia
     const [performedAt, setPerformedAt] = useState("")
@@ -100,13 +109,47 @@ export function ResultUploader({
         setDicomPreviewModal(null)
     }
 
-    const onDrop = useCallback((acceptedFiles: File[]) => {
-        if (acceptedFiles.length > 0) {
-            setFiles(prev => [...prev, ...acceptedFiles])
+    const onDrop = useCallback((acceptedFiles: File[], fileRejections: any[]) => {
+        // Fallback: recuperar archivos por extensión si el tipo MIME del navegador no fue reconocido (ej: application/octet-stream en Windows)
+        const recovered: File[] = []
+        if (fileRejections && fileRejections.length > 0) {
+            fileRejections.forEach(rej => {
+                const name = rej.file.name.toLowerCase()
+                if (name.endsWith('.zip') || name.endsWith('.dcm') || name.endsWith('.pdf')) {
+                    if (rej.file.size <= 350 * 1024 * 1024) {
+                        recovered.push(rej.file)
+                    } else {
+                        toast({
+                            variant: "destructive",
+                            title: "Archivo demasiado grande",
+                            description: `El archivo ${rej.file.name} (${(rej.file.size / (1024 * 1024)).toFixed(1)} MB) supera el límite máximo de 350 MB.`,
+                        })
+                    }
+                } else {
+                    toast({
+                        variant: "destructive",
+                        title: "Formato no compatible",
+                        description: `El archivo ${rej.file.name} no es un formato válido (.pdf, .zip, .dcm).`,
+                    })
+                }
+            })
+        }
+
+        const validFiles = [...acceptedFiles, ...recovered]
+        if (validFiles.length > 0) {
+            setFiles(prev => {
+                const existing = new Set(prev.map(f => `${f.name}-${f.size}`))
+                const toAdd = validFiles.filter(f => !existing.has(`${f.name}-${f.size}`))
+                return [...prev, ...toAdd]
+            })
             setIsSuccess(false)
             setProgress(0)
+            toast({
+                title: "Archivo seleccionado",
+                description: `${validFiles.length} archivo(s) listo(s) para subir.`,
+            })
         }
-    }, [])
+    }, [toast])
 
     const { getRootProps, getInputProps, isDragActive } = useDropzone({
         onDrop,
@@ -114,7 +157,11 @@ export function ResultUploader({
             'application/pdf': ['.pdf'],
             'application/zip': ['.zip'],
             'application/x-zip-compressed': ['.zip'],
+            'application/x-zip': ['.zip'],
+            'application/octet-stream': ['.zip', '.dcm', '.rar'],
             'application/dicom': ['.dcm'],
+            'application/x-compressed': ['.zip'],
+            'multipart/x-zip': ['.zip'],
         },
         maxSize: 350 * 1024 * 1024, // 350 MB límite seguro para tomografías volumétricas
         disabled: isUploading || isSuccess
@@ -133,7 +180,15 @@ export function ResultUploader({
         }
 
         setIsUploading(true)
-        setProgress(5)
+        setProgress(0)
+        setUploadStatus({
+            fileName: files[0]?.name || "Archivo",
+            percent: 0,
+            loadedMB: 0,
+            totalMB: files[0]?.size ? files[0].size / (1024 * 1024) : 0,
+            fileIndex: 1,
+            totalFiles: files.length,
+        })
 
         try {
             let successCount = 0
@@ -143,7 +198,6 @@ export function ResultUploader({
                 const version = currentVersion + i + (isSuccess ? 0 : (currentVersion > 0 ? 1 : 1))
                 const isDicom = isDicomFile({ file_name: fileToUpload.name, mime_type: fileToUpload.type })
 
-                // Subir usando FormData a la API Route de MinIO
                 const formData = new FormData()
                 formData.append("file", fileToUpload)
                 formData.append("orderId", orderId)
@@ -156,18 +210,33 @@ export function ResultUploader({
                     formData.append("orderTestId", selectedTestId)
                 }
 
-                const uploadResponse = await fetch("/api/results/upload", {
-                    method: "POST",
-                    body: formData,
+                setUploadStatus({
+                    fileName: fileToUpload.name,
+                    percent: 0,
+                    loadedMB: 0,
+                    totalMB: fileToUpload.size / (1024 * 1024),
+                    fileIndex: i + 1,
+                    totalFiles: files.length,
                 })
 
-                if (!uploadResponse.ok) {
-                    const err = await uploadResponse.json()
-                    throw new Error(err.error || `Error al subir el archivo ${fileToUpload.name}`)
-                }
+                await uploadWithProgress(
+                    "/api/results/upload",
+                    formData,
+                    (p) => {
+                        setUploadStatus({
+                            fileName: fileToUpload.name,
+                            percent: p.percent,
+                            loadedMB: p.loadedMB,
+                            totalMB: p.totalMB,
+                            fileIndex: i + 1,
+                            totalFiles: files.length,
+                        })
+                        const overall = Math.round(((i + (p.percent / 100)) / files.length) * 100)
+                        setProgress(overall)
+                    }
+                )
 
                 successCount++
-                setProgress(Math.round(((i + 1) / files.length) * 100))
             }
 
             setProgress(100)
@@ -184,8 +253,9 @@ export function ResultUploader({
             toast({
                 variant: "destructive",
                 title: "Error de carga",
-                description: error.message || "Ocurrió un error inesperado.",
+                description: error.message || "Ocurrió un error inesperado al subir el archivo.",
             })
+        } finally {
             setIsUploading(false)
         }
     }
@@ -245,42 +315,101 @@ export function ResultUploader({
                 </p>
             </div>
 
-            <div
-                {...getRootProps()}
-                className={`
-                    border-2 border-dashed rounded-xl p-10 text-center transition-all cursor-pointer
-                    ${isDragActive ? 'border-primary bg-primary/5' : 'border-muted-foreground/20 hover:border-primary/50'}
-                    ${isSuccess ? 'border-green-500 bg-green-50/50' : ''}
-                    ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}
-                `}
-            >
-                <input {...getInputProps()} />
-                <div className="flex flex-col items-center gap-3">
-                    {isSuccess ? (
-                        <CheckCircle className="h-12 w-12 text-green-500" />
-                    ) : isUploading ? (
-                        <Loader2 className="h-12 w-12 text-primary animate-spin" />
-                    ) : (
-                        <div className="flex items-center gap-2 text-primary">
-                            <FileUp className={`h-10 w-10 ${isDragActive ? 'text-primary' : 'text-muted-foreground'}`} />
-                            <Layers className="h-10 w-10 text-indigo-500" />
+            {isUploading ? (
+                <div className="rounded-2xl border-2 border-primary/30 bg-gradient-to-b from-blue-50/70 via-indigo-50/30 to-white dark:from-slate-900/60 dark:to-slate-950 p-6 sm:p-8 text-center space-y-5 shadow-sm animate-in fade-in duration-300">
+                    {/* Animated Upload Icon */}
+                    <div className="relative mx-auto w-16 h-16 flex items-center justify-center">
+                        <span className="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
+                        <div className="relative w-14 h-14 rounded-full bg-primary text-white flex items-center justify-center shadow-md">
+                            <UploadCloud className="h-7 w-7 animate-bounce" />
                         </div>
-                    )}
+                    </div>
 
-                    <div>
-                        <p className="text-lg font-semibold">
-                            {files.length > 0
-                                ? `${files.length} archivo(s) seleccionado(s)`
-                                : (isDragActive ? "Suelta los archivos aquí" : "Arrastra reportes PDF o Tomografías DICOM (.zip)")}
+                    {/* Headline and file info */}
+                    <div className="space-y-1">
+                        <h3 className="text-xl font-bold text-foreground">
+                            Subiendo Tomografía / Resultado Oficial
+                        </h3>
+                        <p className="text-sm font-medium text-slate-700 dark:text-slate-300 truncate max-w-md mx-auto">
+                            {uploadStatus?.fileName}
                         </p>
-                        <p className="text-sm text-muted-foreground max-w-md mx-auto mt-1">
-                            {files.length > 0
-                                ? `Tamaño total: ${(files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)} MB`
-                                : "Admite informes PDF y series tomográficas completas en formato .ZIP (hasta 350 MB)"}
-                        </p>
+                        {uploadStatus && uploadStatus.totalFiles > 1 && (
+                            <p className="text-xs text-muted-foreground">
+                                Archivo {uploadStatus.fileIndex} de {uploadStatus.totalFiles}
+                            </p>
+                        )}
+                    </div>
+
+                    {/* Big percentage & MB transferred */}
+                    <div className="space-y-2">
+                        <div className="flex items-baseline justify-center gap-2">
+                            <span className="text-5xl font-black text-primary tracking-tight">
+                                {uploadStatus?.percent ?? 0}%
+                            </span>
+                            {uploadStatus && uploadStatus.totalMB > 0 && (
+                                <span className="text-sm font-semibold text-muted-foreground">
+                                    ({uploadStatus.loadedMB.toFixed(1)} MB / {uploadStatus.totalMB.toFixed(1)} MB)
+                                </span>
+                            )}
+                        </div>
+
+                        {/* Thick Animated Progress Bar */}
+                        <div className="w-full max-w-md mx-auto bg-slate-200 dark:bg-slate-800 h-3.5 rounded-full overflow-hidden p-0.5 shadow-inner">
+                            <div
+                                className="h-full bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 rounded-full transition-all duration-150 ease-out shadow-sm"
+                                style={{ width: `${Math.max(uploadStatus?.percent ?? 0, 3)}%` }}
+                            />
+                        </div>
+                    </div>
+
+                    {/* Dynamic Status Note */}
+                    <div className="pt-1">
+                        {(uploadStatus?.percent ?? 0) >= 99 ? (
+                            <p className="text-xs font-semibold text-amber-600 dark:text-amber-400 animate-pulse">
+                                Archivo transferido al 100%. Guardando y verificando en MinIO... Un momento por favor.
+                            </p>
+                        ) : (
+                            <p className="text-xs text-muted-foreground">
+                                Transfiriendo datos de forma segura. No cierres ni recargues esta ventana.
+                            </p>
+                        )}
                     </div>
                 </div>
-            </div>
+            ) : (
+                <div
+                    {...getRootProps()}
+                    className={`
+                        border-2 border-dashed rounded-xl p-10 text-center transition-all cursor-pointer
+                        ${isDragActive ? 'border-primary bg-primary/5' : 'border-muted-foreground/20 hover:border-primary/50'}
+                        ${isSuccess ? 'border-green-500 bg-green-50/50' : ''}
+                    `}
+                >
+                    <input {...getInputProps()} />
+                    <div className="flex flex-col items-center gap-3">
+                        {isSuccess ? (
+                            <CheckCircle className="h-12 w-12 text-green-500" />
+                        ) : (
+                            <div className="flex items-center gap-2 text-primary">
+                                <FileUp className={`h-10 w-10 ${isDragActive ? 'text-primary' : 'text-muted-foreground'}`} />
+                                <Layers className="h-10 w-10 text-indigo-500" />
+                            </div>
+                        )}
+
+                        <div>
+                            <p className="text-lg font-semibold">
+                                {files.length > 0
+                                    ? `${files.length} archivo(s) seleccionado(s)`
+                                    : (isDragActive ? "Suelta los archivos aquí" : "Arrastra reportes PDF o Tomografías DICOM (.zip)")}
+                            </p>
+                            <p className="text-sm text-muted-foreground max-w-md mx-auto mt-1">
+                                {files.length > 0
+                                    ? `Tamaño total: ${(files.reduce((acc, f) => acc + f.size, 0) / 1024 / 1024).toFixed(2)} MB`
+                                    : "Admite informes PDF y series tomográficas completas en formato .ZIP (hasta 350 MB)"}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Selected files list with preview button */}
             {files.length > 0 && !isUploading && !isSuccess && (
@@ -302,7 +431,7 @@ export function ResultUploader({
                                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium border ${
                                         isDicom
                                             ? "bg-indigo-50 text-indigo-700 border-indigo-200"
-                                            : "bg-rose-50 text-rose-700 border-rose-200"
+                                             : "bg-rose-50 text-rose-700 border-rose-200"
                                     }`}>
                                         {isDicom ? "Tomografía DICOM" : "Informe PDF"}
                                     </span>
@@ -334,14 +463,7 @@ export function ResultUploader({
                 </div>
             )}
 
-            {isUploading && (
-                <div className="space-y-2">
-                    <Progress value={progress} className="h-1.5" />
-                    <p className="text-[10px] text-center font-bold text-primary uppercase tracking-widest">
-                        Cargando datos a la nube... {progress}%
-                    </p>
-                </div>
-            )}
+
 
             {files.length > 0 && !isUploading && !isSuccess && (
                 <Button className="w-full py-6 text-lg bg-primary hover:bg-primary/90" onClick={handleUpload}>
