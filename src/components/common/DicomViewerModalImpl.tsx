@@ -80,29 +80,49 @@ export function DicomViewerModalImpl({
         totalSlicesRef.current = totalSlices
     }, [totalSlices])
 
-    // Función principal para cambiar de corte (estable sin dependencias dinámicas)
+    // Función principal para cambiar de corte usando el PositionHelper nativo de DWV
     const goToSlice = useCallback((targetSlice: number) => {
         const total = totalSlicesRef.current
-        if (!dwvAppRef.current || !dwvModuleRef.current || total <= 0) return
+        const app = dwvAppRef.current
+        if (!app || total <= 0) return
 
         const clamped = Math.max(0, Math.min(total - 1, targetSlice))
-        setSliceIndex(clamped)
-        sliceIndexRef.current = clamped
+        const vc = app.getViewController()
+        if (!vc) return
 
-        const vc = dwvAppRef.current.getViewController()
-        if (vc) {
-            const IndexClass = dwvModuleRef.current.Index
-            try {
-                vc.setCurrentIndex(new IndexClass([0, 0, clamped]))
-            } catch {
-                try {
-                    const geometry = dwvAppRef.current.getImage()?.getGeometry()
-                    if (geometry) {
-                        const pos = geometry.indexToWorld(new IndexClass([0, 0, clamped]))
-                        vc.setCurrentPosition(pos)
-                    }
-                } catch {}
+        try {
+            const posHelper = vc.getPositionHelper ? vc.getPositionHelper() : null
+            if (posHelper && typeof posHelper.getCurrentPositionAtScrollValue === "function") {
+                const targetPos = posHelper.getCurrentPositionAtScrollValue(clamped)
+                if (targetPos) {
+                    vc.setCurrentPosition(targetPos)
+                    setSliceIndex(clamped)
+                    sliceIndexRef.current = clamped
+                    return
+                }
             }
+
+            // Fallback: Modificar la dimensión de scroll del índice preservando todas las dimensiones del volumen
+            const curIndex = vc.getCurrentIndex ? vc.getCurrentIndex() : null
+            if (curIndex) {
+                const vals = curIndex.getValues()
+                const scrollDim = typeof vc.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 2
+                vals[scrollDim] = clamped
+                const dwv = dwvModuleRef.current
+                if (dwv && dwv.Index) {
+                    const newIndex = new dwv.Index(vals)
+                    const geometry = app.getImage()?.getGeometry()
+                    if (geometry) {
+                        const worldPos = geometry.indexToWorld(newIndex)
+                        vc.setCurrentPosition(worldPos)
+                        setSliceIndex(clamped)
+                        sliceIndexRef.current = clamped
+                        return
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Error al navegar corte DICOM:", err)
         }
     }, [])
 
@@ -261,28 +281,32 @@ export function DicomViewerModalImpl({
                     setSliceIndex(middleSlice)
                     sliceIndexRef.current = middleSlice
                     try {
-                        const IndexClass = dwv.Index
                         const vc = app.getViewController()
-                        if (vc) {
-                            vc.setCurrentIndex(new IndexClass([0, 0, middleSlice]))
+                        const posHelper = vc?.getPositionHelper ? vc.getPositionHelper() : null
+                        if (posHelper && typeof posHelper.getCurrentPositionAtScrollValue === "function") {
+                            const midPos = posHelper.getCurrentPositionAtScrollValue(middleSlice)
+                            if (midPos) vc.setCurrentPosition(midPos)
                         }
-                    } catch {}
+                    } catch (e) {
+                        console.warn("Error setting initial middle slice:", e)
+                    }
                 }
 
                 app.addEventListener("loadend", onLoadSuccess)
 
                 app.addEventListener("positionchange", (event: any) => {
-                    if (event?.value?.[0]?.[2] !== undefined) {
-                        const idx = event.value[0][2]
-                        setSliceIndex(idx)
-                        sliceIndexRef.current = idx
-                    }
-                })
-                app.addEventListener("slicechange", (event: any) => {
-                    if (typeof event?.value === "number") {
-                        setSliceIndex(event.value)
-                        sliceIndexRef.current = event.value
-                    }
+                    try {
+                        const vc = app.getViewController()
+                        const scrollDim = typeof vc?.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 2
+                        if (event?.value?.[0]?.[scrollDim] !== undefined) {
+                            const idx = event.value[0][scrollDim]
+                            setSliceIndex(idx)
+                            sliceIndexRef.current = idx
+                        } else if (typeof event?.value === "number") {
+                            setSliceIndex(event.value)
+                            sliceIndexRef.current = event.value
+                        }
+                    } catch {}
                 })
 
                 app.addEventListener("error", (event: any) => {
@@ -325,7 +349,30 @@ export function DicomViewerModalImpl({
         }
     }, [open, zipUrl])
 
-    // MEJORA CLAVE 2: Rueda del Ratón Universal en el Lienzo (Mouse Wheel)
+    // Navegación secuencial precisa con el PositionHelper nativo
+    const handleNextSlice = useCallback(() => {
+        const app = dwvAppRef.current
+        const vc = app?.getViewController()
+        const posHelper = vc?.getPositionHelper ? vc.getPositionHelper() : null
+        if (posHelper && typeof posHelper.incrementPositionAlongScroll === "function") {
+            posHelper.incrementPositionAlongScroll()
+        } else {
+            goToSlice(sliceIndexRef.current + 1)
+        }
+    }, [goToSlice])
+
+    const handlePrevSlice = useCallback(() => {
+        const app = dwvAppRef.current
+        const vc = app?.getViewController()
+        const posHelper = vc?.getPositionHelper ? vc.getPositionHelper() : null
+        if (posHelper && typeof posHelper.decrementPositionAlongScroll === "function") {
+            posHelper.decrementPositionAlongScroll()
+        } else {
+            goToSlice(sliceIndexRef.current - 1)
+        }
+    }, [goToSlice])
+
+    // MEJORA CLAVE 2: Rueda del Ratón Universal en el Lienzo (Mouse Wheel Ultra-Fluido)
     useEffect(() => {
         const el = containerRef.current
         if (!el) return
@@ -335,10 +382,23 @@ export function DicomViewerModalImpl({
             e.stopPropagation()
             if (totalSlicesRef.current <= 1) return
 
-            const direction = e.deltaY > 0 ? 1 : -1
-            const step = e.shiftKey ? 5 : (Math.abs(e.deltaY) > 80 ? 2 : 1)
-            const target = sliceIndexRef.current + direction * step
-            goToSlice(target)
+            const app = dwvAppRef.current
+            const vc = app?.getViewController()
+            const posHelper = vc?.getPositionHelper ? vc.getPositionHelper() : null
+
+            if (e.deltaY > 0) {
+                if (posHelper && typeof posHelper.incrementPositionAlongScroll === "function") {
+                    posHelper.incrementPositionAlongScroll()
+                } else {
+                    goToSlice(sliceIndexRef.current + 1)
+                }
+            } else {
+                if (posHelper && typeof posHelper.decrementPositionAlongScroll === "function") {
+                    posHelper.decrementPositionAlongScroll()
+                } else {
+                    goToSlice(sliceIndexRef.current - 1)
+                }
+            }
         }
 
         el.addEventListener("wheel", onWheel, { passive: false })
@@ -354,10 +414,10 @@ export function DicomViewerModalImpl({
 
             if (e.key === "ArrowDown" || e.key === "ArrowRight") {
                 e.preventDefault()
-                goToSlice(sliceIndexRef.current + 1)
+                handleNextSlice()
             } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
                 e.preventDefault()
-                goToSlice(sliceIndexRef.current - 1)
+                handlePrevSlice()
             } else if (e.key === "PageDown") {
                 e.preventDefault()
                 goToSlice(sliceIndexRef.current + 10)
@@ -378,15 +438,30 @@ export function DicomViewerModalImpl({
 
         window.addEventListener("keydown", onKeyDown)
         return () => window.removeEventListener("keydown", onKeyDown)
-    }, [open, goToSlice])
+    }, [open, goToSlice, handleNextSlice, handlePrevSlice])
 
-    // MEJORA CLAVE 4: Reproductor de Cine Automático (Cine Loop)
+    // MEJORA CLAVE 4: Reproductor de Cine Automático (Cine Loop Nativo 3D)
     useEffect(() => {
         if (!isPlaying) return
 
         const interval = setInterval(() => {
             const total = totalSlicesRef.current
             if (total <= 1) return
+
+            const app = dwvAppRef.current
+            const vc = app?.getViewController()
+            const posHelper = vc?.getPositionHelper ? vc.getPositionHelper() : null
+
+            if (posHelper && typeof posHelper.incrementPositionAlongScroll === "function") {
+                const moved = posHelper.incrementPositionAlongScroll()
+                if (!moved) {
+                    // Si llegó al último corte, volver al primer corte para bucle continuo
+                    const startPos = posHelper.getCurrentPositionAtScrollValue(0)
+                    if (startPos) vc.setCurrentPosition(startPos)
+                }
+                return
+            }
+
             const next = sliceIndexRef.current + 1 >= total ? 0 : sliceIndexRef.current + 1
             goToSlice(next)
         }, 1000 / playbackFps)
@@ -397,10 +472,15 @@ export function DicomViewerModalImpl({
     // Cambio de herramienta de interacción
     const handleToolChange = (tool: ToolType) => {
         setActiveTool(tool)
-        if (dwvAppRef.current) {
-            dwvAppRef.current.setTool(tool)
-            if (tool === "Draw") {
-                dwvAppRef.current.setToolFeatures({ shapeName: "Ruler" })
+        const app = dwvAppRef.current
+        if (app) {
+            try {
+                app.setTool(tool)
+                if (tool === "Draw") {
+                    app.setToolFeatures({ shapeName: "Ruler" })
+                }
+            } catch (err) {
+                console.warn("Error changing tool:", err)
             }
         }
     }
@@ -408,22 +488,32 @@ export function DicomViewerModalImpl({
     // Presets de Contraste Médico y Odontológico (Window / Level)
     const handleWlPresetChange = (preset: WlPreset) => {
         setActiveWlPreset(preset)
-        if (!dwvAppRef.current) return
-        const vc = dwvAppRef.current.getViewController()
+        const app = dwvAppRef.current
+        if (!app) return
+        const vc = app.getViewController()
         if (!vc) return
 
         try {
             if (preset === "default") {
                 vc.resetWindowLevel()
-            } else if (preset === "bone") {
-                // Contraste para Hueso y Raíces Dentales
-                vc.setWindowLevel(350, 1600)
-            } else if (preset === "enamel") {
-                // Esmalte, Conductos e Implantes de alta densidad
-                vc.setWindowLevel(800, 2400)
-            } else if (preset === "soft") {
-                // Tejidos blandos, senos paranasales
-                vc.setWindowLevel(40, 450)
+            } else {
+                const dwv = dwvModuleRef.current
+                const WindowLevelClass = dwv?.WindowLevel
+                if (!WindowLevelClass) return
+
+                let center = 400
+                let width = 1800
+                if (preset === "bone") {
+                    center = 400
+                    width = 1800
+                } else if (preset === "enamel") {
+                    center = 800
+                    width = 2500
+                } else if (preset === "soft") {
+                    center = 40
+                    width = 400
+                }
+                vc.setWindowLevel(new WindowLevelClass(center, width))
             }
         } catch (e) {
             console.warn("Error setting WL preset:", e)
@@ -433,37 +523,51 @@ export function DicomViewerModalImpl({
     // Mapas de Color / Pseudo-3D
     const handleColorMapChange = (cm: ColorMapType) => {
         setActiveColorMap(cm)
-        if (dwvAppRef.current) {
-            try {
-                dwvAppRef.current.setColourMap(cm)
-            } catch (e) {
-                console.warn("Error setting colour map:", e)
+        const app = dwvAppRef.current
+        if (!app) return
+        try {
+            const vc = app.getViewController()
+            if (vc && typeof vc.setColourMap === "function") {
+                vc.setColourMap(cm)
+            } else if (typeof app.setColourMap === "function") {
+                app.setColourMap(cm)
             }
+        } catch (e) {
+            console.warn("Error setting colour map:", e)
         }
     }
 
-    // Zoom interactivo con botones
+    // Zoom interactivo centrado con botones
     const handleZoomIn = () => {
-        if (dwvAppRef.current) {
+        const app = dwvAppRef.current
+        const el = containerRef.current
+        if (app && el) {
             try {
-                dwvAppRef.current.zoom(1.25)
+                const cx = el.clientWidth / 2
+                const cy = el.clientHeight / 2
+                app.zoom(0.2, cx, cy)
             } catch {}
         }
     }
 
     const handleZoomOut = () => {
-        if (dwvAppRef.current) {
+        const app = dwvAppRef.current
+        const el = containerRef.current
+        if (app && el) {
             try {
-                dwvAppRef.current.zoom(0.8)
+                const cx = el.clientWidth / 2
+                const cy = el.clientHeight / 2
+                app.zoom(-0.2, cx, cy)
             } catch {}
         }
     }
 
     const handleResetView = () => {
-        if (dwvAppRef.current) {
+        const app = dwvAppRef.current
+        if (app) {
             try {
-                dwvAppRef.current.resetViews()
-                dwvAppRef.current.fitToContainer()
+                app.resetZoomPan()
+                app.fitToContainer()
                 handleWlPresetChange("default")
                 handleColorMapChange("plain")
             } catch {}
@@ -818,7 +922,7 @@ export function DicomViewerModalImpl({
                     <div
                         id="dwv-layer-container"
                         ref={containerRef}
-                        className="w-full h-full relative flex items-center justify-center cursor-crosshair [&_canvas]:max-h-full [&_canvas]:max-w-full [&_canvas]:object-contain"
+                        className="w-full h-full relative overflow-hidden flex items-center justify-center cursor-crosshair"
                     />
                 </div>
 
@@ -842,7 +946,7 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="outline"
                                 className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                onClick={() => goToSlice(sliceIndex - 1)}
+                                onClick={handlePrevSlice}
                                 disabled={loading || sliceIndex <= 0}
                                 title="Corte anterior"
                             >
@@ -870,7 +974,7 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="outline"
                                 className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                onClick={() => goToSlice(sliceIndex + 1)}
+                                onClick={handleNextSlice}
                                 disabled={loading || sliceIndex >= totalSlices - 1}
                                 title="Corte siguiente"
                             >
