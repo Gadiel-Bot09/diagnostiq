@@ -23,13 +23,20 @@ import {
     ChevronsLeft,
     ChevronsRight,
     Maximize2,
+    Minimize2,
     Move,
     Sparkles,
     Palette,
     Eye,
     Trash2,
+    LayoutGrid,
+    Box,
+    ArrowLeft,
+    Compass,
 } from "lucide-react"
 import JSZip from "jszip"
+import { Dental3DViewer } from "./Dental3DViewer"
+import { DentalPanoramaViewer } from "./DentalPanoramaViewer"
 
 export interface DicomViewerModalProps {
     open: boolean
@@ -43,27 +50,32 @@ export interface DicomViewerModalProps {
 type ToolType = "Scroll" | "ZoomAndPan" | "WindowLevel" | "Draw"
 type WlPreset = "default" | "bone" | "enamel" | "soft"
 type ColorMapType = "plain" | "invPlain" | "hot" | "rainbow"
+export type ViewMode = "multi" | "panorama" | "3d" | "tangential" | "cross" | "axial"
 
-// Helpers para acceder a los controladores internos del motor DWV
-function getDwvLayerGroup(app: any) {
+// Helpers para acceder a los controladores internos del motor DWV por cada ventana
+function getDwvLayerGroup(app: any, divId?: string) {
     if (!app) return null
     try {
+        if (divId && typeof app.getLayerGroupByDivId === "function") {
+            const lg = app.getLayerGroupByDivId(divId)
+            if (lg) return lg
+        }
         if (typeof app.getActiveLayerGroup === "function") {
             const lg = app.getActiveLayerGroup()
             if (lg) return lg
         }
         if (typeof app.getLayerGroupByDivId === "function") {
-            const lg = app.getLayerGroupByDivId("dwv-layer-container")
+            const lg = app.getLayerGroupByDivId("dwv-view-axial") || app.getLayerGroupByDivId("dwv-layer-container")
             if (lg) return lg
         }
     } catch {}
     return null
 }
 
-function getDwvViewController(app: any) {
+function getDwvViewController(app: any, divId?: string) {
     if (!app) return null
     try {
-        const lg = getDwvLayerGroup(app)
+        const lg = getDwvLayerGroup(app, divId)
         if (!lg) return null
         const vl =
             (typeof lg.getActiveViewLayer === "function" && lg.getActiveViewLayer()) ||
@@ -75,15 +87,15 @@ function getDwvViewController(app: any) {
     return null
 }
 
-function getDwvPositionHelper(app: any) {
+function getDwvPositionHelper(app: any, divId?: string) {
     if (!app) return null
     try {
-        const lg = getDwvLayerGroup(app)
+        const lg = getDwvLayerGroup(app, divId)
         if (lg && typeof lg.getPositionHelper === "function") {
             const helper = lg.getPositionHelper()
             if (helper) return helper
         }
-        const vc = getDwvViewController(app)
+        const vc = getDwvViewController(app, divId)
         if (vc && typeof vc.getPositionHelper === "function") {
             return vc.getPositionHelper()
         }
@@ -99,18 +111,24 @@ export function DicomViewerModalImpl({
     downloadUrl,
     subtitle,
 }: DicomViewerModalProps) {
-    const viewportRef = useRef<HTMLDivElement>(null)
-    const containerRef = useRef<HTMLDivElement>(null)
+    // Referencias a los contenedores DWV ortogonales
+    const axialRef = useRef<HTMLDivElement>(null)
+    const tangentialRef = useRef<HTMLDivElement>(null)
+    const crossRef = useRef<HTMLDivElement>(null)
+
     const dwvAppRef = useRef<any>(null)
     const dwvModuleRef = useRef<any>(null)
     const sliceIndexRef = useRef<number>(0)
     const totalSlicesRef = useRef<number>(0)
     const activeToolRef = useRef<ToolType>("Scroll")
 
-    // Refs para interacción táctil y ratón ultra-fluida en PC y móviles
+    // Modo de visualización: "multi" (5 vistas estilo GALILEOS) o vista individual detallada
+    const [viewMode, setViewMode] = useState<ViewMode>("multi")
+    const [focusedViewId, setFocusedViewId] = useState<string>("dwv-view-axial")
+
+    // Refs para interacción táctil y ratón ultra-fluida
     const isPointerDownRef = useRef(false)
     const activePointerIdRef = useRef<number | null>(null)
-    const pointerStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
     const pointerLastRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
     const accumulatedDragPxRef = useRef(0)
     const initialPinchDistRef = useRef<number | null>(null)
@@ -129,30 +147,51 @@ export function DicomViewerModalImpl({
     const [errorMsg, setErrorMsg] = useState<string | null>(null)
     const [isFullscreen, setIsFullscreen] = useState(false)
 
-    // Mantener la referencia actualizada de sliceIndex para eventos de rueda de ratón y teclado
+    // Estado de cortes de cada ventana ortogonal
+    const [slicesInfo, setSlicesInfo] = useState({
+        axial: { current: 0, total: 0 },
+        tangential: { current: 0, total: 0 },
+        cross: { current: 0, total: 0 },
+    })
+
     useEffect(() => {
         sliceIndexRef.current = sliceIndex
     }, [sliceIndex])
 
-    // Mantener la referencia actualizada de totalSlices
     useEffect(() => {
         totalSlicesRef.current = totalSlices
     }, [totalSlices])
 
-    // Mantener la referencia actualizada de activeTool
     useEffect(() => {
         activeToolRef.current = activeTool
     }, [activeTool])
 
-    // Función principal para cambiar de corte usando navegación paso a paso nativa y segura
-    const goToSlice = useCallback((targetSlice: number) => {
-        const total = totalSlicesRef.current
-        const app = dwvAppRef.current
-        if (!app || total <= 0) return
+    // Ajustar resolución de cada contenedor visible al cambiar el modo de vista o redimensionar
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            const app = dwvAppRef.current
+            if (app) {
+                try {
+                    app.fitToContainer()
+                    const lgAxial = getDwvLayerGroup(app, "dwv-view-axial")
+                    const lgTan = getDwvLayerGroup(app, "dwv-view-tangential")
+                    const lgCross = getDwvLayerGroup(app, "dwv-view-cross")
+                    if (lgAxial && typeof lgAxial.draw === "function") lgAxial.draw()
+                    if (lgTan && typeof lgTan.draw === "function") lgTan.draw()
+                    if (lgCross && typeof lgCross.draw === "function") lgCross.draw()
+                } catch {}
+            }
+        }, 80)
+        return () => clearTimeout(timer)
+    }, [viewMode])
 
-        const clamped = Math.max(0, Math.min(total - 1, targetSlice))
-        const lg = getDwvLayerGroup(app)
-        const posHelper = getDwvPositionHelper(app)
+    // Función principal para cambiar de corte en una ventana específica
+    const goToSliceInDiv = useCallback((targetSlice: number, divId = "dwv-view-axial") => {
+        const app = dwvAppRef.current
+        if (!app) return
+
+        const lg = getDwvLayerGroup(app, divId)
+        const posHelper = getDwvPositionHelper(app, divId)
         if (!posHelper) return
 
         try {
@@ -160,7 +199,7 @@ export function DicomViewerModalImpl({
                 ? posHelper.getCurrentPositionScrollValue()
                 : sliceIndexRef.current
 
-            const diff = clamped - current
+            const diff = targetSlice - current
             if (diff > 0) {
                 for (let i = 0; i < diff; i++) {
                     if (!posHelper.incrementPositionAlongScroll()) break
@@ -173,15 +212,44 @@ export function DicomViewerModalImpl({
             if (lg && typeof lg.draw === "function") lg.draw()
             const finalSlice = typeof posHelper.getCurrentPositionScrollValue === "function"
                 ? posHelper.getCurrentPositionScrollValue()
-                : clamped
-            setSliceIndex(finalSlice)
-            sliceIndexRef.current = finalSlice
+                : targetSlice
+
+            if (divId === "dwv-view-axial") {
+                setSliceIndex(finalSlice)
+                sliceIndexRef.current = finalSlice
+            }
+
+            // Actualizar estado general de cortes
+            updateSlicesMetrics()
         } catch (err) {
-            console.error("Error al navegar corte DICOM:", err)
+            console.error("Error al navegar corte:", err)
         }
     }, [])
 
-    // Carga inicial y montaje de cortes DICOM
+    const updateSlicesMetrics = () => {
+        const app = dwvAppRef.current
+        if (!app) return
+        try {
+            const getMetrics = (divId: string) => {
+                const lg = getDwvLayerGroup(app, divId)
+                if (!lg) return { current: 0, total: 0 }
+                const ph = lg.getPositionHelper()
+                const cur = typeof ph?.getCurrentPositionScrollValue === "function" ? ph.getCurrentPositionScrollValue() : 0
+                const vl = lg.getActiveViewLayer() || lg.getBaseViewLayer()
+                const vc = vl?.getViewController()
+                const scrollDim = typeof vc?.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 2
+                const total = vc?.getImageSize()?.get(scrollDim) || totalSlicesRef.current || 0
+                return { current: cur, total }
+            }
+            setSlicesInfo({
+                axial: getMetrics("dwv-view-axial"),
+                tangential: getMetrics("dwv-view-tangential"),
+                cross: getMetrics("dwv-view-cross"),
+            })
+        } catch {}
+    }
+
+    // Carga inicial de archivos DICOM y configuración de los 3 planos ortogonales de DWV
     useEffect(() => {
         if (!open || !zipUrl) return
 
@@ -195,6 +263,7 @@ export function DicomViewerModalImpl({
         setActiveTool("Scroll")
         setActiveWlPreset("default")
         setActiveColorMap("plain")
+        setViewMode("multi")
         setLoadStep("Conectando con almacenamiento seguro...")
 
         const loadDicomZip = async () => {
@@ -281,11 +350,11 @@ export function DicomViewerModalImpl({
 
                 if (isCancelled) return
                 setLoadProgress(85)
-                setLoadStep("Inicializando motor de visualización...")
+                setLoadStep("Configurando planos ortogonales (Axial, Tangencial, Transversal)...")
 
-                if (containerRef.current) {
-                    containerRef.current.innerHTML = ""
-                }
+                if (axialRef.current) axialRef.current.innerHTML = ""
+                if (tangentialRef.current) tangentialRef.current.innerHTML = ""
+                if (crossRef.current) crossRef.current.innerHTML = ""
 
                 const dwv = await import("dwv")
                 if (isCancelled) return
@@ -294,9 +363,14 @@ export function DicomViewerModalImpl({
                 const app = new dwv.App()
                 dwvAppRef.current = app
 
+                // Inicializar DWV con los 3 planos ortogonales de reconstrucción médica
                 app.init({
                     dataViewConfigs: {
-                        "*": [{ divId: "dwv-layer-container" } as any],
+                        "*": [
+                            { divId: "dwv-view-axial", orientation: "axial" },
+                            { divId: "dwv-view-tangential", orientation: "coronal" },
+                            { divId: "dwv-view-cross", orientation: "sagittal" },
+                        ],
                     },
                     tools: {
                         Scroll: {},
@@ -330,13 +404,17 @@ export function DicomViewerModalImpl({
 
                     try {
                         app.fitToContainer()
-                        const lg = getDwvLayerGroup(app)
-                        if (lg && typeof lg.draw === "function") lg.draw()
+                        const lgAx = getDwvLayerGroup(app, "dwv-view-axial")
+                        const lgTan = getDwvLayerGroup(app, "dwv-view-tangential")
+                        const lgCro = getDwvLayerGroup(app, "dwv-view-cross")
+                        if (lgAx && typeof lgAx.draw === "function") lgAx.draw()
+                        if (lgTan && typeof lgTan.draw === "function") lgTan.draw()
+                        if (lgCro && typeof lgCro.draw === "function") lgCro.draw()
                     } catch {}
 
-                    // Leer el corte inicial cargado y renderizado nativamente por DWV
+                    // Leer cortes iniciales
                     try {
-                        const posHelper = getDwvPositionHelper(app)
+                        const posHelper = getDwvPositionHelper(app, "dwv-view-axial")
                         if (posHelper && typeof posHelper.getCurrentPositionScrollValue === "function") {
                             const cur = posHelper.getCurrentPositionScrollValue()
                             if (typeof cur === "number" && !isNaN(cur)) {
@@ -344,13 +422,14 @@ export function DicomViewerModalImpl({
                                 sliceIndexRef.current = cur
                             }
                         }
-                        const vc = getDwvViewController(app)
+                        const vc = getDwvViewController(app, "dwv-view-axial")
                         if (vc && typeof vc.getWindowLevel === "function") {
                             const wl = vc.getWindowLevel()
                             if (wl) setHudWl({ center: Math.round(wl.center), width: Math.round(wl.width) })
                         }
+                        updateSlicesMetrics()
                     } catch (e) {
-                        console.warn("Error leyendo corte inicial:", e)
+                        console.warn("Error leyendo cortes iniciales:", e)
                     }
                 }
 
@@ -358,35 +437,28 @@ export function DicomViewerModalImpl({
 
                 app.addEventListener("drawlayeradd", () => {
                     try {
-                        const lg = getDwvLayerGroup(app)
-                        if (lg && typeof lg.getNumberOfLayers === "function" && lg.getNumberOfLayers() > 1) {
-                            if (activeToolRef.current === "Draw") {
-                                lg.setActiveLayer(1)
+                        const lgs = ["dwv-view-axial", "dwv-view-tangential", "dwv-view-cross"]
+                        lgs.forEach((id) => {
+                            const lg = getDwvLayerGroup(app, id)
+                            if (lg && typeof lg.getNumberOfLayers === "function" && lg.getNumberOfLayers() > 1) {
+                                if (activeToolRef.current === "Draw") {
+                                    lg.setActiveLayer(1)
+                                }
                             }
-                        }
+                        })
                     } catch {}
                 })
 
                 app.addEventListener("positionchange", (event: any) => {
                     try {
-                        const posHelper = getDwvPositionHelper(app)
+                        updateSlicesMetrics()
+                        const posHelper = getDwvPositionHelper(app, "dwv-view-axial")
                         if (posHelper && typeof posHelper.getCurrentPositionScrollValue === "function") {
                             const idx = posHelper.getCurrentPositionScrollValue()
                             if (typeof idx === "number" && !isNaN(idx)) {
                                 setSliceIndex(idx)
                                 sliceIndexRef.current = idx
-                                return
                             }
-                        }
-                        const vc = getDwvViewController(app)
-                        const scrollDim = typeof vc?.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 2
-                        if (event?.value?.[0]?.[scrollDim] !== undefined) {
-                            const idx = event.value[0][scrollDim]
-                            setSliceIndex(idx)
-                            sliceIndexRef.current = idx
-                        } else if (typeof event?.value === "number") {
-                            setSliceIndex(event.value)
-                            sliceIndexRef.current = event.value
                         }
                     } catch {}
                 })
@@ -425,106 +497,80 @@ export function DicomViewerModalImpl({
                 } catch {}
                 dwvAppRef.current = null
             }
-            if (containerRef.current) {
-                containerRef.current.innerHTML = ""
-            }
+            if (axialRef.current) axialRef.current.innerHTML = ""
+            if (tangentialRef.current) tangentialRef.current.innerHTML = ""
+            if (crossRef.current) crossRef.current.innerHTML = ""
         }
     }, [open, zipUrl])
 
-    // Navegación secuencial precisa con el PositionHelper nativo
-    const handleNextSlice = useCallback(() => {
+    // Sincronizar desde la "Ventana de cortes" en la Panorámica hacia Tangencial y Transversal
+    const handleSelectToothRegion = (normalizedX: number) => {
         const app = dwvAppRef.current
-        const lg = getDwvLayerGroup(app)
-        const posHelper = getDwvPositionHelper(app)
+        if (!app) return
 
-        if (posHelper && typeof posHelper.incrementPositionAlongScroll === "function") {
-            const moved = posHelper.incrementPositionAlongScroll()
-            if (lg && typeof lg.draw === "function") lg.draw()
-            if (moved) {
-                const cur = typeof posHelper.getCurrentPositionScrollValue === "function" ? posHelper.getCurrentPositionScrollValue() : sliceIndexRef.current + 1
+        // 1. Sincronizar Sección Transversal (Sagital Left-Right)
+        const lgCross = getDwvLayerGroup(app, "dwv-view-cross")
+        if (lgCross) {
+            const vl = lgCross.getActiveViewLayer() || lgCross.getBaseViewLayer()
+            const vc = vl?.getViewController()
+            const scrollDim = typeof vc?.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 0
+            const totalCross = vc?.getImageSize()?.get(scrollDim) || 512
+            const targetCross = Math.round(normalizedX * (totalCross - 1))
+            goToSliceInDiv(targetCross, "dwv-view-cross")
+        }
+
+        // 2. Sincronizar Tangencial (Coronal Anterior-Posterior)
+        const lgTangential = getDwvLayerGroup(app, "dwv-view-tangential")
+        if (lgTangential) {
+            const vl = lgTangential.getActiveViewLayer() || lgTangential.getBaseViewLayer()
+            const vc = vl?.getViewController()
+            const scrollDim = typeof vc?.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 1
+            const totalTangential = vc?.getImageSize()?.get(scrollDim) || 512
+            const distFromCenter = Math.abs(normalizedX - 0.5) * 2 // 0 en incisivos, 1 en molares
+            const targetTangential = Math.round((0.32 + distFromCenter * 0.32) * (totalTangential - 1))
+            goToSliceInDiv(targetTangential, "dwv-view-tangential")
+        }
+    }
+
+    // Navegación por rueda en cualquier ventana
+    const handleViewWheel = (divId: string, e: React.WheelEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const app = dwvAppRef.current
+        if (!app) return
+        const lg = getDwvLayerGroup(app, divId)
+        if (!lg) return
+        const posHelper = lg.getPositionHelper()
+        if (!posHelper) return
+
+        let moved = false
+        if (e.deltaY > 0) {
+            moved = posHelper.incrementPositionAlongScroll()
+        } else {
+            moved = posHelper.decrementPositionAlongScroll()
+        }
+
+        if (moved) {
+            if (typeof lg.draw === "function") lg.draw()
+            if (divId === "dwv-view-axial") {
+                const cur = typeof posHelper.getCurrentPositionScrollValue === "function"
+                    ? posHelper.getCurrentPositionScrollValue()
+                    : sliceIndexRef.current
                 setSliceIndex(cur)
                 sliceIndexRef.current = cur
-                return
             }
+            updateSlicesMetrics()
         }
-        goToSlice(sliceIndexRef.current + 1)
-    }, [goToSlice])
+    }
 
-    const handlePrevSlice = useCallback(() => {
-        const app = dwvAppRef.current
-        const lg = getDwvLayerGroup(app)
-        const posHelper = getDwvPositionHelper(app)
-
-        if (posHelper && typeof posHelper.decrementPositionAlongScroll === "function") {
-            const moved = posHelper.decrementPositionAlongScroll()
-            if (lg && typeof lg.draw === "function") lg.draw()
-            if (moved) {
-                const cur = typeof posHelper.getCurrentPositionScrollValue === "function" ? posHelper.getCurrentPositionScrollValue() : sliceIndexRef.current - 1
-                setSliceIndex(cur)
-                sliceIndexRef.current = cur
-                return
-            }
-        }
-        goToSlice(sliceIndexRef.current - 1)
-    }, [goToSlice])
-
-    // MEJORA CLAVE 2: Rueda del Ratón Universal en el Lienzo y Viewport (Mouse Wheel Ultra-Fluido)
-    useEffect(() => {
-        if (!open || loading) return
-        const viewport = viewportRef.current
-        if (!viewport) return
-
-        let wheelAccumulator = 0
-
-        const onWheel = (e: WheelEvent) => {
-            e.preventDefault()
-            e.stopPropagation()
-            if (totalSlicesRef.current <= 1) return
-
-            wheelAccumulator += e.deltaY
-            // Sensibilidad calibrada: trackpads envían pequeños deltaY (~5), ruedas de ratón envían saltos de ~100
-            const threshold = Math.abs(e.deltaY) < 30 ? 20 : 40
-
-            if (Math.abs(wheelAccumulator) >= threshold) {
-                const direction = wheelAccumulator > 0 ? 1 : -1
-                wheelAccumulator = 0
-
-                const app = dwvAppRef.current
-                const lg = getDwvLayerGroup(app)
-                const posHelper = getDwvPositionHelper(app)
-                if (!posHelper) return
-
-                let moved = false
-                if (direction > 0) {
-                    moved = posHelper.incrementPositionAlongScroll()
-                } else {
-                    moved = posHelper.decrementPositionAlongScroll()
-                }
-
-                if (moved) {
-                    if (lg && typeof lg.draw === "function") lg.draw()
-                    const cur = typeof posHelper.getCurrentPositionScrollValue === "function"
-                        ? posHelper.getCurrentPositionScrollValue()
-                        : sliceIndexRef.current
-                    setSliceIndex(cur)
-                    sliceIndexRef.current = cur
-                }
-            }
-        }
-
-        viewport.addEventListener("wheel", onWheel, { passive: false })
-        return () => viewport.removeEventListener("wheel", onWheel)
-    }, [open, loading])
-
-    // MEJORA CLAVE 3: Interacción Gestual Unificada (Ratón en PC y Toque en Móvil)
-    const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Interacción táctil / arrastre por ventana
+    const handleViewPointerDown = (divId: string, e: React.PointerEvent) => {
         if (loading || !!errorMsg) return
-        // En modo Medir mm, dejamos que DWV/Konva capture los clics directamente
+        setFocusedViewId(divId)
         if (activeToolRef.current === "Draw") return
 
         isPointerDownRef.current = true
         activePointerIdRef.current = e.pointerId
-        pointerStartRef.current = { x: e.clientX, y: e.clientY }
         pointerLastRef.current = { x: e.clientX, y: e.clientY }
         accumulatedDragPxRef.current = 0
 
@@ -533,22 +579,21 @@ export function DicomViewerModalImpl({
         } catch {}
     }
 
-    const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const handleViewPointerMove = (divId: string, e: React.PointerEvent) => {
         if (!isPointerDownRef.current || activePointerIdRef.current !== e.pointerId) return
         if (activeToolRef.current === "Draw") return
 
         const app = dwvAppRef.current
-        const lg = getDwvLayerGroup(app)
+        const lg = getDwvLayerGroup(app, divId)
         const dx = e.clientX - pointerLastRef.current.x
         const dy = e.clientY - pointerLastRef.current.y
         pointerLastRef.current = { x: e.clientX, y: e.clientY }
 
         if (activeToolRef.current === "Scroll") {
-            // Arrastre vertical para navegar cortes como en estaciones de trabajo radiológicas
             accumulatedDragPxRef.current += dy
-            const threshold = 12 // Cada 12px de arrastre equivale a 1 corte
+            const threshold = 12
 
-            const posHelper = getDwvPositionHelper(app)
+            const posHelper = getDwvPositionHelper(app, divId)
             if (!posHelper) return
 
             let moved = false
@@ -565,25 +610,26 @@ export function DicomViewerModalImpl({
 
             if (moved) {
                 if (lg && typeof lg.draw === "function") lg.draw()
-                const cur = typeof posHelper.getCurrentPositionScrollValue === "function"
-                    ? posHelper.getCurrentPositionScrollValue()
-                    : sliceIndexRef.current
-                setSliceIndex(cur)
-                sliceIndexRef.current = cur
+                if (divId === "dwv-view-axial") {
+                    const cur = typeof posHelper.getCurrentPositionScrollValue === "function"
+                        ? posHelper.getCurrentPositionScrollValue()
+                        : sliceIndexRef.current
+                    setSliceIndex(cur)
+                    sliceIndexRef.current = cur
+                }
+                updateSlicesMetrics()
             }
         } else if (activeToolRef.current === "ZoomAndPan") {
-            // Mover/Encuadrar la tomografía en tiempo real
             if (app && typeof app.translate === "function") {
                 app.translate(dx, dy)
             }
         } else if (activeToolRef.current === "WindowLevel") {
-            // Ajustar brillo y contraste dinámico (W/L)
-            const vc = getDwvViewController(app)
+            const vc = getDwvViewController(app, divId)
             const dwv = dwvModuleRef.current
             if (vc && dwv?.WindowLevel) {
                 const cur = vc.getWindowLevel()
                 if (cur) {
-                    const scale = 5 // Factor de sensibilidad suave para CT óseo
+                    const scale = 5
                     const newCenter = cur.center - (dy * scale)
                     const newWidth = Math.max(10, cur.width + (dx * scale))
                     vc.setWindowLevel(new dwv.WindowLevel(newCenter, newWidth))
@@ -594,7 +640,7 @@ export function DicomViewerModalImpl({
         }
     }
 
-    const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const handleViewPointerUp = (e: React.PointerEvent) => {
         if (activePointerIdRef.current === e.pointerId) {
             isPointerDownRef.current = false
             activePointerIdRef.current = null
@@ -604,43 +650,7 @@ export function DicomViewerModalImpl({
         }
     }
 
-    // Gesto de Pellizco con 2 dedos en Pantallas Táctiles y Móviles (Pinch to Zoom)
-    const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-        if (e.touches.length === 2) {
-            const t1 = e.touches[0]
-            const t2 = e.touches[1]
-            initialPinchDistRef.current = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY)
-        }
-    }
-
-    const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-        if (e.touches.length === 2 && initialPinchDistRef.current !== null) {
-            e.preventDefault()
-            const t1 = e.touches[0]
-            const t2 = e.touches[1]
-            const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY)
-            const diff = dist - initialPinchDistRef.current
-
-            if (Math.abs(diff) > 6) {
-                const app = dwvAppRef.current
-                if (app && typeof app.zoom === "function") {
-                    const cx = (t1.clientX + t2.clientX) / 2
-                    const cy = (t1.clientY + t2.clientY) / 2
-                    const step = diff > 0 ? 0.08 : -0.08
-                    app.zoom(step, cx, cy)
-                }
-                initialPinchDistRef.current = dist
-            }
-        }
-    }
-
-    const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
-        if (e.touches.length < 2) {
-            initialPinchDistRef.current = null
-        }
-    }
-
-    // MEJORA CLAVE 4: Navegación por Teclado (Flechas, Espacio para Play, PageUp/Down)
+    // Teclado
     useEffect(() => {
         if (!open) return
 
@@ -649,33 +659,27 @@ export function DicomViewerModalImpl({
 
             if (e.key === "ArrowDown" || e.key === "ArrowRight") {
                 e.preventDefault()
-                handleNextSlice()
+                goToSliceInDiv(sliceIndexRef.current + 1, focusedViewId)
             } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
                 e.preventDefault()
-                handlePrevSlice()
+                goToSliceInDiv(sliceIndexRef.current - 1, focusedViewId)
             } else if (e.key === "PageDown") {
                 e.preventDefault()
-                goToSlice(sliceIndexRef.current + 10)
+                goToSliceInDiv(sliceIndexRef.current + 10, focusedViewId)
             } else if (e.key === "PageUp") {
                 e.preventDefault()
-                goToSlice(sliceIndexRef.current - 10)
+                goToSliceInDiv(sliceIndexRef.current - 10, focusedViewId)
             } else if (e.key === " " || e.code === "Space") {
                 e.preventDefault()
                 setIsPlaying((p) => !p)
-            } else if (e.key === "Home") {
-                e.preventDefault()
-                goToSlice(0)
-            } else if (e.key === "End") {
-                e.preventDefault()
-                goToSlice(totalSlicesRef.current - 1)
             }
         }
 
         window.addEventListener("keydown", onKeyDown)
         return () => window.removeEventListener("keydown", onKeyDown)
-    }, [open, goToSlice, handleNextSlice, handlePrevSlice])
+    }, [open, goToSliceInDiv, focusedViewId])
 
-    // MEJORA CLAVE 5: Reproductor de Cine Automático (Cine Loop Nativo 3D)
+    // Cine Loop
     useEffect(() => {
         if (!isPlaying) return
 
@@ -684,25 +688,27 @@ export function DicomViewerModalImpl({
             if (total <= 1) return
 
             const app = dwvAppRef.current
-            const lg = getDwvLayerGroup(app)
-            const posHelper = getDwvPositionHelper(app)
+            const lg = getDwvLayerGroup(app, focusedViewId)
+            const posHelper = getDwvPositionHelper(app, focusedViewId)
             if (!posHelper) return
 
             const moved = posHelper.incrementPositionAlongScroll()
             if (!moved) {
-                // Llegó al último corte -> rebobinar suavemente al inicio para bucle continuo
                 while (posHelper.decrementPositionAlongScroll()) {}
             }
             if (lg && typeof lg.draw === "function") lg.draw()
-            const cur = typeof posHelper.getCurrentPositionScrollValue === "function" ? posHelper.getCurrentPositionScrollValue() : sliceIndexRef.current
-            setSliceIndex(cur)
-            sliceIndexRef.current = cur
+            if (focusedViewId === "dwv-view-axial") {
+                const cur = typeof posHelper.getCurrentPositionScrollValue === "function" ? posHelper.getCurrentPositionScrollValue() : sliceIndexRef.current
+                setSliceIndex(cur)
+                sliceIndexRef.current = cur
+            }
+            updateSlicesMetrics()
         }, 1000 / playbackFps)
 
         return () => clearInterval(interval)
-    }, [isPlaying, playbackFps])
+    }, [isPlaying, playbackFps, focusedViewId])
 
-    // Cambio de herramienta de interacción con activación correcta de capas en DWV
+    // Cambio de herramienta de interacción
     const handleToolChange = (tool: ToolType) => {
         setActiveTool(tool)
         activeToolRef.current = tool
@@ -711,144 +717,127 @@ export function DicomViewerModalImpl({
 
         try {
             app.setTool(tool)
-            const lg = getDwvLayerGroup(app)
-
-            if (tool === "Draw") {
-                app.setToolFeatures({ shapeName: "Ruler" })
-                // Si la capa de dibujo ya existe en DWV, activarla para recibir eventos Konva
-                if (lg && typeof lg.getNumberOfLayers === "function" && lg.getNumberOfLayers() > 1) {
-                    lg.setActiveLayer(1)
+            const lgs = ["dwv-view-axial", "dwv-view-tangential", "dwv-view-cross"]
+            lgs.forEach((id) => {
+                const lg = getDwvLayerGroup(app, id)
+                if (!lg) return
+                if (tool === "Draw") {
+                    app.setToolFeatures({ shapeName: "Ruler" })
+                    if (typeof lg.getNumberOfLayers === "function" && lg.getNumberOfLayers() > 1) {
+                        lg.setActiveLayer(1)
+                    }
+                } else {
+                    if (typeof lg.setActiveLayer === "function") {
+                        lg.setActiveLayer(0)
+                    }
                 }
-            } else {
-                // Si salimos de Draw, restablecer la capa activa a la capa de visualización 0
-                if (lg && typeof lg.setActiveLayer === "function") {
-                    lg.setActiveLayer(0)
-                }
-            }
+            })
         } catch (err) {
             console.warn("Error changing tool:", err)
         }
     }
 
-    // Limpiar todas las mediciones dibujadas en pantalla
     const handleClearDrawings = () => {
         const app = dwvAppRef.current
         if (!app) return
-        const lg = getDwvLayerGroup(app)
-        if (!lg) return
-        try {
-            const drawLayers = typeof lg.getDrawLayers === "function" ? lg.getDrawLayers() : []
-            drawLayers.forEach((dl: any) => {
-                if (typeof dl.deleteDraws === "function") {
-                    dl.deleteDraws()
-                }
-            })
-            if (typeof lg.draw === "function") lg.draw()
-        } catch (e) {
-            console.warn("Error clearing drawings:", e)
-        }
+        const lgs = ["dwv-view-axial", "dwv-view-tangential", "dwv-view-cross"]
+        lgs.forEach((id) => {
+            const lg = getDwvLayerGroup(app, id)
+            if (!lg) return
+            try {
+                const drawLayers = typeof lg.getDrawLayers === "function" ? lg.getDrawLayers() : []
+                drawLayers.forEach((dl: any) => {
+                    if (typeof dl.deleteDraws === "function") dl.deleteDraws()
+                })
+                if (typeof lg.draw === "function") lg.draw()
+            } catch {}
+        })
     }
 
-    // Presets de Contraste Médico y Odontológico (Window / Level)
+    // Presets de Contraste
     const handleWlPresetChange = (preset: WlPreset) => {
         setActiveWlPreset(preset)
         const app = dwvAppRef.current
         if (!app) return
-        const vc = getDwvViewController(app)
-        const lg = getDwvLayerGroup(app)
-        if (!vc) return
 
-        try {
-            if (preset === "default") {
-                vc.resetWindowLevel()
-                setHudWl(null)
-            } else {
-                const dwv = dwvModuleRef.current
-                const WindowLevelClass = dwv?.WindowLevel
-                if (!WindowLevelClass) return
+        const lgs = ["dwv-view-axial", "dwv-view-tangential", "dwv-view-cross"]
+        lgs.forEach((id) => {
+            const vc = getDwvViewController(app, id)
+            const lg = getDwvLayerGroup(app, id)
+            if (!vc) return
 
-                let center = 400
-                let width = 1800
-                if (preset === "bone") {
-                    center = 400
-                    width = 1800
-                } else if (preset === "enamel") {
-                    center = 800
-                    width = 2500
-                } else if (preset === "soft") {
-                    center = 40
-                    width = 400
+            try {
+                if (preset === "default") {
+                    vc.resetWindowLevel()
+                    setHudWl(null)
+                } else {
+                    const dwv = dwvModuleRef.current
+                    const WindowLevelClass = dwv?.WindowLevel
+                    if (!WindowLevelClass) return
+
+                    let center = 400
+                    let width = 1800
+                    if (preset === "bone") {
+                        center = 400
+                        width = 1800
+                    } else if (preset === "enamel") {
+                        center = 800
+                        width = 2500
+                    } else if (preset === "soft") {
+                        center = 40
+                        width = 400
+                    }
+                    vc.setWindowLevel(new WindowLevelClass(center, width))
+                    setHudWl({ center, width })
                 }
-                vc.setWindowLevel(new WindowLevelClass(center, width))
-                setHudWl({ center, width })
-            }
-            if (lg && typeof lg.draw === "function") lg.draw()
-        } catch (e) {
-            console.warn("Error setting WL preset:", e)
-        }
+                if (lg && typeof lg.draw === "function") lg.draw()
+            } catch {}
+        })
     }
 
-    // Mapas de Color / Pseudo-3D
+    // Mapas de Color
     const handleColorMapChange = (cm: ColorMapType) => {
         setActiveColorMap(cm)
         const app = dwvAppRef.current
         if (!app) return
-        const vc = getDwvViewController(app)
-        const lg = getDwvLayerGroup(app)
-
-        try {
-            if (vc && typeof vc.setColourMap === "function") {
-                vc.setColourMap(cm)
-            } else if (typeof app.setColourMap === "function") {
-                app.setColourMap(cm)
-            }
-            if (lg && typeof lg.draw === "function") lg.draw()
-        } catch (e) {
-            console.warn("Error setting colour map:", e)
-        }
-    }
-
-    // Zoom interactivo centrado con botones
-    const handleZoomIn = () => {
-        const app = dwvAppRef.current
-        const el = containerRef.current
-        const lg = getDwvLayerGroup(app)
-        if (app && el) {
+        const lgs = ["dwv-view-axial", "dwv-view-tangential", "dwv-view-cross"]
+        lgs.forEach((id) => {
+            const vc = getDwvViewController(app, id)
+            const lg = getDwvLayerGroup(app, id)
             try {
-                const cx = el.clientWidth / 2
-                const cy = el.clientHeight / 2
-                app.zoom(0.2, cx, cy)
+                if (vc && typeof vc.setColourMap === "function") {
+                    vc.setColourMap(cm)
+                }
                 if (lg && typeof lg.draw === "function") lg.draw()
             } catch {}
-        }
+        })
+    }
+
+    const handleZoomIn = () => {
+        const app = dwvAppRef.current
+        if (!app) return
+        try {
+            app.zoom(0.2, 200, 200)
+        } catch {}
     }
 
     const handleZoomOut = () => {
         const app = dwvAppRef.current
-        const el = containerRef.current
-        const lg = getDwvLayerGroup(app)
-        if (app && el) {
-            try {
-                const cx = el.clientWidth / 2
-                const cy = el.clientHeight / 2
-                app.zoom(-0.2, cx, cy)
-                if (lg && typeof lg.draw === "function") lg.draw()
-            } catch {}
-        }
+        if (!app) return
+        try {
+            app.zoom(-0.2, 200, 200)
+        } catch {}
     }
 
     const handleResetView = () => {
         const app = dwvAppRef.current
-        if (app) {
-            try {
-                app.resetZoomPan()
-                app.fitToContainer()
-                const lg = getDwvLayerGroup(app)
-                if (lg && typeof lg.draw === "function") lg.draw()
-                handleWlPresetChange("default")
-                handleColorMapChange("plain")
-            } catch {}
-        }
+        if (!app) return
+        try {
+            app.resetZoomPan()
+            app.fitToContainer()
+            handleWlPresetChange("default")
+            handleColorMapChange("plain")
+        } catch {}
     }
 
     const toggleFullscreen = () => {
@@ -861,59 +850,136 @@ export function DicomViewerModalImpl({
         }
     }
 
-    const getViewportCursor = () => {
-        if (loading || !!errorMsg) return "cursor-wait"
-        if (activeTool === "Scroll") return "cursor-ns-resize"
-        if (activeTool === "ZoomAndPan") return "cursor-grab active:cursor-grabbing"
-        if (activeTool === "WindowLevel") return "cursor-ew-resize"
-        if (activeTool === "Draw") return "cursor-crosshair"
-        return "cursor-default"
-    }
-
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
                 className="max-w-7xl w-[98vw] h-[95vh] flex flex-col p-0 gap-0 overflow-hidden bg-slate-950 text-white rounded-2xl border-slate-800 shadow-2xl focus:outline-hidden"
                 showCloseButton={false}
             >
-                {/* 1. Header Superior con Título y Estado */}
-                <div className="flex flex-wrap items-center justify-between px-4 sm:px-6 py-2.5 border-b border-slate-800 bg-slate-900/95 shrink-0 gap-2">
-                    <div className="min-w-0 pr-2">
+                {/* 1. Header Superior con Selector de Vista Multivista / Individual */}
+                <div className="flex flex-wrap items-center justify-between px-3 sm:px-6 py-2 border-b border-slate-800 bg-slate-900/95 shrink-0 gap-2">
+                    <div className="flex items-center gap-2 min-w-0 pr-2">
                         <DialogTitle className="text-sm font-semibold truncate text-white flex items-center gap-2">
                             <Layers className="h-4 w-4 text-blue-400 shrink-0" />
                             <span className="truncate">{title}</span>
                             <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-400/30">
-                                3D CBCT
+                                CBCT 3D DENTAL
                             </span>
                         </DialogTitle>
-                        <DialogDescription className="text-xs text-slate-400 truncate mt-0.5">
-                            {subtitle ? `${subtitle} · ` : ""}
-                            {loading
-                                ? loadStep
-                                : totalSlices > 0
-                                ? `Corte ${sliceIndex + 1} de ${totalSlices} (Tomografía Computarizada Axial)`
-                                : "Visor Tomográfico Profesional"}
-                        </DialogDescription>
                     </div>
 
-                    <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                    {/* SELECTOR DE MODOS DE VISTA (GALILEOS MULTIVIEW VS INDIVIDUAL) */}
+                    <div className="flex items-center gap-1 bg-slate-950/80 p-0.5 rounded-lg border border-slate-800">
+                        <Button
+                            size="sm"
+                            variant={viewMode === "multi" ? "default" : "ghost"}
+                            className={`h-7 px-2.5 text-xs gap-1.5 ${
+                                viewMode === "multi"
+                                    ? "bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs"
+                                    : "text-slate-400 hover:text-white"
+                            }`}
+                            onClick={() => setViewMode("multi")}
+                            title="Ver las 5 secciones simultáneas: Panorama, 3D, Tangencial, Transversal y Axial"
+                        >
+                            <LayoutGrid className="h-3.5 w-3.5" />
+                            <span className="hidden md:inline">Multivista (5 Vistas)</span>
+                        </Button>
+
+                        <div className="h-3.5 w-px bg-slate-800 mx-0.5" />
+
+                        <Button
+                            size="sm"
+                            variant={viewMode === "panorama" ? "default" : "ghost"}
+                            className={`h-7 px-2 text-xs ${
+                                viewMode === "panorama" ? "bg-blue-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                            }`}
+                            onClick={() => setViewMode("panorama")}
+                            title="Vista detallada de Panorámica Dental"
+                        >
+                            Panorama
+                        </Button>
+
+                        <Button
+                            size="sm"
+                            variant={viewMode === "3d" ? "default" : "ghost"}
+                            className={`h-7 px-2 text-xs ${
+                                viewMode === "3d" ? "bg-amber-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                            }`}
+                            onClick={() => setViewMode("3d")}
+                            title="Vista detallada de Volumen 3D Interactivo"
+                        >
+                            3D
+                        </Button>
+
+                        <Button
+                            size="sm"
+                            variant={viewMode === "tangential" ? "default" : "ghost"}
+                            className={`h-7 px-2 text-xs ${
+                                viewMode === "tangential" ? "bg-emerald-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                            }`}
+                            onClick={() => setViewMode("tangential")}
+                            title="Vista detallada de Corte Tangencial"
+                        >
+                            Tangencial
+                        </Button>
+
+                        <Button
+                            size="sm"
+                            variant={viewMode === "cross" ? "default" : "ghost"}
+                            className={`h-7 px-2 text-xs ${
+                                viewMode === "cross" ? "bg-purple-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                            }`}
+                            onClick={() => setViewMode("cross")}
+                            title="Vista detallada de Sección Transversal"
+                        >
+                            Transversal
+                        </Button>
+
+                        <Button
+                            size="sm"
+                            variant={viewMode === "axial" ? "default" : "ghost"}
+                            className={`h-7 px-2 text-xs ${
+                                viewMode === "axial" ? "bg-cyan-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                            }`}
+                            onClick={() => setViewMode("axial")}
+                            title="Vista detallada de Corte Axial"
+                        >
+                            Axial
+                        </Button>
+                    </div>
+
+                    {/* Botones de Acción Superiores */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        {viewMode !== "multi" && (
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs gap-1 border-blue-500/40 bg-blue-950/40 text-blue-300 hover:bg-blue-900/60"
+                                onClick={() => setViewMode("multi")}
+                                title="Volver a la vista combinada de 5 secciones"
+                            >
+                                <ArrowLeft className="h-3 w-3" />
+                                <span>Volver a 5 Vistas</span>
+                            </Button>
+                        )}
+
                         {downloadUrl && (
                             <Button
                                 size="sm"
                                 variant="secondary"
-                                className="h-8 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
+                                className="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
                                 onClick={() => window.open(downloadUrl, "_blank")}
                                 title="Descargar paquete DICOM completo para software de escritorio"
                             >
                                 <Download className="h-3.5 w-3.5" />
-                                <span className="hidden md:inline">Descargar Estudio</span>
+                                <span className="hidden lg:inline">Descargar</span>
                             </Button>
                         )}
 
                         <Button
                             size="sm"
                             variant="outline"
-                            className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700"
+                            className="h-7 w-7 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700"
                             onClick={toggleFullscreen}
                             title={isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
                         >
@@ -923,7 +989,7 @@ export function DicomViewerModalImpl({
                         <Button
                             size="sm"
                             variant="ghost"
-                            className="h-8 w-8 p-0 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg ml-1"
+                            className="h-7 w-7 p-0 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg ml-0.5"
                             onClick={() => onOpenChange(false)}
                             title="Cerrar visor"
                         >
@@ -936,7 +1002,7 @@ export function DicomViewerModalImpl({
                 <div className="flex flex-wrap items-center justify-between px-3 sm:px-6 py-1.5 border-b border-slate-800 bg-slate-900/80 gap-2 shrink-0 text-xs">
                     {/* Herramientas de Interacción */}
                     <div className="flex items-center gap-1 flex-wrap">
-                        <span className="text-[11px] font-semibold text-slate-400 mr-1 hidden sm:inline">Modo:</span>
+                        <span className="text-[11px] font-semibold text-slate-400 mr-1 hidden sm:inline">Herramienta:</span>
 
                         <Button
                             size="sm"
@@ -948,7 +1014,7 @@ export function DicomViewerModalImpl({
                             }`}
                             onClick={() => handleToolChange("Scroll")}
                             disabled={loading || !!errorMsg}
-                            title="Desplazarse entre cortes axiales con clic o arrastre"
+                            title="Desplazarse entre cortes axiales con rueda o arrastre"
                         >
                             <Layers className="h-3.5 w-3.5" />
                             <span>Cortes</span>
@@ -964,10 +1030,10 @@ export function DicomViewerModalImpl({
                             }`}
                             onClick={() => handleToolChange("ZoomAndPan")}
                             disabled={loading || !!errorMsg}
-                            title="Arrastrar para mover o hacer zoom en la imagen"
+                            title="Arrastrar para mover o encuadrar la imagen"
                         >
                             <Move className="h-3.5 w-3.5" />
-                            <span>Mover / Zoom</span>
+                            <span>Mover</span>
                         </Button>
 
                         <Button
@@ -1017,7 +1083,6 @@ export function DicomViewerModalImpl({
 
                         <div className="h-4 w-px bg-slate-700 mx-1 hidden sm:block" />
 
-                        {/* Botones de Zoom rápido */}
                         <Button
                             size="sm"
                             variant="outline"
@@ -1052,7 +1117,7 @@ export function DicomViewerModalImpl({
 
                     {/* Presets Dentales y Color */}
                     <div className="flex items-center gap-1 flex-wrap">
-                        <span className="text-[11px] font-semibold text-slate-400 mr-1 hidden lg:inline">Filtro:</span>
+                        <span className="text-[11px] font-semibold text-slate-400 mr-1 hidden lg:inline">Filtro Óseo:</span>
 
                         <Button
                             size="sm"
@@ -1114,7 +1179,7 @@ export function DicomViewerModalImpl({
                             title="Mapa térmico de densidad ósea (Pseudo-3D)"
                         >
                             <Sparkles className="h-3 w-3" />
-                            <span>Térmico 3D</span>
+                            <span>Térmico</span>
                         </Button>
 
                         <Button
@@ -1135,26 +1200,16 @@ export function DicomViewerModalImpl({
                     </div>
                 </div>
 
-                {/* 3. Lienzo de Renderizado WebGL con HUD Médico y Control de Gestos */}
-                <div
-                    ref={viewportRef}
-                    onPointerDown={handlePointerDown}
-                    onPointerMove={handlePointerMove}
-                    onPointerUp={handlePointerUp}
-                    onPointerCancel={handlePointerUp}
-                    onTouchStart={handleTouchStart}
-                    onTouchMove={handleTouchMove}
-                    onTouchEnd={handleTouchEnd}
-                    className={`flex-1 relative flex items-center justify-center bg-black overflow-hidden select-none touch-none ${getViewportCursor()}`}
-                >
-                    {/* Estilos globales requeridos para apilamiento perfecto y respuesta táctil en DWV */}
+                {/* 3. Área Principal: Multivista Dental (5 Paneles estilo GALILEOS) o Vista Detallada */}
+                <div className="flex-1 relative flex items-center justify-center bg-black overflow-hidden select-none touch-none">
+                    {/* Estilos globales requeridos por las capas DWV */}
                     <style jsx global>{`
-                        #dwv-layer-container {
+                        #dwv-view-axial, #dwv-view-tangential, #dwv-view-cross {
                             touch-action: none !important;
                             user-select: none !important;
                             -webkit-user-select: none !important;
                         }
-                        #dwv-layer-container .layerGroup {
+                        #dwv-view-axial .layerGroup, #dwv-view-tangential .layerGroup, #dwv-view-cross .layerGroup {
                             position: relative !important;
                             width: 100% !important;
                             height: 100% !important;
@@ -1163,7 +1218,7 @@ export function DicomViewerModalImpl({
                             align-items: center !important;
                             touch-action: none !important;
                         }
-                        #dwv-layer-container .layer {
+                        #dwv-view-axial .layer, #dwv-view-tangential .layer, #dwv-view-cross .layer {
                             position: absolute !important;
                             top: 0 !important;
                             left: 0 !important;
@@ -1174,7 +1229,7 @@ export function DicomViewerModalImpl({
                             align-items: center !important;
                             touch-action: none !important;
                         }
-                        #dwv-layer-container canvas {
+                        #dwv-view-axial canvas, #dwv-view-tangential canvas, #dwv-view-cross canvas {
                             touch-action: none !important;
                             display: block !important;
                             margin: auto !important;
@@ -1182,7 +1237,7 @@ export function DicomViewerModalImpl({
                     `}</style>
 
                     {loading && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 z-30 gap-3.5 p-6 text-center">
+                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 z-40 gap-3.5 p-6 text-center">
                             <div className="relative">
                                 <div className="h-16 w-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shadow-lg">
                                     <Layers className="h-8 w-8 text-blue-400 animate-pulse" />
@@ -1191,7 +1246,7 @@ export function DicomViewerModalImpl({
                             </div>
                             <div className="space-y-1">
                                 <p className="text-sm font-semibold text-slate-200">{loadStep}</p>
-                                <p className="text-xs text-slate-400">Descomprimiendo y renderizando cortes volumétricos</p>
+                                <p className="text-xs text-slate-400">Generando reconstrucción volumétrica ortogonal y dental</p>
                             </div>
                             <div className="w-64 max-w-[80vw] bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700/50">
                                 <div
@@ -1204,7 +1259,7 @@ export function DicomViewerModalImpl({
                     )}
 
                     {errorMsg && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 z-30 gap-3 p-6 text-center max-w-md mx-auto">
+                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 z-40 gap-3 p-6 text-center max-w-md mx-auto">
                             <AlertCircle className="h-12 w-12 text-rose-500" />
                             <h4 className="text-base font-semibold text-white">No se pudo cargar la tomografía</h4>
                             <p className="text-xs text-slate-400">{errorMsg}</p>
@@ -1221,60 +1276,308 @@ export function DicomViewerModalImpl({
                         </div>
                     )}
 
-                    {/* HUD Médico en Vivo (Overlays Anatómicos) */}
-                    {!loading && !errorMsg && totalSlices > 0 && (
-                        <>
-                            {/* HUD Superior Izquierdo: Info del corte */}
-                            <div className="absolute top-3 left-3 z-10 pointer-events-none bg-slate-950/70 border border-slate-800/80 rounded-lg px-2.5 py-1.5 backdrop-blur-xs text-[11px] font-mono text-slate-300 space-y-0.5 shadow-md">
-                                <div className="text-blue-400 font-bold">Corte: {sliceIndex + 1} / {totalSlices}</div>
-                                <div className="text-[10px] text-slate-400">
-                                    Profundidad: {Math.round(((sliceIndex + 1) / totalSlices) * 100)}%
+                    {/* VISTA MULTIVISTA DENTAL (5 PANELES ESTILO GALILEOS) */}
+                    <div
+                        className={`w-full h-full p-1.5 gap-1.5 flex flex-col ${
+                            viewMode === "multi" ? "flex" : "hidden"
+                        }`}
+                    >
+                        {/* FILA SUPERIOR: Panorama (60%) + 3D (40%) */}
+                        <div className="flex-1 min-h-0 flex flex-col md:flex-row gap-1.5">
+                            {/* Panel 1: Panorama */}
+                            <div className="flex-[6] min-w-0 min-h-0 border border-slate-800 rounded-xl overflow-hidden bg-black shadow-md flex flex-col">
+                                <DentalPanoramaViewer
+                                    sliceIndex={sliceIndex}
+                                    totalSlices={totalSlices}
+                                    onSelectToothRegion={handleSelectToothRegion}
+                                    isExpanded={false}
+                                    onToggleExpand={() => setViewMode("panorama")}
+                                />
+                            </div>
+
+                            {/* Panel 2: 3D Interactivo */}
+                            <div className="flex-[4] min-w-0 min-h-0 border border-slate-800 rounded-xl overflow-hidden bg-black shadow-md flex flex-col">
+                                <Dental3DViewer
+                                    sliceIndex={sliceIndex}
+                                    totalSlices={totalSlices}
+                                    isExpanded={false}
+                                    onToggleExpand={() => setViewMode("3d")}
+                                />
+                            </div>
+                        </div>
+
+                        {/* FILA INFERIOR: Tangencial (33%) + Sección Transversal (33%) + Axial (34%) */}
+                        <div className="flex-1 min-h-0 flex flex-col md:flex-row gap-1.5">
+                            {/* Panel 3: Tangencial (Coronal) */}
+                            <div className="flex-1 min-w-0 min-h-0 border border-slate-800 rounded-xl overflow-hidden bg-black shadow-md flex flex-col relative">
+                                <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/90 border-b border-slate-800 z-10 text-[11px] shrink-0">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 text-[10px]">
+                                            TANGENCIAL
+                                        </span>
+                                        <span className="text-slate-300 font-medium truncate">Corte Coronal / Raíces</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                        <span className="text-[10px] font-mono text-slate-400">
+                                            {slicesInfo.tangential.current + 1} / {slicesInfo.tangential.total || 512}
+                                        </span>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-5 w-5 p-0 text-slate-400 hover:text-white"
+                                            onClick={() => setViewMode("tangential")}
+                                            title="Ver Tangencial en pantalla completa"
+                                        >
+                                            <Maximize2 className="h-3 w-3" />
+                                        </Button>
+                                    </div>
+                                </div>
+                                <div
+                                    onWheel={(e) => handleViewWheel("dwv-view-tangential", e)}
+                                    onPointerDown={(e) => handleViewPointerDown("dwv-view-tangential", e)}
+                                    onPointerMove={(e) => handleViewPointerMove("dwv-view-tangential", e)}
+                                    onPointerUp={handleViewPointerUp}
+                                    className="flex-1 w-full h-full relative cursor-crosshair touch-none"
+                                >
+                                    <div id="dwv-view-tangential" ref={tangentialRef} className="w-full h-full relative" />
+                                    <div className="absolute top-2 left-2 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-1.5 py-0.5 text-[9px] font-mono text-emerald-400">
+                                        S (Superior) · I (Inferior)
+                                    </div>
+                                    <div className="absolute bottom-1.5 right-2 pointer-events-none z-10 text-[9px] font-mono text-slate-400">
+                                        1 cm
+                                    </div>
                                 </div>
                             </div>
 
-                            {/* HUD Superior Derecho: Orientación Anterior */}
-                            <div className="absolute top-3 right-3 z-10 pointer-events-none bg-slate-950/70 border border-slate-800/80 rounded-lg px-2.5 py-1 backdrop-blur-xs text-xs font-bold text-amber-400 font-mono shadow-md">
-                                A (Anterior)
+                            {/* Panel 4: Sección Transversal (Sagital) */}
+                            <div className="flex-1 min-w-0 min-h-0 border border-slate-800 rounded-xl overflow-hidden bg-black shadow-md flex flex-col relative">
+                                <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/90 border-b border-slate-800 z-10 text-[11px] shrink-0">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30 text-[10px]">
+                                            TRANSVERSAL
+                                        </span>
+                                        <span className="text-slate-300 font-medium truncate">Buco-Lingual / Reborde</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                        <span className="text-[10px] font-mono text-slate-400">
+                                            {slicesInfo.cross.current + 1} / {slicesInfo.cross.total || 512}
+                                        </span>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-5 w-5 p-0 text-slate-400 hover:text-white"
+                                            onClick={() => setViewMode("cross")}
+                                            title="Ver Sección Transversal en pantalla completa"
+                                        >
+                                            <Maximize2 className="h-3 w-3" />
+                                        </Button>
+                                    </div>
+                                </div>
+                                <div
+                                    onWheel={(e) => handleViewWheel("dwv-view-cross", e)}
+                                    onPointerDown={(e) => handleViewPointerDown("dwv-view-cross", e)}
+                                    onPointerMove={(e) => handleViewPointerMove("dwv-view-cross", e)}
+                                    onPointerUp={handleViewPointerUp}
+                                    className="flex-1 w-full h-full relative cursor-crosshair touch-none"
+                                >
+                                    <div id="dwv-view-cross" ref={crossRef} className="w-full h-full relative" />
+                                    <div className="absolute top-2 left-2 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-1.5 py-0.5 text-[9px] font-mono text-purple-400">
+                                        oral · labial/bucal
+                                    </div>
+                                    <div className="absolute bottom-1.5 right-2 pointer-events-none z-10 text-[9px] font-mono text-slate-400">
+                                        1 cm
+                                    </div>
+                                </div>
                             </div>
 
-                            {/* HUD Inferior Derecho: Orientación Posterior */}
-                            <div className="absolute bottom-3 right-3 z-10 pointer-events-none bg-slate-950/70 border border-slate-800/80 rounded-lg px-2.5 py-1 backdrop-blur-xs text-xs font-bold text-amber-400 font-mono shadow-md">
-                                P (Posterior)
+                            {/* Panel 5: Axial (Desde arriba) */}
+                            <div className="flex-1 min-w-0 min-h-0 border border-slate-800 rounded-xl overflow-hidden bg-black shadow-md flex flex-col relative">
+                                <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/90 border-b border-slate-800 z-10 text-[11px] shrink-0">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30 text-[10px]">
+                                            AXIAL
+                                        </span>
+                                        <span className="text-slate-300 font-medium truncate">Desde arriba / Arco</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                        <span className="text-[10px] font-mono text-slate-400">
+                                            {sliceIndex + 1} / {totalSlices}
+                                        </span>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-5 w-5 p-0 text-slate-400 hover:text-white"
+                                            onClick={() => setViewMode("axial")}
+                                            title="Ver Axial en pantalla completa"
+                                        >
+                                            <Maximize2 className="h-3 w-3" />
+                                        </Button>
+                                    </div>
+                                </div>
+                                <div
+                                    onWheel={(e) => handleViewWheel("dwv-view-axial", e)}
+                                    onPointerDown={(e) => handleViewPointerDown("dwv-view-axial", e)}
+                                    onPointerMove={(e) => handleViewPointerMove("dwv-view-axial", e)}
+                                    onPointerUp={handleViewPointerUp}
+                                    className="flex-1 w-full h-full relative cursor-crosshair touch-none"
+                                >
+                                    <div id="dwv-view-axial" ref={axialRef} className="w-full h-full relative" />
+                                    <div className="absolute top-2 right-2 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-1.5 py-0.5 text-[9px] font-mono text-cyan-400">
+                                        A (Anterior)
+                                    </div>
+                                    <div className="absolute bottom-2 right-2 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-1.5 py-0.5 text-[9px] font-mono text-cyan-400">
+                                        P (Posterior)
+                                    </div>
+                                    <div className="absolute bottom-1.5 left-2 pointer-events-none z-10 text-[9px] font-mono text-slate-400">
+                                        5 cm
+                                    </div>
+                                </div>
                             </div>
+                        </div>
+                    </div>
 
-                            {/* HUD Lateral Izquierdo: R (Derecha del paciente) */}
-                            <div className="absolute top-1/2 left-3 -translate-y-1/2 z-10 pointer-events-none bg-slate-950/70 border border-slate-800/80 rounded-lg px-2 py-1 backdrop-blur-xs text-xs font-bold text-amber-400 font-mono shadow-md">
-                                R
-                            </div>
+                    {/* VISTA INDIVIDUAL DETALLADA (CUANDO SE MAXIMIZA CUALQUIERA DE LAS 5 SECCIONES) */}
+                    {viewMode !== "multi" && (
+                        <div className="w-full h-full flex flex-col p-1.5 relative">
+                            {/* Panel Panorámico Expandido */}
+                            {viewMode === "panorama" && (
+                                <DentalPanoramaViewer
+                                    sliceIndex={sliceIndex}
+                                    totalSlices={totalSlices}
+                                    onSelectToothRegion={handleSelectToothRegion}
+                                    isExpanded={true}
+                                    onToggleExpand={() => setViewMode("multi")}
+                                />
+                            )}
 
-                            {/* HUD Lateral Derecho: L (Izquierda del paciente) */}
-                            <div className="absolute top-1/2 right-3 -translate-y-1/2 z-10 pointer-events-none bg-slate-950/70 border border-slate-800/80 rounded-lg px-2 py-1 backdrop-blur-xs text-xs font-bold text-amber-400 font-mono shadow-md">
-                                L
-                            </div>
+                            {/* Panel 3D Expandido */}
+                            {viewMode === "3d" && (
+                                <Dental3DViewer
+                                    sliceIndex={sliceIndex}
+                                    totalSlices={totalSlices}
+                                    isExpanded={true}
+                                    onToggleExpand={() => setViewMode("multi")}
+                                />
+                            )}
 
-                            {/* Guía y Modo Activo en el HUD */}
-                            <div className="absolute bottom-3 left-3 z-10 pointer-events-none flex flex-wrap items-center gap-2 bg-slate-950/80 border border-slate-800/80 rounded-lg px-2.5 py-1.5 backdrop-blur-xs text-[11px] text-slate-300 shadow-md">
-                                <span className="font-semibold text-blue-400">
-                                    {activeTool === "Scroll" && "Modo Cortes: Rueda o arrastre vertical para navegar"}
-                                    {activeTool === "ZoomAndPan" && "Modo Mover: Arrastre para mover · Pellizque o use +/- para zoom"}
-                                    {activeTool === "WindowLevel" && (hudWl ? `Contraste: Centro ${hudWl.center} · Ancho ${hudWl.width}` : "Modo Contraste: Arrastre horizontal (ancho) y vertical (brillo)")}
-                                    {activeTool === "Draw" && "Modo Medición: Clic y arrastre sobre el hueso para trazar la regla en mm"}
-                                </span>
-                                <span className="text-slate-500 hidden sm:inline">·</span>
-                                <span className="text-slate-400 hidden sm:inline">Rueda: cortes · Espacio: Reproducir</span>
-                            </div>
-                        </>
+                            {/* Panel Tangencial Expandido */}
+                            {viewMode === "tangential" && (
+                                <div className="w-full h-full flex flex-col bg-black rounded-xl border border-slate-800 overflow-hidden relative">
+                                    <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-800 z-10 shrink-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 text-xs">
+                                                TANGENCIAL DETALLADO
+                                            </span>
+                                            <span className="text-xs text-slate-300">
+                                                Corte {slicesInfo.tangential.current + 1} de {slicesInfo.tangential.total || 512} (Plano Coronal Dental)
+                                            </span>
+                                        </div>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-7 gap-1.5 text-xs text-slate-300 hover:text-white"
+                                            onClick={() => setViewMode("multi")}
+                                        >
+                                            <Minimize2 className="h-3.5 w-3.5" />
+                                            <span>Restaurar 5 Vistas</span>
+                                        </Button>
+                                    </div>
+                                    <div
+                                        onWheel={(e) => handleViewWheel("dwv-view-tangential", e)}
+                                        onPointerDown={(e) => handleViewPointerDown("dwv-view-tangential", e)}
+                                        onPointerMove={(e) => handleViewPointerMove("dwv-view-tangential", e)}
+                                        onPointerUp={handleViewPointerUp}
+                                        className="flex-1 w-full h-full relative cursor-crosshair touch-none"
+                                    >
+                                        <div className="w-full h-full relative" />
+                                        <div className="absolute top-3 left-3 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-2 py-1 text-xs font-mono text-emerald-400">
+                                            Superior · Inferior (Ápices y Coronas)
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Panel Sección Transversal Expandido */}
+                            {viewMode === "cross" && (
+                                <div className="w-full h-full flex flex-col bg-black rounded-xl border border-slate-800 overflow-hidden relative">
+                                    <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-800 z-10 shrink-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30 text-xs">
+                                                SECCIÓN TRANSVERSAL DETALLADA
+                                            </span>
+                                            <span className="text-xs text-slate-300">
+                                                Corte {slicesInfo.cross.current + 1} de {slicesInfo.cross.total || 512} (Buco-Lingual / Altura Ósea)
+                                            </span>
+                                        </div>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-7 gap-1.5 text-xs text-slate-300 hover:text-white"
+                                            onClick={() => setViewMode("multi")}
+                                        >
+                                            <Minimize2 className="h-3.5 w-3.5" />
+                                            <span>Restaurar 5 Vistas</span>
+                                        </Button>
+                                    </div>
+                                    <div
+                                        onWheel={(e) => handleViewWheel("dwv-view-cross", e)}
+                                        onPointerDown={(e) => handleViewPointerDown("dwv-view-cross", e)}
+                                        onPointerMove={(e) => handleViewPointerMove("dwv-view-cross", e)}
+                                        onPointerUp={handleViewPointerUp}
+                                        className="flex-1 w-full h-full relative cursor-crosshair touch-none"
+                                    >
+                                        <div className="w-full h-full relative" />
+                                        <div className="absolute top-3 left-3 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-2 py-1 text-xs font-mono text-purple-400">
+                                            oral (palatino/lingual) · labial/bucal
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Panel Axial Expandido */}
+                            {viewMode === "axial" && (
+                                <div className="w-full h-full flex flex-col bg-black rounded-xl border border-slate-800 overflow-hidden relative">
+                                    <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-800 z-10 shrink-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30 text-xs">
+                                                CORTE AXIAL DETALLADO
+                                            </span>
+                                            <span className="text-xs text-slate-300">
+                                                Corte {sliceIndex + 1} de {totalSlices} (Arco Dental Horizontal)
+                                            </span>
+                                        </div>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-7 gap-1.5 text-xs text-slate-300 hover:text-white"
+                                            onClick={() => setViewMode("multi")}
+                                        >
+                                            <Minimize2 className="h-3.5 w-3.5" />
+                                            <span>Restaurar 5 Vistas</span>
+                                        </Button>
+                                    </div>
+                                    <div
+                                        onWheel={(e) => handleViewWheel("dwv-view-axial", e)}
+                                        onPointerDown={(e) => handleViewPointerDown("dwv-view-axial", e)}
+                                        onPointerMove={(e) => handleViewPointerMove("dwv-view-axial", e)}
+                                        onPointerUp={handleViewPointerUp}
+                                        className="flex-1 w-full h-full relative cursor-crosshair touch-none"
+                                    >
+                                        <div className="w-full h-full relative" />
+                                        <div className="absolute top-3 right-3 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-2 py-1 text-xs font-mono text-cyan-400">
+                                            A (Anterior)
+                                        </div>
+                                        <div className="absolute bottom-3 right-3 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-2 py-1 text-xs font-mono text-cyan-400">
+                                            P (Posterior)
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
                     )}
-
-                    {/* Contenedor DWV */}
-                    <div
-                        id="dwv-layer-container"
-                        ref={containerRef}
-                        className="w-full h-full relative overflow-hidden flex items-center justify-center touch-none"
-                    />
                 </div>
 
-                {/* 4. Barra Inferior con Reproductor de Cine, Saltos Anatómicos y Slider */}
+                {/* 4. Barra Inferior con Reproductor de Cine y Slider de Navegación */}
                 {totalSlices > 1 && (
                     <div className="px-4 sm:px-6 py-2.5 bg-slate-900 border-t border-slate-800 flex flex-col sm:flex-row items-center gap-3 shrink-0">
                         {/* Controles de Reproducción y Saltos */}
@@ -1283,7 +1586,7 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="outline"
                                 className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                onClick={() => goToSlice(sliceIndex - 10)}
+                                onClick={() => goToSliceInDiv(sliceIndex - 10, focusedViewId)}
                                 disabled={loading || sliceIndex <= 0}
                                 title="Retroceder 10 cortes"
                             >
@@ -1294,14 +1597,13 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="outline"
                                 className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                onClick={handlePrevSlice}
+                                onClick={() => goToSliceInDiv(sliceIndex - 1, focusedViewId)}
                                 disabled={loading || sliceIndex <= 0}
                                 title="Corte anterior"
                             >
                                 <ChevronLeft className="h-4 w-4" />
                             </Button>
 
-                            {/* Botón Cine Play/Pausa */}
                             <Button
                                 size="sm"
                                 variant={isPlaying ? "destructive" : "default"}
@@ -1322,7 +1624,7 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="outline"
                                 className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                onClick={handleNextSlice}
+                                onClick={() => goToSliceInDiv(sliceIndex + 1, focusedViewId)}
                                 disabled={loading || sliceIndex >= totalSlices - 1}
                                 title="Corte siguiente"
                             >
@@ -1333,7 +1635,7 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="outline"
                                 className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                onClick={() => goToSlice(sliceIndex + 10)}
+                                onClick={() => goToSliceInDiv(sliceIndex + 10, focusedViewId)}
                                 disabled={loading || sliceIndex >= totalSlices - 1}
                                 title="Avanzar 10 cortes"
                             >
@@ -1341,7 +1643,7 @@ export function DicomViewerModalImpl({
                             </Button>
                         </div>
 
-                        {/* Slider Scrubber con feedback visual */}
+                        {/* Slider Scrubber */}
                         <div className="flex-1 w-full flex items-center gap-3">
                             <span className="text-xs text-slate-400 font-mono shrink-0">1</span>
                             <Slider
@@ -1349,7 +1651,7 @@ export function DicomViewerModalImpl({
                                 min={0}
                                 max={Math.max(0, totalSlices - 1)}
                                 step={1}
-                                onValueChange={(val) => goToSlice(val[0])}
+                                onValueChange={(val) => goToSliceInDiv(val[0], focusedViewId)}
                                 className="flex-1 py-1"
                             />
                             <span className="text-xs font-semibold text-blue-400 font-mono shrink-0 min-w-16 text-right">
@@ -1363,7 +1665,7 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="outline"
                                 className="h-7 px-2 text-[11px] border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700"
-                                onClick={() => goToSlice(Math.floor(totalSlices * 0.38))}
+                                onClick={() => goToSliceInDiv(Math.floor(totalSlices * 0.38), "dwv-view-axial")}
                                 disabled={loading}
                                 title="Ir a nivel de Maxilar Superior"
                             >
@@ -1374,7 +1676,7 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="outline"
                                 className="h-7 px-2 text-[11px] border-blue-600/40 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50"
-                                onClick={() => goToSlice(Math.floor(totalSlices * 0.50))}
+                                onClick={() => goToSliceInDiv(Math.floor(totalSlices * 0.50), "dwv-view-axial")}
                                 disabled={loading}
                                 title="Ir al plano dental central (Dientes)"
                             >
@@ -1385,7 +1687,7 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="outline"
                                 className="h-7 px-2 text-[11px] border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700"
-                                onClick={() => goToSlice(Math.floor(totalSlices * 0.62))}
+                                onClick={() => goToSliceInDiv(Math.floor(totalSlices * 0.62), "dwv-view-axial")}
                                 disabled={loading}
                                 title="Ir a nivel de Mandíbula"
                             >
