@@ -187,7 +187,7 @@ export async function extractDicomFilesFromRar(
         blob.arrayBuffer(),
     ])
 
-    const { createExtractorFromData } = await import("node-unrar-js/esm")
+    const { createExtractorFromData } = await import("node-unrar-js/esm/index.esm")
     const extractor = await createExtractorFromData({
         wasmBinary,
         data: archiveBuffer,
