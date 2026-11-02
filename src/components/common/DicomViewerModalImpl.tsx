@@ -47,6 +47,11 @@ import {
     type PanoramaData,
     type PanoramaMode,
 } from "@/lib/cbctReconstruction"
+import {
+    detectArchiveFormat,
+    isDicomSliceEntry,
+    extractDicomFilesFromRar,
+} from "@/lib/dicomZipCleaner"
 
 export interface DicomViewerModalProps {
     open: boolean
@@ -380,49 +385,32 @@ export function DicomViewerModalImpl({
                 setLoadStep("Descomprimiendo cortes tomográficos...")
 
                 const dcmFiles: File[] = []
-                const isZip = blob.type.includes("zip") || zipUrl.toLowerCase().includes(".zip")
+                const archiveFormat = await detectArchiveFormat(blob)
 
-                if (isZip) {
+                if (archiveFormat === "rar") {
+                    setLoadStep("Descomprimiendo paquete RAR y filtrando cortes DICOM...")
+                    const { dcmFiles: rarFiles } = await extractDicomFilesFromRar(blob, (pct, msg) => {
+                        if (!isCancelled) {
+                            setLoadStep(msg)
+                            setLoadProgress(Math.min(82, 30 + Math.round(pct * 0.52)))
+                        }
+                    })
+                    dcmFiles.push(...rarFiles)
+                } else if (archiveFormat === "zip" || (archiveFormat === "unknown" && (blob.type.includes("zip") || zipUrl.toLowerCase().includes(".zip")))) {
                     const zip = await JSZip.loadAsync(blob)
 
                     // Filtro universal: descarta ejecutables de PC y toma solo cortes tomográficos válidos
                     const validEntries = Object.keys(zip.files).filter((fileName) => {
                         const entry = zip.files[fileName]
                         if (entry.dir) return false
-                        const lower = fileName.toLowerCase()
-                        const isBanned =
-                            lower.endsWith(".exe") ||
-                            lower.endsWith(".dll") ||
-                            lower.endsWith(".inf") ||
-                            lower.endsWith(".docx") ||
-                            lower.endsWith(".doc") ||
-                            lower.endsWith(".inv") ||
-                            lower.endsWith(".sdx") ||
-                            lower.endsWith(".pdf") ||
-                            lower.endsWith(".manifest") ||
-                            lower.endsWith(".txt") ||
-                            lower.endsWith(".ini") ||
-                            lower.endsWith(".bat") ||
-                            lower.endsWith(".sys") ||
-                            lower.endsWith(".msi") ||
-                            lower.includes("__macosx") ||
-                            lower.includes("thumbs.db")
-
-                        if (isBanned) return false
-                        return (
-                            lower.endsWith(".dcm") ||
-                            lower.endsWith(".dcm30") ||
-                            lower.includes("/dcm/") ||
-                            lower.includes("/dicom/") ||
-                            !lower.split("/").pop()?.includes(".")
-                        )
+                        return isDicomSliceEntry(fileName)
                     })
 
                     let processed = 0
                     for (const name of validEntries) {
                         if (isCancelled) return
                         const fileData = await zip.files[name].async("blob")
-                        const baseName = name.split("/").pop() || name
+                        const baseName = name.replace(/\\/g, "/").split("/").pop() || name
                         dcmFiles.push(new File([fileData], baseName, { type: "application/dicom" }))
 
                         processed++

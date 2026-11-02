@@ -117,7 +117,7 @@ export function ResultUploader({
         if (fileRejections && fileRejections.length > 0) {
             fileRejections.forEach(rej => {
                 const name = rej.file.name.toLowerCase()
-                if (name.endsWith('.zip') || name.endsWith('.dcm') || name.endsWith('.pdf')) {
+                if (name.endsWith('.zip') || name.endsWith('.rar') || name.endsWith('.dcm') || name.endsWith('.pdf')) {
                     if (rej.file.size <= 800 * 1024 * 1024) {
                         recovered.push(rej.file)
                     } else {
@@ -131,7 +131,7 @@ export function ResultUploader({
                     toast({
                         variant: "destructive",
                         title: "Formato no compatible",
-                        description: `El archivo ${rej.file.name} no es un formato válido (.pdf, .zip, .dcm).`,
+                        description: `El archivo ${rej.file.name} no es un formato válido (.pdf, .zip, .rar, .dcm).`,
                     })
                 }
             })
@@ -200,8 +200,9 @@ export function ResultUploader({
                 const version = currentVersion + i + (isSuccess ? 0 : (currentVersion > 0 ? 1 : 1))
                 const isDicom = isDicomFile({ file_name: fileToUpload.name, mime_type: fileToUpload.type })
 
-                // Opción 2: Si es un archivo ZIP, analizar y limpiar instaladores de PC innecesarios
-                if (fileToUpload.name.toLowerCase().endsWith(".zip")) {
+                // Opción 2: Si es un archivo ZIP o RAR, analizar y limpiar instaladores de PC innecesarios
+                const lowerName = fileToUpload.name.toLowerCase()
+                if (lowerName.endsWith(".zip") || lowerName.endsWith(".rar")) {
                     setUploadStatus({
                         fileName: fileToUpload.name,
                         percent: 0,
@@ -218,7 +219,7 @@ export function ResultUploader({
                         fileToUpload = cleanRes.file
                         toast({
                             title: "Tomografía optimizada",
-                            description: `Se descartaron ${cleanRes.savedMB.toFixed(1)} MB de instaladores de PC. El archivo se redujo a ${(cleanRes.newSize / (1024 * 1024)).toFixed(1)} MB.`,
+                            description: `Se conservaron ${cleanRes.dicomSlicesCount} cortes DICOM y se descartaron ${cleanRes.savedMB.toFixed(1)} MB de instaladores. Peso final: ${(cleanRes.newSize / (1024 * 1024)).toFixed(1)} MB.`,
                         })
                     }
                 }

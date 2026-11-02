@@ -239,7 +239,7 @@ export default function DirectResultsPage() {
         if (rejections && rejections.length > 0) {
             rejections.forEach(rej => {
                 const name = rej.file.name.toLowerCase()
-                if (name.endsWith('.zip') || name.endsWith('.dcm') || name.endsWith('.pdf')) {
+                if (name.endsWith('.zip') || name.endsWith('.rar') || name.endsWith('.dcm') || name.endsWith('.pdf')) {
                     if (rej.file.size <= 800 * 1024 * 1024) {
                         recovered.push(rej.file)
                     } else {
@@ -296,8 +296,9 @@ export default function DirectResultsPage() {
                 let file = uploadedFiles[i]
                 const isDicom = isDicomFile({ file_name: file.name, mime_type: file.type })
 
-                // Opción 2: Si es un archivo ZIP, analizar y limpiar instaladores de PC innecesarios
-                if (file.name.toLowerCase().endsWith(".zip")) {
+                // Opción 2: Si es un archivo ZIP o RAR, analizar y limpiar instaladores de PC innecesarios
+                const lowerName = file.name.toLowerCase()
+                if (lowerName.endsWith(".zip") || lowerName.endsWith(".rar")) {
                     setUploadProgress({
                         percent: 0,
                         loadedMB: 0,
@@ -314,7 +315,7 @@ export default function DirectResultsPage() {
                         file = cleanRes.file
                         toast({
                             title: "Tomografía optimizada",
-                            description: `Se descartaron ${cleanRes.savedMB.toFixed(1)} MB de instaladores de PC. El archivo se redujo a ${(cleanRes.newSize / (1024 * 1024)).toFixed(1)} MB.`,
+                            description: `Se conservaron ${cleanRes.dicomSlicesCount} cortes DICOM y se descartaron ${cleanRes.savedMB.toFixed(1)} MB de instaladores. Peso final: ${(cleanRes.newSize / (1024 * 1024)).toFixed(1)} MB.`,
                         })
                     }
                 }
