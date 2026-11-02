@@ -35,8 +35,19 @@ import {
     Compass,
 } from "lucide-react"
 import JSZip from "jszip"
-import { Dental3DViewer } from "./Dental3DViewer"
-import { DentalPanoramaViewer } from "./DentalPanoramaViewer"
+import { Dental3DViewer, type VolumeFocus } from "./Dental3DViewer"
+import { DentalPanoramaViewer, type ArchSelection } from "./DentalPanoramaViewer"
+import {
+    extractCbctVolume,
+    buildRenderVolume,
+    detectDentalArch,
+    computePanorama,
+    type CbctVolume,
+    type RenderVolume,
+    type DentalArch,
+    type PanoramaData,
+    type PanoramaMode,
+} from "@/lib/cbctReconstruction"
 
 export interface DicomViewerModalProps {
     open: boolean
@@ -146,6 +157,17 @@ export function DicomViewerModalImpl({
     const [playbackFps, setPlaybackFps] = useState<number>(25)
     const [errorMsg, setErrorMsg] = useState<string | null>(null)
     const [isFullscreen, setIsFullscreen] = useState(false)
+
+    // Estado de reconstrucción volumétrica real (Panorama CPR + Volumen 3D WebGL2)
+    const [renderVolume, setRenderVolume] = useState<RenderVolume | null>(null)
+    const [panoramaData, setPanoramaData] = useState<PanoramaData | null>(null)
+    const [reconStatus, setReconStatus] = useState<string>("Preparando reconstrucción volumétrica...")
+    const [panoThickness, setPanoThickness] = useState<number>(18)
+    const [panoMode, setPanoMode] = useState<PanoramaMode>("xray")
+    const [volumeFocus, setVolumeFocus] = useState<VolumeFocus | null>(null)
+
+    const cbctVolRef = useRef<CbctVolume | null>(null)
+    const dentalArchRef = useRef<DentalArch | null>(null)
 
     // Estado de cortes de cada ventana ortogonal
     const [slicesInfo, setSlicesInfo] = useState({
@@ -334,6 +356,12 @@ export function DicomViewerModalImpl({
         setActiveWlPreset("default")
         setActiveColorMap("plain")
         setViewMode("multi")
+        setRenderVolume(null)
+        setPanoramaData(null)
+        setVolumeFocus(null)
+        cbctVolRef.current = null
+        dentalArchRef.current = null
+        setReconStatus("Analizando vóxeles CBCT...")
         setLoadStep("Conectando con almacenamiento seguro...")
 
         const loadDicomZip = async () => {
@@ -478,16 +506,11 @@ export function DicomViewerModalImpl({
                         safeFitView("dwv-view-cross")
                     } catch {}
 
-                    // Leer cortes iniciales
+                    // Posicionar inicialmente el corte axial en el plano dental central (~48%) en lugar del borde vacío (corte 1)
                     try {
-                        const posHelper = getDwvPositionHelper(app, "dwv-view-axial")
-                        if (posHelper && typeof posHelper.getCurrentPositionScrollValue === "function") {
-                            const cur = posHelper.getCurrentPositionScrollValue()
-                            if (typeof cur === "number" && !isNaN(cur)) {
-                                setSliceIndex(cur)
-                                sliceIndexRef.current = cur
-                            }
-                        }
+                        const initialAxial = Math.max(0, Math.floor(nSlices * 0.48))
+                        goToSliceInDiv(initialAxial, "dwv-view-axial")
+
                         const vc = getDwvViewController(app, "dwv-view-axial")
                         if (vc && typeof vc.getWindowLevel === "function") {
                             const wl = vc.getWindowLevel()
@@ -497,6 +520,71 @@ export function DicomViewerModalImpl({
                     } catch (e) {
                         console.warn("Error leyendo cortes iniciales:", e)
                     }
+
+                    // Reajustar lienzos tras cerrar el overlay de carga
+                    setTimeout(() => {
+                        if (isCancelled) return
+                        safeFitView("dwv-view-axial")
+                        safeFitView("dwv-view-tangential")
+                        safeFitView("dwv-view-cross")
+                    }, 80)
+
+                    // Pipeline asíncrono de Reconstrucción Volumétrica Real (Panorama CPR + Volumen 3D WebGL2)
+                    ;(async () => {
+                        try {
+                            setReconStatus("Extrayendo matriz volumétrica DICOM...")
+                            await new Promise((r) => setTimeout(r, 20))
+                            if (isCancelled) return
+
+                            const vol = extractCbctVolume(app)
+                            if (!vol || isCancelled) return
+                            cbctVolRef.current = vol
+
+                            setReconStatus("Construyendo volumen 3D en GPU...")
+                            const rv = await buildRenderVolume(vol, 224, () => isCancelled)
+                            if (!rv || isCancelled) return
+                            setRenderVolume(rv)
+
+                            setReconStatus("Detectando arco dental y calculando Panorámica CPR...")
+                            await new Promise((r) => setTimeout(r, 15))
+                            if (isCancelled) return
+
+                            const arch = detectDentalArch(rv, vol)
+                            dentalArchRef.current = arch
+
+                            // Enfocar corte axial, tangencial y transversal en el arco dental real del paciente
+                            const targetAxial = Math.max(0, Math.min(vol.nz - 1, Math.round(arch.zMidNorm * (vol.nz - 1))))
+                            goToSliceInDiv(targetAxial, "dwv-view-axial")
+
+                            const midIdx = Math.floor(arch.points.length / 2)
+                            const midPt = arch.points[midIdx]
+                            if (midPt) {
+                                goToSliceInDiv(Math.round(midPt.x), "dwv-view-cross")
+                                goToSliceInDiv(Math.round(midPt.y), "dwv-view-tangential")
+                                setVolumeFocus({
+                                    cx: midPt.x / Math.max(1, vol.nx),
+                                    cy: midPt.y / Math.max(1, vol.ny),
+                                    tx: midPt.tx,
+                                    ty: midPt.ty,
+                                    halfWidthMm: 14,
+                                    halfDepthMm: 12,
+                                })
+                            }
+
+                            const pano = await computePanorama(
+                                vol,
+                                arch,
+                                { thicknessMm: 18, mode: "xray" },
+                                () => isCancelled
+                            )
+                            if (!pano || isCancelled) return
+                            setPanoramaData(pano)
+                            setReconStatus("")
+                        } catch (reconErr) {
+                            console.error("Error en reconstrucción volumétrica CBCT:", reconErr)
+                            setReconStatus("No fue posible reconstruir el volumen.")
+                        }
+                    })()
                 }
 
                 app.addEventListener("loadend", onLoadSuccess)
@@ -577,8 +665,59 @@ export function DicomViewerModalImpl({
         }
     }, [open, zipUrl])
 
+    // Recalcular Panorámica CPR cuando el especialista cambia el grosor en mm o el modo (Rx / MIP)
+    useEffect(() => {
+        const vol = cbctVolRef.current
+        const arch = dentalArchRef.current
+        if (!vol || !arch) return
+
+        let cancelled = false
+        ;(async () => {
+            try {
+                const pano = await computePanorama(
+                    vol,
+                    arch,
+                    { thicknessMm: panoThickness, mode: panoMode },
+                    () => cancelled
+                )
+                if (!cancelled && pano) {
+                    setPanoramaData(pano)
+                }
+            } catch (e) {
+                console.warn("Error recalculando panorámica:", e)
+            }
+        })()
+
+        return () => {
+            cancelled = true
+        }
+    }, [panoThickness, panoMode])
+
+    // Sincronizar desde las coordenadas reales del arco en la Panorámica hacia 3D, Tangencial y Transversal
+    const handleSelectArchPoint = useCallback(
+        (sel: ArchSelection) => {
+            const vol = cbctVolRef.current
+            if (vol) {
+                setVolumeFocus({
+                    cx: sel.voxelX / Math.max(1, vol.nx),
+                    cy: sel.voxelY / Math.max(1, vol.ny),
+                    tx: sel.tx,
+                    ty: sel.ty,
+                    halfWidthMm: 14,
+                    halfDepthMm: Math.max(10, panoThickness * 0.7),
+                })
+                goToSliceInDiv(Math.max(0, Math.min(vol.nx - 1, Math.round(sel.voxelX))), "dwv-view-cross")
+                goToSliceInDiv(Math.max(0, Math.min(vol.ny - 1, Math.round(sel.voxelY))), "dwv-view-tangential")
+            }
+        },
+        [goToSliceInDiv, panoThickness]
+    )
+
     // Sincronizar desde la "Ventana de cortes" en la Panorámica hacia Tangencial y Transversal
     const handleSelectToothRegion = (normalizedX: number) => {
+        if (cbctVolRef.current && panoramaData) {
+            return
+        }
         const app = dwvAppRef.current
         if (!app) return
 
@@ -1391,9 +1530,17 @@ export function DicomViewerModalImpl({
                                 }`}
                             >
                                 <DentalPanoramaViewer
+                                    panorama={panoramaData}
+                                    status={reconStatus}
                                     sliceIndex={sliceIndex}
                                     totalSlices={totalSlices}
+                                    thicknessMm={panoThickness}
+                                    mode={panoMode}
+                                    onChangeThickness={setPanoThickness}
+                                    onChangeMode={setPanoMode}
                                     onSelectToothRegion={handleSelectToothRegion}
+                                    onSelectArchPoint={handleSelectArchPoint}
+                                    onSelectSlice={(s) => goToSliceInDiv(s, "dwv-view-axial")}
                                     isExpanded={viewMode === "panorama"}
                                     onToggleExpand={() => setViewMode(viewMode === "multi" ? "panorama" : "multi")}
                                 />
@@ -1410,6 +1557,9 @@ export function DicomViewerModalImpl({
                                 }`}
                             >
                                 <Dental3DViewer
+                                    volume={renderVolume}
+                                    status={reconStatus}
+                                    focus={volumeFocus}
                                     sliceIndex={sliceIndex}
                                     totalSlices={totalSlices}
                                     isExpanded={viewMode === "3d"}
