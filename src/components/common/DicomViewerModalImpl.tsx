@@ -1,4 +1,3 @@
-// @ts-nocheck
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
@@ -476,7 +475,7 @@ export function DicomViewerModalImpl({
                         WindowLevel: {},
                         Draw: { options: ["Ruler"] },
                     },
-                })
+                } as any)
 
                 let hasLoaded = false
                 const onLoadSuccess = () => {
@@ -485,9 +484,11 @@ export function DicomViewerModalImpl({
 
                     let nSlices = dcmFiles.length
                     try {
-                        const image = app.getImage()
+                        const ids = typeof app.getDataIds === "function" ? app.getDataIds() : []
+                        const image = ids.length > 0 ? app.getImage(ids[0]) : (app as any).getImage?.(0)
                         if (image) {
-                            nSlices = image.getGeometry().getSize().getNumberOfSlices()
+                            const sz = image.getGeometry().getSize()
+                            nSlices = sz.get(2) || (sz as any).getNumberOfSlices?.() || dcmFiles.length
                         }
                     } catch {}
 
@@ -552,25 +553,6 @@ export function DicomViewerModalImpl({
                             const arch = detectDentalArch(rv, vol)
                             dentalArchRef.current = arch
 
-                            // Enfocar corte axial, tangencial y transversal en el arco dental real del paciente
-                            const targetAxial = Math.max(0, Math.min(vol.nz - 1, Math.round(arch.zMidNorm * (vol.nz - 1))))
-                            goToSliceInDiv(targetAxial, "dwv-view-axial")
-
-                            const midIdx = Math.floor(arch.points.length / 2)
-                            const midPt = arch.points[midIdx]
-                            if (midPt) {
-                                goToSliceInDiv(Math.round(midPt.x), "dwv-view-cross")
-                                goToSliceInDiv(Math.round(midPt.y), "dwv-view-tangential")
-                                setVolumeFocus({
-                                    cx: midPt.x / Math.max(1, vol.nx),
-                                    cy: midPt.y / Math.max(1, vol.ny),
-                                    tx: midPt.tx,
-                                    ty: midPt.ty,
-                                    halfWidthMm: 14,
-                                    halfDepthMm: 12,
-                                })
-                            }
-
                             const pano = await computePanorama(
                                 vol,
                                 arch,
@@ -580,6 +562,35 @@ export function DicomViewerModalImpl({
                             if (!pano || isCancelled) return
                             setPanoramaData(pano)
                             setReconStatus("")
+
+                            // Enfocar corte axial, tangencial, transversal y caja 3D en el centro del arco dental
+                            try {
+                                const zNorm = typeof arch.zMidNorm === "number" && !isNaN(arch.zMidNorm) ? arch.zMidNorm : 0.48
+                                const targetAxial = Math.max(0, Math.min(vol.nz - 1, Math.round(zNorm * (vol.nz - 1))))
+                                goToSliceInDiv(targetAxial, "dwv-view-axial")
+
+                                if (pano.columns && pano.width > 0) {
+                                    const midCol = Math.floor(pano.width / 2)
+                                    const base = midCol * 4
+                                    const midX = pano.columns[base]
+                                    const midY = pano.columns[base + 1]
+                                    const midTx = pano.columns[base + 2]
+                                    const midTy = pano.columns[base + 3]
+
+                                    goToSliceInDiv(Math.max(0, Math.min(vol.nx - 1, Math.round(midX))), "dwv-view-cross")
+                                    goToSliceInDiv(Math.max(0, Math.min(vol.ny - 1, Math.round(midY))), "dwv-view-tangential")
+                                    setVolumeFocus({
+                                        cx: midX / Math.max(1, vol.nx),
+                                        cy: midY / Math.max(1, vol.ny),
+                                        tx: midTx,
+                                        ty: midTy,
+                                        halfWidthMm: 14,
+                                        halfDepthMm: 12,
+                                    })
+                                }
+                            } catch (navErr) {
+                                console.warn("Aviso al posicionar cortes iniciales sobre el arco:", navErr)
+                            }
                         } catch (reconErr) {
                             console.error("Error en reconstrucción volumétrica CBCT:", reconErr)
                             setReconStatus("No fue posible reconstruir el volumen.")

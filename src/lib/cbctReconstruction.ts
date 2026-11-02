@@ -38,6 +38,8 @@ export interface DentalArch {
     evalY: (x: number) => number
     xMin: number
     xMax: number
+    /** Nivel axial normalizado (0..1) donde se concentra la corona/raíz dental */
+    zMidNorm: number
     detected: boolean
 }
 
@@ -79,11 +81,27 @@ export function extractCbctVolume(app: any): CbctVolume | null {
         if (!app) return null
         const ids: string[] = typeof app.getDataIds === "function" ? app.getDataIds() : []
         let image: any = null
+        let bestVoxels = 0
         for (const id of ids) {
-            const im = app.getImage(id)
-            if (im) {
-                image = im
-                break
+            try {
+                const im = app.getImage(id)
+                if (im) {
+                    const buf = typeof im.getBuffer === "function" ? im.getBuffer() : null
+                    const len = buf?.length || 0
+                    if (len > bestVoxels) {
+                        bestVoxels = len
+                        image = im
+                    }
+                }
+            } catch {}
+        }
+        if (!image && typeof app.getImage === "function") {
+            try {
+                image = app.getImage(0) || app.getImage()
+            } catch {
+                try {
+                    image = app.getImage()
+                } catch {}
             }
         }
         if (!image) return null
@@ -253,6 +271,7 @@ export function detectDentalArch(rv: RenderVolume, vol: CbctVolume): DentalArch 
             },
             xMin,
             xMax,
+            zMidNorm: 0.48,
             detected: false,
         }
     }
@@ -398,6 +417,7 @@ export function detectDentalArch(rv: RenderVolume, vol: CbctVolume): DentalArch 
         const rxMax = Math.min(dx - 2, pxHi + ext)
 
         const coeffs = best.coeffs
+        const zMidNorm = Math.max(0.15, Math.min(0.85, (zPeak + 0.5) / Math.max(1, dz)))
         return {
             evalY: (X: number) => {
                 const xr_ = (X + 0.5) / sX - 0.5
@@ -406,6 +426,7 @@ export function detectDentalArch(rv: RenderVolume, vol: CbctVolume): DentalArch 
             },
             xMin: (rxMin + 0.5) * sX - 0.5,
             xMax: (rxMax + 0.5) * sX - 0.5,
+            zMidNorm,
             detected: true,
         }
     } catch (err) {
@@ -495,6 +516,7 @@ export async function computePanorama(
     // 3. Integración por filas (cada fila = un nivel axial; fila 0 = superior)
     const out = new Float32Array(W * H)
     const air = vol.pAir
+    const invSpan = 1 / Math.max(1, vol.pHigh - air)
     const useMip = opts.mode === "mip"
     for (let r = 0; r < H; r++) {
         if (isCancelled()) return null
@@ -502,8 +524,9 @@ export async function computePanorama(
         const z = vol.zUp ? nz - 1 - zf : zf
         const base = z * nxy
         for (let i = 0; i < W; i++) {
-            let acc = 0
-            let mx = -Infinity
+            let accLin = 0
+            let accSq = 0
+            let mx = 0
             const o0 = i * m
             for (let k = 0; k < m; k++) {
                 const o = o0 + k
@@ -520,28 +543,37 @@ export async function computePanorama(
                 } else {
                     v = air
                 }
-                acc += v
-                if (v > mx) mx = v
+                let vn = (v - air) * invSpan
+                vn = vn < 0 ? 0 : vn > 1.2 ? 1.2 : vn
+                accLin += vn
+                accSq += vn * vn
+                if (vn > mx) mx = vn
             }
-            out[r * W + i] = useMip ? mx : acc / m
+            if (useMip) {
+                out[r * W + i] = mx
+            } else {
+                const mean = accLin / m
+                const rms = Math.sqrt(accSq / m)
+                out[r * W + i] = 0.52 * mean + 0.48 * rms
+            }
         }
         if (r % 24 === 0) await yieldToUI()
     }
 
     // 4. Ventana automática por percentiles + gamma + realce de nitidez (unsharp mask)
     const sorted = Float32Array.from(out).sort()
-    const lo = sorted[Math.floor(sorted.length * 0.005)]
-    const hi = sorted[Math.floor(sorted.length * 0.997)]
+    const lo = sorted[Math.floor(sorted.length * 0.01)]
+    const hi = sorted[Math.floor(sorted.length * 0.996)]
     const range = Math.max(1e-6, hi - lo)
     const norm = new Float32Array(W * H)
-    const gamma = useMip ? 1.0 : 0.92
+    const gamma = useMip ? 0.95 : 0.88
     for (let p = 0; p < out.length; p++) {
         let v = (out[p] - lo) / range
         v = v < 0 ? 0 : v > 1 ? 1 : v
         norm[p] = Math.pow(v, gamma)
     }
     const gray = new Uint8ClampedArray(W * H)
-    const amount = 0.6
+    const amount = 0.65
     for (let y = 0; y < H; y++) {
         for (let x = 0; x < W; x++) {
             let s = 0
@@ -562,12 +594,13 @@ export async function computePanorama(
     }
 
     const colMm = L / W
-    const rowMm = (nz * sz) / H
+    const totalHeightMm = Math.max(1, nz * sz)
+    const physicalAspect = Math.max(1.45, Math.min(2.6, L / totalHeightMm))
     return {
         gray,
         width: W,
         height: H,
-        aspect: rowMm / colMm,
+        aspect: physicalAspect,
         colMm,
         arcLengthMm: L,
         columns,
