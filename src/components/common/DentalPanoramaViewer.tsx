@@ -40,14 +40,14 @@ export function DentalPanoramaViewer({
     }
 
     // Dibujar la radiografía panorámica en el lienzo
-    useEffect(() => {
+    const drawPanorama = (w: number, h: number) => {
         const canvas = canvasRef.current
         if (!canvas) return
         const ctx = canvas.getContext("2d")
         if (!ctx) return
 
-        const w = (canvas.width = canvas.parentElement?.clientWidth || 600)
-        const h = (canvas.height = canvas.parentElement?.clientHeight || 280)
+        canvas.width = w
+        canvas.height = h
 
         // Fondo oscuro radiológico
         ctx.fillStyle = "#02040a"
@@ -174,7 +174,29 @@ export function DentalPanoramaViewer({
         ctx.font = "9px monospace"
         ctx.fillStyle = "rgba(255, 255, 255, 0.8)"
         ctx.fillText("1 cm", w - 54, h - 22)
-    }, [])
+    }
+
+    useEffect(() => {
+        const container = containerRef.current
+        if (!container) return
+
+        const renderNow = () => {
+            const w = container.clientWidth || 600
+            const h = container.clientHeight || 280
+            if (w > 0 && h > 0) {
+                drawPanorama(w, h)
+            }
+        }
+
+        renderNow()
+
+        const resizeObserver = new ResizeObserver(() => {
+            renderNow()
+        })
+        resizeObserver.observe(container)
+
+        return () => resizeObserver.disconnect()
+    }, [isExpanded])
 
     // Manejo del arrastre de la "Ventana de cortes"
     const handlePointerDown = (e: React.PointerEvent) => {

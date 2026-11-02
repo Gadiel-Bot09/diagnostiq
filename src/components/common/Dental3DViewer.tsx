@@ -237,15 +237,23 @@ export function Dental3DViewer({
             if (!container || !renderer || !camera) return
             const w = container.clientWidth
             const h = container.clientHeight
-            camera.aspect = w / h
-            camera.updateProjectionMatrix()
-            renderer.setSize(w, h)
+            if (w > 0 && h > 0) {
+                camera.aspect = w / h
+                camera.updateProjectionMatrix()
+                renderer.setSize(w, h)
+            }
         }
         window.addEventListener("resize", handleResize)
+
+        const resizeObserver = new ResizeObserver(() => {
+            handleResize()
+        })
+        resizeObserver.observe(container)
 
         return () => {
             cancelAnimationFrame(animationFrameId)
             window.removeEventListener("resize", handleResize)
+            resizeObserver.disconnect()
             renderer.dispose()
             if (container) container.innerHTML = ""
         }
