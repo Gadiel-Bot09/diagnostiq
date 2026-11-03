@@ -32,6 +32,9 @@ import {
     Box,
     ArrowLeft,
     Compass,
+    SlidersHorizontal,
+    ChevronDown,
+    Check,
 } from "lucide-react"
 import JSZip from "jszip"
 import { Dental3DViewer, type VolumeFocus } from "./Dental3DViewer"
@@ -161,6 +164,7 @@ export function DicomViewerModalImpl({
     const [playbackFps, setPlaybackFps] = useState<number>(25)
     const [errorMsg, setErrorMsg] = useState<string | null>(null)
     const [isFullscreen, setIsFullscreen] = useState(false)
+    const [filtersMenuOpen, setFiltersMenuOpen] = useState(false)
 
     // Estado de reconstrucción volumétrica real (Panorama CPR + Volumen 3D WebGL2)
     const [renderVolume, setRenderVolume] = useState<RenderVolume | null>(null)
@@ -1080,352 +1084,398 @@ export function DicomViewerModalImpl({
         }
     }
 
+    const activePresetLabel =
+        activeWlPreset === "bone"
+            ? "Hueso"
+            : activeWlPreset === "enamel"
+            ? "Esmalte"
+            : activeWlPreset === "soft"
+            ? "Tejidos"
+            : "Original"
+
+    const activeColorLabel =
+        activeColorMap === "hot"
+            ? " · Térmico"
+            : activeColorMap === "invPlain"
+            ? " · Invertido"
+            : ""
+
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
-                className="max-w-7xl w-[98vw] h-[95vh] flex flex-col p-0 gap-0 overflow-hidden bg-slate-950 text-white rounded-2xl border-slate-800 shadow-2xl focus:outline-hidden"
+                className="sm:max-w-[98vw] max-w-[98vw] w-[98vw] h-[96vh] flex flex-col p-0 gap-0 overflow-hidden bg-slate-950 text-white rounded-2xl border-slate-800 shadow-2xl focus:outline-hidden"
                 showCloseButton={false}
             >
-                {/* 1. Header Superior con Selector de Vista Multivista / Individual */}
-                <div className="flex flex-wrap items-center justify-between px-3 sm:px-6 py-2 border-b border-slate-800 bg-slate-900/95 shrink-0 gap-2">
-                    <div className="flex items-center gap-2 min-w-0 pr-2">
-                        <DialogTitle className="text-sm font-semibold truncate text-white flex items-center gap-2">
-                            <Layers className="h-4 w-4 text-blue-400 shrink-0" />
+                {/* 1. Barra Superior Unificada de Estación de Trabajo PACS / CBCT 3D */}
+                <div className="relative z-30 flex flex-wrap items-center justify-between px-2.5 sm:px-4 py-1.5 border-b border-slate-800/90 bg-slate-900/95 shrink-0 gap-1.5">
+                    {/* Grupo A: Identificador del Estudio + Selector de Vistas */}
+                    <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                        <DialogTitle
+                            className="text-xs sm:text-[13px] font-semibold truncate text-white flex items-center gap-1.5 max-w-[170px] xl:max-w-[230px]"
+                            title={title}
+                        >
+                            <div className="h-6 w-6 rounded-md bg-blue-500/15 border border-blue-500/30 flex items-center justify-center shrink-0">
+                                <Layers className="h-3.5 w-3.5 text-blue-400" />
+                            </div>
                             <span className="truncate">{title}</span>
-                            <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-400/30">
-                                CBCT 3D DENTAL
-                            </span>
                         </DialogTitle>
+
+                        {/* Dock Segmentado de Vistas (Multivista 5 Paneles vs Individual) */}
+                        <div className="flex items-center gap-0.5 bg-slate-950/90 p-0.5 rounded-lg border border-slate-800 overflow-x-auto max-w-full">
+                            <Button
+                                size="sm"
+                                variant={viewMode === "multi" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] gap-1 rounded-md ${
+                                    viewMode === "multi"
+                                        ? "bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs"
+                                        : "text-slate-400 hover:text-white"
+                                }`}
+                                onClick={() => setViewMode("multi")}
+                                title="Ver las 5 secciones simultáneas: Panorama, 3D, Tangencial, Transversal y Axial"
+                            >
+                                <LayoutGrid className="h-3 w-3 shrink-0" />
+                                <span>5 Vistas</span>
+                            </Button>
+
+                            <div className="h-3.5 w-px bg-slate-800 mx-0.5 shrink-0" />
+
+                            <Button
+                                size="sm"
+                                variant={viewMode === "panorama" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] rounded-md ${
+                                    viewMode === "panorama" ? "bg-blue-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                                }`}
+                                onClick={() => setViewMode("panorama")}
+                                title="Vista detallada de Panorámica Dental"
+                            >
+                                Panorama
+                            </Button>
+
+                            <Button
+                                size="sm"
+                                variant={viewMode === "3d" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] rounded-md ${
+                                    viewMode === "3d" ? "bg-amber-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                                }`}
+                                onClick={() => setViewMode("3d")}
+                                title="Vista detallada de Volumen 3D Interactivo"
+                            >
+                                3D
+                            </Button>
+
+                            <Button
+                                size="sm"
+                                variant={viewMode === "tangential" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] rounded-md ${
+                                    viewMode === "tangential" ? "bg-emerald-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                                }`}
+                                onClick={() => setViewMode("tangential")}
+                                title="Vista detallada de Corte Tangencial"
+                            >
+                                Tangencial
+                            </Button>
+
+                            <Button
+                                size="sm"
+                                variant={viewMode === "cross" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] rounded-md ${
+                                    viewMode === "cross" ? "bg-purple-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                                }`}
+                                onClick={() => setViewMode("cross")}
+                                title="Vista detallada de Sección Transversal"
+                            >
+                                Transversal
+                            </Button>
+
+                            <Button
+                                size="sm"
+                                variant={viewMode === "axial" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] rounded-md ${
+                                    viewMode === "axial" ? "bg-cyan-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                                }`}
+                                onClick={() => setViewMode("axial")}
+                                title="Vista detallada de Corte Axial"
+                            >
+                                Axial
+                            </Button>
+                        </div>
                     </div>
 
-                    {/* SELECTOR DE MODOS DE VISTA (GALILEOS MULTIVIEW VS INDIVIDUAL) */}
-                    <div className="flex items-center gap-1 bg-slate-950/80 p-0.5 rounded-lg border border-slate-800">
-                        <Button
-                            size="sm"
-                            variant={viewMode === "multi" ? "default" : "ghost"}
-                            className={`h-7 px-2.5 text-xs gap-1.5 ${
-                                viewMode === "multi"
-                                    ? "bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs"
-                                    : "text-slate-400 hover:text-white"
-                            }`}
-                            onClick={() => setViewMode("multi")}
-                            title="Ver las 5 secciones simultáneas: Panorama, 3D, Tangencial, Transversal y Axial"
-                        >
-                            <LayoutGrid className="h-3.5 w-3.5" />
-                            <span className="hidden md:inline">Multivista (5 Vistas)</span>
-                        </Button>
+                    {/* Grupo B: Dock Clínico Agrupado (Herramientas + Zoom + Menú de Filtros y Color) */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                        {/* Cápsula de Herramientas de Interacción */}
+                        <div className="flex items-center gap-0.5 bg-slate-950/90 p-0.5 rounded-lg border border-slate-800">
+                            <Button
+                                size="sm"
+                                variant={activeTool === "Scroll" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] gap-1 rounded-md ${
+                                    activeTool === "Scroll"
+                                        ? "bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs"
+                                        : "text-slate-300 hover:text-white hover:bg-slate-800"
+                                }`}
+                                onClick={() => handleToolChange("Scroll")}
+                                disabled={loading || !!errorMsg}
+                                title="Desplazarse entre cortes con rueda o arrastre"
+                            >
+                                <Layers className="h-3 w-3" />
+                                <span>Cortes</span>
+                            </Button>
 
-                        <div className="h-3.5 w-px bg-slate-800 mx-0.5" />
+                            <Button
+                                size="sm"
+                                variant={activeTool === "ZoomAndPan" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] gap-1 rounded-md ${
+                                    activeTool === "ZoomAndPan"
+                                        ? "bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs"
+                                        : "text-slate-300 hover:text-white hover:bg-slate-800"
+                                }`}
+                                onClick={() => handleToolChange("ZoomAndPan")}
+                                disabled={loading || !!errorMsg}
+                                title="Arrastrar para mover o encuadrar la imagen"
+                            >
+                                <Move className="h-3 w-3" />
+                                <span>Mover</span>
+                            </Button>
 
-                        <Button
-                            size="sm"
-                            variant={viewMode === "panorama" ? "default" : "ghost"}
-                            className={`h-7 px-2 text-xs ${
-                                viewMode === "panorama" ? "bg-blue-600 text-white font-semibold" : "text-slate-400 hover:text-white"
-                            }`}
-                            onClick={() => setViewMode("panorama")}
-                            title="Vista detallada de Panorámica Dental"
-                        >
-                            Panorama
-                        </Button>
+                            <Button
+                                size="sm"
+                                variant={activeTool === "WindowLevel" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] gap-1 rounded-md ${
+                                    activeTool === "WindowLevel"
+                                        ? "bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs"
+                                        : "text-slate-300 hover:text-white hover:bg-slate-800"
+                                }`}
+                                onClick={() => handleToolChange("WindowLevel")}
+                                disabled={loading || !!errorMsg}
+                                title="Ajustar brillo y contraste arrastrando el ratón"
+                            >
+                                <Sun className="h-3 w-3" />
+                                <span>Contraste</span>
+                            </Button>
 
-                        <Button
-                            size="sm"
-                            variant={viewMode === "3d" ? "default" : "ghost"}
-                            className={`h-7 px-2 text-xs ${
-                                viewMode === "3d" ? "bg-amber-600 text-white font-semibold" : "text-slate-400 hover:text-white"
-                            }`}
-                            onClick={() => setViewMode("3d")}
-                            title="Vista detallada de Volumen 3D Interactivo"
-                        >
-                            3D
-                        </Button>
+                            <Button
+                                size="sm"
+                                variant={activeTool === "Draw" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] gap-1 rounded-md ${
+                                    activeTool === "Draw"
+                                        ? "bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs"
+                                        : "text-slate-300 hover:text-white hover:bg-slate-800"
+                                }`}
+                                onClick={() => handleToolChange("Draw")}
+                                disabled={loading || !!errorMsg}
+                                title="Medición milimétrica calibrada en el hueso"
+                            >
+                                <Ruler className="h-3 w-3" />
+                                <span>Medir (mm)</span>
+                            </Button>
 
-                        <Button
-                            size="sm"
-                            variant={viewMode === "tangential" ? "default" : "ghost"}
-                            className={`h-7 px-2 text-xs ${
-                                viewMode === "tangential" ? "bg-emerald-600 text-white font-semibold" : "text-slate-400 hover:text-white"
-                            }`}
-                            onClick={() => setViewMode("tangential")}
-                            title="Vista detallada de Corte Tangencial"
-                        >
-                            Tangencial
-                        </Button>
+                            {activeTool === "Draw" && (
+                                <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-6 px-1.5 text-[11px] text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 gap-1 rounded-md"
+                                    onClick={handleClearDrawings}
+                                    title="Borrar todas las medidas realizadas"
+                                >
+                                    <Trash2 className="h-3 w-3" />
+                                    <span className="hidden xl:inline">Borrar</span>
+                                </Button>
+                            )}
+                        </div>
 
-                        <Button
-                            size="sm"
-                            variant={viewMode === "cross" ? "default" : "ghost"}
-                            className={`h-7 px-2 text-xs ${
-                                viewMode === "cross" ? "bg-purple-600 text-white font-semibold" : "text-slate-400 hover:text-white"
-                            }`}
-                            onClick={() => setViewMode("cross")}
-                            title="Vista detallada de Sección Transversal"
-                        >
-                            Transversal
-                        </Button>
+                        {/* Cápsula de Zoom y Restauración */}
+                        <div className="flex items-center gap-0.5 bg-slate-950/90 p-0.5 rounded-lg border border-slate-800">
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
+                                onClick={handleZoomOut}
+                                disabled={loading || !!errorMsg}
+                                title="Alejar (-)"
+                            >
+                                <ZoomOut className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
+                                onClick={handleZoomIn}
+                                disabled={loading || !!errorMsg}
+                                title="Acercar (+)"
+                            >
+                                <ZoomIn className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
+                                onClick={handleResetView}
+                                disabled={loading || !!errorMsg}
+                                title="Restablecer zoom, posición y contraste original"
+                            >
+                                <RotateCcw className="h-3 w-3" />
+                            </Button>
+                        </div>
 
-                        <Button
-                            size="sm"
-                            variant={viewMode === "axial" ? "default" : "ghost"}
-                            className={`h-7 px-2 text-xs ${
-                                viewMode === "axial" ? "bg-cyan-600 text-white font-semibold" : "text-slate-400 hover:text-white"
-                            }`}
-                            onClick={() => setViewMode("axial")}
-                            title="Vista detallada de Corte Axial"
-                        >
-                            Axial
-                        </Button>
-                    </div>
-
-                    {/* Botones de Acción Superiores */}
-                    <div className="flex items-center gap-1.5 shrink-0">
-                        {viewMode !== "multi" && (
+                        {/* Menú Agrupado: Filtros Óseos y Mapa de Color */}
+                        <div className="relative">
                             <Button
                                 size="sm"
                                 variant="outline"
-                                className="h-7 px-2 text-xs gap-1 border-blue-500/40 bg-blue-950/40 text-blue-300 hover:bg-blue-900/60"
-                                onClick={() => setViewMode("multi")}
-                                title="Volver a la vista combinada de 5 secciones"
+                                className={`h-7 px-2.5 text-[11px] gap-1.5 rounded-lg border ${
+                                    activeWlPreset !== "default" || activeColorMap !== "plain"
+                                        ? "border-indigo-500/60 bg-indigo-950/60 text-indigo-200 hover:bg-indigo-900/70"
+                                        : "border-slate-800 bg-slate-950/90 text-slate-300 hover:bg-slate-800 hover:text-white"
+                                }`}
+                                onClick={() => setFiltersMenuOpen((prev) => !prev)}
+                                disabled={loading || !!errorMsg}
+                                title="Agrupación de Filtros de Densidad Ósea y Mapas de Color"
                             >
-                                <ArrowLeft className="h-3 w-3" />
-                                <span>Volver a 5 Vistas</span>
+                                <SlidersHorizontal className="h-3 w-3 text-indigo-400" />
+                                <span>Filtros:</span>
+                                <span className="font-semibold text-white">
+                                    {activePresetLabel}
+                                    {activeColorLabel}
+                                </span>
+                                <ChevronDown className={`h-3 w-3 text-slate-400 transition-transform ${filtersMenuOpen ? "rotate-180" : ""}`} />
                             </Button>
-                        )}
 
+                            {filtersMenuOpen && (
+                                <>
+                                    <div
+                                        className="fixed inset-0 z-40"
+                                        onClick={() => setFiltersMenuOpen(false)}
+                                    />
+                                    <div className="absolute right-0 mt-1.5 w-64 rounded-xl border border-slate-700/90 bg-slate-900/98 backdrop-blur-xl shadow-2xl p-2.5 z-50 text-xs space-y-2.5">
+                                        <div>
+                                            <div className="flex items-center justify-between px-1.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                <span>Densidad Ósea (Window/Level)</span>
+                                                {hudWl && (
+                                                    <span className="font-mono text-[9px] text-indigo-400">
+                                                        W:{hudWl.width} L:{hudWl.center}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-1">
+                                                {[
+                                                    { id: "default" as WlPreset, label: "Original DICOM", desc: "Calibración nativa" },
+                                                    { id: "bone" as WlPreset, label: "Dientes / Hueso", desc: "Raíces y cortical" },
+                                                    { id: "enamel" as WlPreset, label: "Esmalte / Metal", desc: "Endodoncia e implantes" },
+                                                    { id: "soft" as WlPreset, label: "Tejidos Blandos", desc: "Senos y vías aéreas" },
+                                                ].map((item) => (
+                                                    <button
+                                                        key={item.id}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            handleWlPresetChange(item.id)
+                                                            setFiltersMenuOpen(false)
+                                                        }}
+                                                        className={`flex flex-col items-start px-2 py-1.5 rounded-lg border text-left transition-all ${
+                                                            activeWlPreset === item.id
+                                                                ? "bg-indigo-600/25 border-indigo-500 text-white"
+                                                                : "bg-slate-950/70 border-slate-800 text-slate-300 hover:bg-slate-800"
+                                                        }`}
+                                                    >
+                                                        <div className="flex items-center justify-between w-full">
+                                                            <span className="font-semibold text-[11px]">{item.label}</span>
+                                                            {activeWlPreset === item.id && <Check className="h-3 w-3 text-indigo-400 shrink-0" />}
+                                                        </div>
+                                                        <span className="text-[9px] text-slate-400">{item.desc}</span>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="border-t border-slate-800 pt-2">
+                                            <div className="px-1.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                Mapa de Color Radiográfico
+                                            </div>
+                                            <div className="grid grid-cols-3 gap-1">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        handleColorMapChange("plain")
+                                                        setFiltersMenuOpen(false)
+                                                    }}
+                                                    className={`flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg border text-[11px] font-medium ${
+                                                        activeColorMap === "plain"
+                                                            ? "bg-blue-600/25 border-blue-500 text-white"
+                                                            : "bg-slate-950/70 border-slate-800 text-slate-300 hover:bg-slate-800"
+                                                    }`}
+                                                >
+                                                    <span>Grises</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        handleColorMapChange(activeColorMap === "hot" ? "plain" : "hot")
+                                                        setFiltersMenuOpen(false)
+                                                    }}
+                                                    className={`flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg border text-[11px] font-medium ${
+                                                        activeColorMap === "hot"
+                                                            ? "bg-amber-600/30 border-amber-500 text-amber-200"
+                                                            : "bg-slate-950/70 border-slate-800 text-slate-300 hover:bg-slate-800"
+                                                    }`}
+                                                >
+                                                    <Sparkles className="h-3 w-3 text-amber-400" />
+                                                    <span>Térmico</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        handleColorMapChange(activeColorMap === "invPlain" ? "plain" : "invPlain")
+                                                        setFiltersMenuOpen(false)
+                                                    }}
+                                                    className={`flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg border text-[11px] font-medium ${
+                                                        activeColorMap === "invPlain"
+                                                            ? "bg-slate-700 border-slate-400 text-white"
+                                                            : "bg-slate-950/70 border-slate-800 text-slate-300 hover:bg-slate-800"
+                                                    }`}
+                                                >
+                                                    <Palette className="h-3 w-3 text-cyan-400" />
+                                                    <span>Invertir</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Grupo C: Acciones del Sistema */}
+                    <div className="flex items-center gap-1 shrink-0">
                         {downloadUrl && (
                             <Button
                                 size="sm"
                                 variant="secondary"
-                                className="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
+                                className="h-7 px-2.5 text-[11px] gap-1 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg"
                                 onClick={() => window.open(downloadUrl, "_blank")}
                                 title="Descargar paquete DICOM completo para software de escritorio"
                             >
-                                <Download className="h-3.5 w-3.5" />
-                                <span className="hidden lg:inline">Descargar</span>
+                                <Download className="h-3 w-3" />
+                                <span className="hidden md:inline">Descargar</span>
                             </Button>
                         )}
 
                         <Button
                             size="sm"
                             variant="outline"
-                            className="h-7 w-7 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700"
+                            className="h-7 w-7 p-0 border-slate-800 bg-slate-950/90 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg"
                             onClick={toggleFullscreen}
                             title={isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
                         >
-                            <Maximize2 className="h-3.5 w-3.5" />
+                            {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
                         </Button>
 
                         <Button
                             size="sm"
                             variant="ghost"
-                            className="h-7 w-7 p-0 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg ml-0.5"
+                            className="h-7 w-7 p-0 text-slate-400 hover:text-white hover:bg-rose-950/60 hover:text-rose-300 rounded-lg"
                             onClick={() => onOpenChange(false)}
                             title="Cerrar visor"
                         >
                             <X className="h-4 w-4" />
-                        </Button>
-                    </div>
-                </div>
-
-                {/* 2. Barra de Herramientas Médicas y Odontológicas */}
-                <div className="flex flex-wrap items-center justify-between px-3 sm:px-6 py-1.5 border-b border-slate-800 bg-slate-900/80 gap-2 shrink-0 text-xs">
-                    {/* Herramientas de Interacción */}
-                    <div className="flex items-center gap-1 flex-wrap">
-                        <span className="text-[11px] font-semibold text-slate-400 mr-1 hidden sm:inline">Herramienta:</span>
-
-                        <Button
-                            size="sm"
-                            variant={activeTool === "Scroll" ? "default" : "outline"}
-                            className={`h-7 px-2.5 text-xs gap-1.5 ${
-                                activeTool === "Scroll"
-                                    ? "bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
-                                    : "border-slate-700 bg-slate-800/80 text-slate-200 hover:bg-slate-700"
-                            }`}
-                            onClick={() => handleToolChange("Scroll")}
-                            disabled={loading || !!errorMsg}
-                            title="Desplazarse entre cortes axiales con rueda o arrastre"
-                        >
-                            <Layers className="h-3.5 w-3.5" />
-                            <span>Cortes</span>
-                        </Button>
-
-                        <Button
-                            size="sm"
-                            variant={activeTool === "ZoomAndPan" ? "default" : "outline"}
-                            className={`h-7 px-2.5 text-xs gap-1.5 ${
-                                activeTool === "ZoomAndPan"
-                                    ? "bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
-                                    : "border-slate-700 bg-slate-800/80 text-slate-200 hover:bg-slate-700"
-                            }`}
-                            onClick={() => handleToolChange("ZoomAndPan")}
-                            disabled={loading || !!errorMsg}
-                            title="Arrastrar para mover o encuadrar la imagen"
-                        >
-                            <Move className="h-3.5 w-3.5" />
-                            <span>Mover</span>
-                        </Button>
-
-                        <Button
-                            size="sm"
-                            variant={activeTool === "WindowLevel" ? "default" : "outline"}
-                            className={`h-7 px-2.5 text-xs gap-1.5 ${
-                                activeTool === "WindowLevel"
-                                    ? "bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
-                                    : "border-slate-700 bg-slate-800/80 text-slate-200 hover:bg-slate-700"
-                            }`}
-                            onClick={() => handleToolChange("WindowLevel")}
-                            disabled={loading || !!errorMsg}
-                            title="Ajustar brillo y contraste arrastrando el ratón"
-                        >
-                            <Sun className="h-3.5 w-3.5" />
-                            <span>Contraste</span>
-                        </Button>
-
-                        <Button
-                            size="sm"
-                            variant={activeTool === "Draw" ? "default" : "outline"}
-                            className={`h-7 px-2.5 text-xs gap-1.5 ${
-                                activeTool === "Draw"
-                                    ? "bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
-                                    : "border-slate-700 bg-slate-800/80 text-slate-200 hover:bg-slate-700"
-                            }`}
-                            onClick={() => handleToolChange("Draw")}
-                            disabled={loading || !!errorMsg}
-                            title="Medición milimétrica calibrada en el hueso"
-                        >
-                            <Ruler className="h-3.5 w-3.5" />
-                            <span>Medir (mm)</span>
-                        </Button>
-
-                        {activeTool === "Draw" && (
-                            <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 px-2 text-[11px] text-rose-400 hover:text-rose-300 hover:bg-rose-950/40 gap-1 border border-rose-500/20"
-                                onClick={handleClearDrawings}
-                                title="Borrar todas las medidas realizadas"
-                            >
-                                <Trash2 className="h-3 w-3" />
-                                <span>Borrar Medidas</span>
-                            </Button>
-                        )}
-
-                        <div className="h-4 w-px bg-slate-700 mx-1 hidden sm:block" />
-
-                        <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 w-7 p-0 border-slate-700 bg-slate-800/80 text-slate-200 hover:bg-slate-700"
-                            onClick={handleZoomIn}
-                            disabled={loading || !!errorMsg}
-                            title="Acercar (+)"
-                        >
-                            <ZoomIn className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 w-7 p-0 border-slate-700 bg-slate-800/80 text-slate-200 hover:bg-slate-700"
-                            onClick={handleZoomOut}
-                            disabled={loading || !!errorMsg}
-                            title="Alejar (-)"
-                        >
-                            <ZoomOut className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 w-7 p-0 border-slate-700 bg-slate-800/80 text-slate-200 hover:bg-slate-700"
-                            onClick={handleResetView}
-                            disabled={loading || !!errorMsg}
-                            title="Restablecer vista original"
-                        >
-                            <RotateCcw className="h-3.5 w-3.5" />
-                        </Button>
-                    </div>
-
-                    {/* Presets Dentales y Color */}
-                    <div className="flex items-center gap-1 flex-wrap">
-                        <span className="text-[11px] font-semibold text-slate-400 mr-1 hidden lg:inline">Filtro Óseo:</span>
-
-                        <Button
-                            size="sm"
-                            variant={activeWlPreset === "bone" ? "default" : "outline"}
-                            className={`h-7 px-2 text-[11px] ${
-                                activeWlPreset === "bone"
-                                    ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                    : "border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700"
-                            }`}
-                            onClick={() => handleWlPresetChange("bone")}
-                            disabled={loading || !!errorMsg}
-                            title="Contraste para Hueso y Raíces Dentales"
-                        >
-                            Dientes/Hueso
-                        </Button>
-
-                        <Button
-                            size="sm"
-                            variant={activeWlPreset === "enamel" ? "default" : "outline"}
-                            className={`h-7 px-2 text-[11px] ${
-                                activeWlPreset === "enamel"
-                                    ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                    : "border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700"
-                            }`}
-                            onClick={() => handleWlPresetChange("enamel")}
-                            disabled={loading || !!errorMsg}
-                            title="Esmalte, Conductos e Implantes de alta densidad"
-                        >
-                            Esmalte/Metal
-                        </Button>
-
-                        <Button
-                            size="sm"
-                            variant={activeWlPreset === "soft" ? "default" : "outline"}
-                            className={`h-7 px-2 text-[11px] ${
-                                activeWlPreset === "soft"
-                                    ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                    : "border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700"
-                            }`}
-                            onClick={() => handleWlPresetChange("soft")}
-                            disabled={loading || !!errorMsg}
-                            title="Tejidos blandos y senos maxilares"
-                        >
-                            Tejidos
-                        </Button>
-
-                        <div className="h-4 w-px bg-slate-700 mx-1 hidden sm:block" />
-
-                        <Button
-                            size="sm"
-                            variant={activeColorMap === "hot" ? "default" : "outline"}
-                            className={`h-7 px-2 text-[11px] gap-1 ${
-                                activeColorMap === "hot"
-                                    ? "bg-amber-600 hover:bg-amber-700 text-white"
-                                    : "border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700"
-                            }`}
-                            onClick={() => handleColorMapChange(activeColorMap === "hot" ? "plain" : "hot")}
-                            disabled={loading || !!errorMsg}
-                            title="Mapa térmico de densidad ósea (Pseudo-3D)"
-                        >
-                            <Sparkles className="h-3 w-3" />
-                            <span>Térmico</span>
-                        </Button>
-
-                        <Button
-                            size="sm"
-                            variant={activeColorMap === "invPlain" ? "default" : "outline"}
-                            className={`h-7 px-2 text-[11px] gap-1 ${
-                                activeColorMap === "invPlain"
-                                    ? "bg-slate-600 hover:bg-slate-700 text-white"
-                                    : "border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700"
-                            }`}
-                            onClick={() => handleColorMapChange(activeColorMap === "invPlain" ? "plain" : "invPlain")}
-                            disabled={loading || !!errorMsg}
-                            title="Invertir colores (Fondo blanco tipo radiografía)"
-                        >
-                            <Palette className="h-3 w-3" />
-                            <span>Invertir</span>
                         </Button>
                     </div>
                 </div>
@@ -1763,7 +1813,7 @@ export function DicomViewerModalImpl({
                     </div>
                 </div>
 
-                {/* 4. Barra Inferior con Reproductor de Cine y Slider de Navegación */}
+                {/* 4. Barra Inferior Compacta con Reproductor de Cine, Scrubber de Precisión y Saltos Anatómicos */}
                 {totalSlices > 1 && (() => {
                     const activeDivId =
                         viewMode === "tangential"
@@ -1771,6 +1821,20 @@ export function DicomViewerModalImpl({
                             : viewMode === "cross"
                             ? "dwv-view-cross"
                             : focusedViewId || "dwv-view-axial"
+
+                    const activePlaneName =
+                        activeDivId === "dwv-view-tangential"
+                            ? "TANGENCIAL"
+                            : activeDivId === "dwv-view-cross"
+                            ? "TRANSVERSAL"
+                            : "AXIAL"
+
+                    const activePlaneBadgeClass =
+                        activeDivId === "dwv-view-tangential"
+                            ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                            : activeDivId === "dwv-view-cross"
+                            ? "bg-purple-500/20 text-purple-300 border-purple-500/30"
+                            : "bg-cyan-500/20 text-cyan-300 border-cyan-500/30"
 
                     const currentActiveSlice =
                         activeDivId === "dwv-view-tangential"
@@ -1787,117 +1851,130 @@ export function DicomViewerModalImpl({
                             : totalSlices || 698
 
                     return (
-                        <div className="px-4 sm:px-6 py-2.5 bg-slate-900 border-t border-slate-800 flex flex-col sm:flex-row items-center gap-3 shrink-0">
-                            {/* Controles de Reproducción y Saltos */}
-                            <div className="flex items-center gap-1 shrink-0">
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                    onClick={() => goToSliceInDiv(currentActiveSlice - 10, activeDivId)}
-                                    disabled={loading || currentActiveSlice <= 0}
-                                    title="Retroceder 10 cortes"
+                        <div className="px-2.5 sm:px-4 py-1.5 bg-slate-900/95 border-t border-slate-800/90 flex flex-wrap items-center justify-between gap-2 shrink-0">
+                            {/* Grupo Izquierdo: Plano Activo + Controles de Cine Loop */}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                                <span
+                                    className={`hidden md:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider border ${activePlaneBadgeClass}`}
+                                    title="Plano tomográfico controlado por la barra inferior"
                                 >
-                                    <ChevronsLeft className="h-4 w-4" />
-                                </Button>
+                                    {activePlaneName}
+                                </span>
 
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                    onClick={() => goToSliceInDiv(currentActiveSlice - 1, activeDivId)}
-                                    disabled={loading || currentActiveSlice <= 0}
-                                    title="Corte anterior"
-                                >
-                                    <ChevronLeft className="h-4 w-4" />
-                                </Button>
+                                <div className="flex items-center gap-0.5 bg-slate-950/90 p-0.5 rounded-lg border border-slate-800">
+                                    <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
+                                        onClick={() => goToSliceInDiv(currentActiveSlice - 10, activeDivId)}
+                                        disabled={loading || currentActiveSlice <= 0}
+                                        title="Retroceder 10 cortes (RePág)"
+                                    >
+                                        <ChevronsLeft className="h-3.5 w-3.5" />
+                                    </Button>
 
-                                <Button
-                                    size="sm"
-                                    variant={isPlaying ? "destructive" : "default"}
-                                    className={`h-8 px-3 text-xs gap-1.5 font-semibold ${
-                                        isPlaying
-                                            ? "bg-rose-600 hover:bg-rose-700 text-white animate-pulse"
-                                            : "bg-blue-600 hover:bg-blue-700 text-white shadow-md"
-                                    }`}
-                                    onClick={() => setIsPlaying(!isPlaying)}
-                                    disabled={loading}
-                                    title={isPlaying ? "Pausar animación" : "Reproducir cortes continuamente (Cine Loop)"}
-                                >
-                                    {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 fill-current" />}
-                                    <span>{isPlaying ? "Pausa" : "Reproducir"}</span>
-                                </Button>
+                                    <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
+                                        onClick={() => goToSliceInDiv(currentActiveSlice - 1, activeDivId)}
+                                        disabled={loading || currentActiveSlice <= 0}
+                                        title="Corte anterior (Flecha izquierda/arriba)"
+                                    >
+                                        <ChevronLeft className="h-3.5 w-3.5" />
+                                    </Button>
 
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                    onClick={() => goToSliceInDiv(currentActiveSlice + 1, activeDivId)}
-                                    disabled={loading || currentActiveSlice >= currentActiveTotal - 1}
-                                    title="Corte siguiente"
-                                >
-                                    <ChevronRight className="h-4 w-4" />
-                                </Button>
+                                    <Button
+                                        size="sm"
+                                        variant={isPlaying ? "destructive" : "default"}
+                                        className={`h-6 px-2.5 text-[11px] gap-1 font-semibold rounded-md ${
+                                            isPlaying
+                                                ? "bg-rose-600 hover:bg-rose-700 text-white animate-pulse"
+                                                : "bg-blue-600 hover:bg-blue-700 text-white shadow-xs"
+                                        }`}
+                                        onClick={() => setIsPlaying(!isPlaying)}
+                                        disabled={loading}
+                                        title={isPlaying ? "Pausar animación (Espacio)" : "Reproducir cortes continuamente (Espacio)"}
+                                    >
+                                        {isPlaying ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3 fill-current" />}
+                                        <span>{isPlaying ? "Pausa" : "Reproducir"}</span>
+                                    </Button>
 
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-8 w-8 p-0 border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
-                                    onClick={() => goToSliceInDiv(currentActiveSlice + 10, activeDivId)}
-                                    disabled={loading || currentActiveSlice >= currentActiveTotal - 1}
-                                    title="Avanzar 10 cortes"
-                                >
-                                    <ChevronsRight className="h-4 w-4" />
-                                </Button>
+                                    <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
+                                        onClick={() => goToSliceInDiv(currentActiveSlice + 1, activeDivId)}
+                                        disabled={loading || currentActiveSlice >= currentActiveTotal - 1}
+                                        title="Corte siguiente (Flecha derecha/abajo)"
+                                    >
+                                        <ChevronRight className="h-3.5 w-3.5" />
+                                    </Button>
+
+                                    <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
+                                        onClick={() => goToSliceInDiv(currentActiveSlice + 10, activeDivId)}
+                                        disabled={loading || currentActiveSlice >= currentActiveTotal - 1}
+                                        title="Avanzar 10 cortes (AvPág)"
+                                    >
+                                        <ChevronsRight className="h-3.5 w-3.5" />
+                                    </Button>
+                                </div>
                             </div>
 
-                            {/* Slider Scrubber */}
-                            <div className="flex-1 w-full flex items-center gap-3">
-                                <span className="text-xs text-slate-400 font-mono shrink-0">1</span>
+                            {/* Grupo Central: Barra Deslizante de Precisión */}
+                            <div className="flex-1 min-w-[160px] flex items-center gap-2.5 px-1">
+                                <span className="text-[11px] text-slate-500 font-mono shrink-0">1</span>
                                 <Slider
                                     value={[currentActiveSlice]}
                                     min={0}
                                     max={Math.max(0, currentActiveTotal - 1)}
                                     step={1}
                                     onValueChange={(val) => goToSliceInDiv(val[0], activeDivId)}
-                                    className="flex-1 py-1"
+                                    className="flex-1 py-1 cursor-pointer"
                                 />
-                                <span className="text-xs font-semibold text-blue-400 font-mono shrink-0 min-w-16 text-right">
+                                <span className="px-2 py-0.5 rounded-md bg-slate-950/90 border border-slate-800 text-[11px] font-semibold text-blue-400 font-mono shrink-0 text-center">
                                     {currentActiveSlice + 1} / {currentActiveTotal}
                                 </span>
                             </div>
 
-                            {/* Saltos Anatómicos Dentales */}
-                            <div className="flex items-center gap-1 shrink-0">
+                            {/* Grupo Derecho: Saltos Anatómicos Dentales Agrupados */}
+                            <div className="flex items-center gap-0.5 bg-slate-950/90 p-0.5 rounded-lg border border-slate-800 shrink-0">
                                 <Button
                                     size="sm"
-                                    variant="outline"
-                                    className="h-7 px-2 text-[11px] border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700"
+                                    variant="ghost"
+                                    className="h-6 px-2 text-[11px] text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
                                     onClick={() => goToSliceInDiv(Math.floor(currentActiveTotal * 0.38), activeDivId)}
                                     disabled={loading}
-                                    title="Ir a nivel superior"
+                                    title="Saltar a la zona anatómica superior (Maxilar Superior / Senos)"
                                 >
                                     Maxilar Sup.
                                 </Button>
 
+                                <div className="h-3.5 w-px bg-slate-800" />
+
                                 <Button
                                     size="sm"
-                                    variant="outline"
-                                    className="h-7 px-2 text-[11px] border-blue-600/40 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50"
+                                    variant="ghost"
+                                    className="h-6 px-2 text-[11px] bg-blue-950/50 text-blue-300 hover:bg-blue-900/60 hover:text-white font-medium rounded-md"
                                     onClick={() => goToSliceInDiv(Math.floor(currentActiveTotal * 0.50), activeDivId)}
                                     disabled={loading}
-                                    title="Ir al plano dental central (Dientes)"
+                                    title="Saltar al plano oclusal / dental central (Dientes)"
                                 >
                                     Dientes
                                 </Button>
 
+                                <div className="h-3.5 w-px bg-slate-800" />
+
                                 <Button
                                     size="sm"
-                                    variant="outline"
-                                    className="h-7 px-2 text-[11px] border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700"
+                                    variant="ghost"
+                                    className="h-6 px-2 text-[11px] text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
                                     onClick={() => goToSliceInDiv(Math.floor(currentActiveTotal * 0.62), activeDivId)}
                                     disabled={loading}
-                                    title="Ir a nivel inferior"
+                                    title="Saltar a la zona anatómica inferior (Mandíbula)"
                                 >
                                     Mandíbula
                                 </Button>
