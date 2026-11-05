@@ -266,10 +266,8 @@ export function DicomViewerModalImpl({
                 )
 
                 if (isCancelled) return
-                setLoadProgress(84)
-                setLoadStep("Ensamblando matriz volumétrica 3D calibrada...")
-
-                if (hiddenLoaderRef.current) hiddenLoaderRef.current.innerHTML = ""
+                setLoadProgress(80)
+                setLoadStep(`Decodificando ${dcmFiles.length} cortes DICOM...`)
 
                 const dwv = await import("dwv")
                 if (isCancelled) return
@@ -277,11 +275,22 @@ export function DicomViewerModalImpl({
                 const app = new dwv.App()
                 dwvAppRef.current = app
 
+                // Inicializar DWV en modo headless puro (sin renderizar capas DOM intermedias)
                 app.init({
-                    dataViewConfigs: {
-                        "*": [{ divId: "dwv-hidden-loader", orientation: "axial" }],
-                    },
+                    dataViewConfigs: {},
+                    viewOnFirstLoadItem: false,
                 } as any)
+
+                let loadedSlicesCount = 0
+                app.addEventListener("loaditem", () => {
+                    if (isCancelled) return
+                    loadedSlicesCount++
+                    if (loadedSlicesCount % 20 === 0 || loadedSlicesCount === dcmFiles.length) {
+                        const pct = 80 + Math.round((loadedSlicesCount / Math.max(1, dcmFiles.length)) * 12)
+                        setLoadProgress(Math.min(92, pct))
+                        setLoadStep(`Ensamblando matriz 3D (${loadedSlicesCount} / ${dcmFiles.length} cortes)...`)
+                    }
+                })
 
                 let hasLoaded = false
                 const onLoadEnd = async () => {
@@ -355,6 +364,7 @@ export function DicomViewerModalImpl({
                     }
                 }
 
+                app.addEventListener("load", onLoadEnd)
                 app.addEventListener("loadend", onLoadEnd)
                 app.addEventListener("error", (ev: any) => {
                     console.error("DWV load error:", ev)
@@ -825,8 +835,12 @@ export function DicomViewerModalImpl({
                 className="sm:max-w-[98vw] max-w-[98vw] w-[98vw] h-[96vh] flex flex-col p-0 gap-0 overflow-hidden bg-slate-950 text-white rounded-2xl border-slate-800 shadow-2xl focus:outline-hidden"
                 showCloseButton={false}
             >
-                {/* Contenedor oculto utilizado únicamente para que DWV decodifique los archivos DICOM */}
-                <div id="dwv-hidden-loader" ref={hiddenLoaderRef} className="hidden" />
+                {/* Contenedor auxiliar fuera de pantalla para decodificación DICOM */}
+                <div
+                    id="dwv-hidden-loader"
+                    ref={hiddenLoaderRef}
+                    className="fixed -left-[9999px] -top-[9999px] w-64 h-64 opacity-0 pointer-events-none"
+                />
 
                 {/* 1. Barra Superior Unificada de Estación de Trabajo PACS / Sirona GALILEOS */}
                 <div className="relative z-30 flex flex-wrap items-center justify-between px-2.5 sm:px-4 py-1.5 border-b border-slate-800/90 bg-slate-900/95 shrink-0 gap-1.5">
