@@ -115,9 +115,20 @@ export function extractCbctVolume(app: any): CbctVolume | null {
         const ny = size.get(1)
         const nz = size.get(2) || 1
         const sp = geom.getSpacing()
-        const sx = sp.get(0) || 1
-        const sy = sp.get(1) || sx
-        const sz = sp.get(2) || sx
+        let sx = sp.get(0) || 1
+        let sy = sp.get(1) || sx
+        let sz = sp.get(2) || sx
+        if (!(sx > 0 && Number.isFinite(sx))) sx = 0.25
+        if (!(sy > 0 && Number.isFinite(sy))) sy = sx
+        if (!(sz > 0 && Number.isFinite(sz))) sz = sx
+        // En CBCT dental el vóxel es isotrópico (sx === sy === sz, típicamente 0.12 - 0.40 mm).
+        // Algunos equipos exportan ImagePositionPatient con índice secuencial Z = 0, 1, 2... o sin SpacingBetweenSlices,
+        // lo que provoca que DWV asigne sz = 1.0 mm (estirando verticalmente 4x-6x las vistas Tangencial, Transversal y Panorama).
+        if (nz >= 20 && Math.abs(sx - sy) <= sx * 0.15) {
+            if (sz > sx * 1.45 || sz < sx * 0.55) {
+                sz = sx
+            }
+        }
         const raw = image.getBuffer()
         if (!raw || nz < 1 || raw.length < nx * ny * nz) return null
 
@@ -141,7 +152,7 @@ export function extractCbctVolume(app: any): CbctVolume | null {
             }
         } catch {}
 
-        const [pAir, pLow, pHigh] = sampleQuantiles(raw, [0.01, 0.05, 0.9995])
+        const [pAir, pLow, pHigh] = sampleQuantiles(raw, [0.01, 0.32, 0.9995])
         return { raw, nx, ny, nz, sx, sy, sz, zUp, pAir, pLow, pHigh: Math.max(pHigh, pLow + 1), slope, intercept }
     } catch (err) {
         console.warn("No se pudo extraer el volumen CBCT:", err)
@@ -433,7 +444,8 @@ export function detectDentalArch(rv: RenderVolume, vol: CbctVolume): DentalArch 
         const rxMax = Math.min(dx - 2, pxHi + ext)
 
         const coeffs = best.coeffs
-        const zMidNorm = Math.max(0.15, Math.min(0.85, (zPeak + 0.5) / Math.max(1, dz)))
+        const rawNorm = (zPeak + 0.5) / Math.max(1, dz)
+        const zMidNorm = Math.max(0.12, Math.min(0.88, vol.zUp ? rawNorm : 1 - rawNorm))
         return {
             evalY: (X: number) => {
                 const xr_ = (X + 0.5) / sX - 0.5

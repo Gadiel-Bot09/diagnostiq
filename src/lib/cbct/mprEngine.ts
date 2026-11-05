@@ -124,21 +124,53 @@ export function createClinicalVolume(
     rescale: { slope: number; intercept: number } = { slope: 1, intercept: 0 },
     dicomWindow: WindowLevel | null = null
 ): ClinicalVolume {
-    const { raw, nx, ny, nz, sx, sy, sz } = base
-    const total = nx * ny * nz
-    const count = Math.min(total, 400000)
-    const samples = new Float32Array(count)
-    let seed = 987654321
-    for (let i = 0; i < count; i++) {
-        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
-        samples[i] = raw[seed % total]
+    const { raw, nx, ny, nz } = base
+    let sx = base.sx > 0 && Number.isFinite(base.sx) ? base.sx : 0.25
+    let sy = base.sy > 0 && Number.isFinite(base.sy) ? base.sy : sx
+    let sz = base.sz > 0 && Number.isFinite(base.sz) ? base.sz : sx
+
+    // Garantizar isotropía real en CBCT dental cuando el metadato Z venga sin calibrar (ej. sz = 1.0 frente a sx = 0.20)
+    if (nz >= 20 && Math.abs(sx - sy) <= sx * 0.15) {
+        if (sz > sx * 1.45 || sz < sx * 0.55) {
+            sz = sx
+        }
     }
+
+    // Muestrear únicamente dentro del cilindro FOV inscrito (excluyendo el relleno/padding de las 4 esquinas)
+    const nxy = nx * ny
+    const cx = (nx - 1) * 0.5
+    const cy = (ny - 1) * 0.5
+    const rMax2 = Math.pow(Math.min(nx, ny) * 0.44, 2)
+    const targetCount = Math.min(nx * ny * nz, 360000)
+    const tmp = new Float32Array(targetCount)
+    let validCount = 0
+    let seed = 987654321
+    const maxAttempts = targetCount * 2
+    for (let i = 0; i < maxAttempts && validCount < targetCount; i++) {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+        const z = seed % nz
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+        const y = seed % ny
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+        const x = seed % nx
+        const dx = x - cx
+        const dy = y - cy
+        if (dx * dx + dy * dy > rMax2) continue
+        const v = raw[z * nxy + y * nx + x]
+        if (v === v) {
+            tmp[validCount++] = v
+        }
+    }
+    const samples = validCount > 100 ? tmp.subarray(0, validCount) : tmp
     samples.sort()
     const slope = Number.isFinite(rescale.slope) && rescale.slope !== 0 ? rescale.slope : 1
     const intercept = Number.isFinite(rescale.intercept) ? rescale.intercept : 0
 
     return {
         ...base,
+        sx,
+        sy,
+        sz,
         isx: 1 / sx,
         isy: 1 / sy,
         isz: 1 / sz,
@@ -287,7 +319,7 @@ export function renderPlane(vol: ClinicalVolume, spec: PlaneSpec): ViewImage {
 }
 
 /** Corte axial (horizontal) a la altura h. Anterior arriba, derecha del paciente a la izquierda (DICOM estándar). */
-export function axialPlane(vol: ClinicalVolume, h: number): PlaneSpec {
+export function axialPlane(vol: ClinicalVolume, h: number, slabMm = 0.8): PlaneSpec {
     const sp = Math.max(0.08, Math.min(vol.sx, vol.sy))
     return {
         origin: [0, 0, zFromH(vol, h)],
@@ -296,6 +328,8 @@ export function axialPlane(vol: ClinicalVolume, h: number): PlaneSpec {
         cols: Math.floor(vol.widthMm / sp) + 1,
         rows: Math.floor(vol.depthMm / sp) + 1,
         spacing: sp,
+        slabMm,
+        slabMode: "mean",
     }
 }
 
@@ -303,13 +337,23 @@ function upVector(vol: ClinicalVolume): Vec3 {
     return [0, 0, vol.zUp ? 1 : -1]
 }
 
-/** Sección transversal (buco-lingual): oral a la izquierda, vestibular (labial/bucal) a la derecha */
-export function crossPlane(vol: ClinicalVolume, arch: ArchModel, s: number, halfWidthMm: number, slabMm = 0): PlaneSpec {
+/** Sección transversal (buco-lingual): oral a la izquierda, vestibular (labial/bucal) a la derecha, enmarcada en [winHBottom, winHTop] */
+export function crossPlane(
+    vol: ClinicalVolume,
+    arch: ArchModel,
+    s: number,
+    halfWidthMm: number,
+    slabMm = 1.5,
+    winHBottom = 0,
+    winHTop = vol.heightMm
+): PlaneSpec {
     const f = archFrame(arch, s)
     const sp = vol.iso
+    const hBot = Math.max(0, Math.min(vol.heightMm, winHBottom))
+    const hTop = Math.max(hBot + sp * 4, Math.min(vol.heightMm, winHTop))
     const cols = Math.floor((2 * halfWidthMm) / sp) + 1
-    const rows = Math.floor(vol.heightMm / sp) + 1
-    const zTop = zFromH(vol, vol.heightMm)
+    const rows = Math.floor((hTop - hBot) / sp) + 1
+    const zTop = zFromH(vol, hTop)
     return {
         origin: [f.x - f.nx * halfWidthMm, f.y - f.ny * halfWidthMm, zTop],
         u: [f.nx, f.ny, 0],
@@ -322,22 +366,26 @@ export function crossPlane(vol: ClinicalVolume, arch: ArchModel, s: number, half
     }
 }
 
-/** Corte tangencial: plano vertical tangente al arco en tanC, desplazado d mm hacia vestibular */
+/** Corte tangencial plano: tangente al arco en tanC, desplazado d mm hacia vestibular, enmarcado en [winHBottom, winHTop] */
 export function tangentialPlane(
     vol: ClinicalVolume,
     arch: ArchModel,
     tanC: number,
     d: number,
     halfWidthMm: number,
-    slabMm = 0
+    slabMm = 2.0,
+    winHBottom = 0,
+    winHTop = vol.heightMm
 ): PlaneSpec {
     const f = archFrame(arch, tanC)
     const sp = vol.iso
+    const hBot = Math.max(0, Math.min(vol.heightMm, winHBottom))
+    const hTop = Math.max(hBot + sp * 4, Math.min(vol.heightMm, winHTop))
     const cols = Math.floor((2 * halfWidthMm) / sp) + 1
-    const rows = Math.floor(vol.heightMm / sp) + 1
+    const rows = Math.floor((hTop - hBot) / sp) + 1
     const cx = f.x + f.nx * d
     const cy = f.y + f.ny * d
-    const zTop = zFromH(vol, vol.heightMm)
+    const zTop = zFromH(vol, hTop)
     const up = upVector(vol)
     return {
         origin: [cx - f.tx * halfWidthMm, cy - f.ty * halfWidthMm, zTop],
@@ -349,6 +397,69 @@ export function tangentialPlane(
         slabMm,
         slabMode: "mean",
     }
+}
+
+/**
+ * Corte tangencial anatómico curvo (estilo Sirona GALILEOS "Ventana de cortes"):
+ * Recorre s en [tanC - halfWidthMm, tanC + halfWidthMm] siguiendo la curvatura local del arco dental
+ * a un desplazamiento normal d (mm) con integración de grosor (slabMm), garantizando que las 3-4 piezas
+ * dentales adyacentes se mantengan simultáneamente en foco dentro de la ventana vertical [winHBottom, winHTop].
+ */
+export function renderTangentialSection(
+    vol: ClinicalVolume,
+    arch: ArchModel,
+    tanC: number,
+    d: number,
+    halfWidthMm: number,
+    slabMm = 2.0,
+    winHBottom = 0,
+    winHTop = vol.heightMm
+): ViewImage {
+    const sp = vol.iso
+    const hBot = Math.max(0, Math.min(vol.heightMm, winHBottom))
+    const hTop = Math.max(hBot + sp * 4, Math.min(vol.heightMm, winHTop))
+    const cols = Math.max(2, Math.floor((2 * halfWidthMm) / sp) + 1)
+    const rows = Math.max(2, Math.floor((hTop - hBot) / sp) + 1)
+    const slab = Math.max(0, slabMm)
+    const m = slab < sp * 0.75 ? 1 : Math.max(2, Math.min(24, Math.round(slab / (sp * 0.75))))
+
+    const pxArr = new Float32Array(cols * m)
+    const pyArr = new Float32Array(cols * m)
+    for (let c = 0; c < cols; c++) {
+        const s = tanC - halfWidthMm + c * sp
+        const f = archFrame(arch, s)
+        for (let k = 0; k < m; k++) {
+            const off = m === 1 ? d : d - slab * 0.5 + (slab * (k + 0.5)) / m
+            const idx = c * m + k
+            pxArr[idx] = f.x + f.nx * off
+            pyArr[idx] = f.y + f.ny * off
+        }
+    }
+
+    const out = new Float32Array(cols * rows)
+    for (let r = 0; r < rows; r++) {
+        const z = zFromH(vol, hTop - r * sp)
+        const rowOff = r * cols
+        for (let c = 0; c < cols; c++) {
+            const baseIdx = c * m
+            if (m === 1) {
+                out[rowOff + c] = sampleRaw(vol, pxArr[baseIdx], pyArr[baseIdx], z)
+            } else {
+                let acc = 0
+                let cnt = 0
+                for (let k = 0; k < m; k++) {
+                    const val = sampleRaw(vol, pxArr[baseIdx + k], pyArr[baseIdx + k], z)
+                    if (val === val) {
+                        acc += val
+                        cnt++
+                    }
+                }
+                out[rowOff + c] = cnt ? acc / cnt : NaN
+            }
+        }
+    }
+
+    return { data: out, cols, rows, spacing: sp }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -484,21 +595,105 @@ export function projectToArch(arch: ArchModel, x: number, y: number): { s: numbe
     return { s: bestS, d: (x - f.x) * f.nx + (y - f.y) * f.ny }
 }
 
-/** Puntos de control iniciales a partir de la detección automática (coordenadas de píxel del volumen) */
+/**
+ * Puntos de control iniciales a partir de la detección automática, con refinamiento normal
+ * en 2 pasadas sobre la cresta de máxima densidad dento-alveolar (dentina/esmalte) para garantizar
+ * que d = 0 mm pase exactamente por el centro de las raíces y coronas en todo el arco.
+ */
 export function archControlPointsFromDetection(
-    det: { evalY: (x: number) => number; xMin: number; xMax: number },
+    det: { evalY: (x: number) => number; xMin: number; xMax: number; zMidNorm?: number },
     vol: ClinicalVolume,
-    count = 9
+    count = 11
 ): ArchPoint[] {
-    const pts: ArchPoint[] = []
+    let pts: ArchPoint[] = []
     for (let i = 0; i < count; i++) {
         const X = det.xMin + ((det.xMax - det.xMin) * i) / (count - 1)
         const Y = det.evalY(X)
         pts.push({
-            x: Math.max(0, Math.min(vol.widthMm, X * vol.sx)),
-            y: Math.max(0, Math.min(vol.depthMm, Y * vol.sy)),
+            x: Math.max(2, Math.min(vol.widthMm - 2, X * vol.sx)),
+            y: Math.max(2, Math.min(vol.depthMm - 2, Y * vol.sy)),
         })
     }
+
+    try {
+        const hMid = Math.max(
+            vol.heightMm * 0.12,
+            Math.min(vol.heightMm * 0.88, (det.zMidNorm ?? 0.45) * vol.heightMm)
+        )
+        const rawThr = (vol.quantile(0.92) - vol.intercept) / (vol.slope || 1)
+        const hOffsets = [-5, -2.5, 0, 2.5, 5]
+
+        // 2 pasadas de centrado ortogonal sobre las raíces/coronas dentales
+        const searchRadii = [12, 6]
+        for (const maxD of searchRadii) {
+            const arch = buildArch(pts)
+            const shifts = new Float64Array(count)
+            for (let i = 0; i < count; i++) {
+                const s = (arch.length * i) / (count - 1)
+                const f = archFrame(arch, s)
+                let bestD = 0
+                let bestScore = -1
+                const stepD = 0.5
+                const nSteps = Math.round((2 * maxD) / stepD)
+                const profile = new Float64Array(nSteps + 1)
+
+                for (let k = 0; k <= nSteps; k++) {
+                    const d = -maxD + k * stepD
+                    let maxVal = -Infinity
+                    for (const tOff of [-1.5, 0, 1.5]) {
+                        const px = f.x + f.nx * d + f.tx * tOff
+                        const py = f.y + f.ny * d + f.ty * tOff
+                        for (const dh of hOffsets) {
+                            const h = Math.max(0, Math.min(vol.heightMm, hMid + dh))
+                            const v = sampleRaw(vol, px, py, zFromH(vol, h))
+                            if (v === v && v > maxVal) maxVal = v
+                        }
+                    }
+                    const excess = Math.max(0, maxVal - rawThr)
+                    const prior = Math.exp(-(d * d) / (2 * maxD * maxD))
+                    const score = excess * excess * prior
+                    profile[k] = score
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestD = d
+                    }
+                }
+
+                if (bestScore > 0) {
+                    // Centroide local alrededor del pico (±3.5 mm) para centrar en el conducto radicular
+                    let num = 0
+                    let den = 0
+                    for (let k = 0; k <= nSteps; k++) {
+                        const d = -maxD + k * stepD
+                        if (Math.abs(d - bestD) <= 3.5) {
+                            num += d * profile[k]
+                            den += profile[k]
+                        }
+                    }
+                    shifts[i] = den > 0 ? num / den : bestD
+                }
+            }
+
+            // Suavizado a lo largo del arco para mantener una curva spline limpia
+            const smooth = new Float64Array(count)
+            for (let i = 0; i < count; i++) {
+                const prev = shifts[Math.max(0, i - 1)]
+                const curr = shifts[i]
+                const next = shifts[Math.min(count - 1, i + 1)]
+                smooth[i] = 0.25 * prev + 0.5 * curr + 0.25 * next
+            }
+
+            pts = pts.map((_, i) => {
+                const s = (arch.length * i) / (count - 1)
+                const f = archFrame(arch, s)
+                return {
+                    x: Math.max(2, Math.min(vol.widthMm - 2, f.x + f.nx * smooth[i])),
+                    y: Math.max(2, Math.min(vol.depthMm - 2, f.y + f.ny * smooth[i])),
+                }
+            })
+        }
+    } catch {}
+
     return pts
 }
 
@@ -623,20 +818,22 @@ export function presetWindow(q: Quantile, id: WlPresetId, dicom: WindowLevel | n
     let hi: number
     switch (id) {
         case "bone":
-            lo = q(0.55)
-            hi = q(0.9995)
+            lo = q(0.54)
+            hi = q(0.9994)
             break
         case "enamel":
-            lo = q(0.92)
-            hi = q(1)
+            lo = q(0.84)
+            hi = q(0.9999)
             break
         case "soft":
-            lo = q(0.01)
-            hi = q(0.8)
+            lo = q(0.16)
+            hi = q(0.95)
             break
         default:
-            lo = q(0.01)
-            hi = q(0.998)
+            // Ventana diagnóstica estilo Sirona GALILEOS: suprime el aire de cavidades (0..34%) a negro puro
+            // y expande el rango dinámico sobre hueso trabecular, cortical, dentina, conducto radicular y esmalte
+            lo = q(0.34)
+            hi = q(0.999)
     }
     const width = Math.max(1, hi - lo)
     return { center: lo + width / 2, width }

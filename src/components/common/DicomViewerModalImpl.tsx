@@ -56,7 +56,7 @@ import {
     archControlPointsFromDetection,
     axialPlane,
     crossPlane,
-    tangentialPlane,
+    renderTangentialSection,
     renderPlane,
     renderPanorama,
     presetWindow,
@@ -86,8 +86,9 @@ export interface DicomViewerModalProps {
 export type ViewMode = "multi" | "panorama" | "3d" | "tangential" | "cross" | "axial"
 type FocusPlane = "axial" | "cross" | "tangential"
 
-const TANGENTIAL_HALF_WIDTH_MM = 18 // Ventana mesio-distal de 36 mm (aprox. 3-4 piezas dentales)
-const CROSS_HALF_WIDTH_MM = 16 // Ventana buco-lingual de 32 mm (oral <-> labial/bucal)
+const TANGENTIAL_HALF_WIDTH_MM = 21 // Ventana mesio-distal de 42 mm (aprox. 4-5 piezas dentales, proporción 6:5)
+const CROSS_HALF_WIDTH_MM = 18 // Ventana buco-lingual de 36 mm (oral <-> labial/bucal, proporción 1:1)
+const SLICE_WINDOW_HEIGHT_MM = 35 // Altura vertical de la "Ventana de cortes" estilo Sirona GALILEOS (35 mm)
 const MAX_ARCH_OFFSET_D_MM = 12 // Rango de desplazamiento tangencial buco-lingual (-12 a +12 mm)
 
 function getDentalSectorLabel(normPos: number): string {
@@ -137,7 +138,7 @@ export function DicomViewerModalImpl({
     // Parámetros de reconstrucción panorámica y MPR
     const [panoThickness, setPanoThickness] = useState<number>(18)
     const [panoMode, setPanoMode] = useState<"mean" | "mip">("mean")
-    const [mprSlabMm, setMprSlabMm] = useState<number>(0.8)
+    const [mprSlabMm, setMprSlabMm] = useState<number>(1.6)
 
     // Coordenadas clínicas 3D sincronizadas (en milímetros reales)
     // archS: posición a lo largo de la curva del arco dental (0 .. archModel.length mm)
@@ -145,7 +146,8 @@ export function DicomViewerModalImpl({
     // axialH: altura vertical desde el borde inferior del volumen (0 .. clinicalVol.heightMm)
     const [archS, setArchS] = useState<number>(50)
     const [archD, setArchD] = useState<number>(0)
-    const [axialH, setAxialH] = useState<number>(40)
+    const [axialH, setAxialH] = useState<number>(22)
+    const [dentalBaseH, setDentalBaseH] = useState<number>(22)
 
     // Ventanas de brillo/contraste independientes para cortes MPR y para la Panorámica CPR
     const [sliceWl, setSliceWl] = useState<WindowLevel>({ center: 800, width: 2200 })
@@ -323,12 +325,12 @@ export function DicomViewerModalImpl({
                         if (!rv || isCancelled) return
 
                         const det = detectDentalArch(rv, baseVol)
-                        const ctrlPts = archControlPointsFromDetection(det, cVol, 9)
+                        const ctrlPts = archControlPointsFromDetection(det, cVol, 11)
                         const builtArch = buildArch(ctrlPts)
 
                         const initH = Math.max(
-                            cVol.heightMm * 0.2,
-                            Math.min(cVol.heightMm * 0.85, det.zMidNorm * cVol.heightMm)
+                            cVol.heightMm * 0.12,
+                            Math.min(cVol.heightMm * 0.88, det.zMidNorm * cVol.heightMm)
                         )
                         const initS = builtArch.length * 0.5
 
@@ -338,6 +340,7 @@ export function DicomViewerModalImpl({
                         setArchS(initS)
                         setArchD(0)
                         setAxialH(initH)
+                        setDentalBaseH(initH)
                         setLoading(false)
                         setLoadProgress(100)
 
@@ -416,31 +419,50 @@ export function DicomViewerModalImpl({
         }
     }, [clinicalVol, archModel, panoThickness, panoMode, activeWlPreset])
 
-    // 3. Cálculo en tiempo real de los 3 cortes MPR calibrados (Tangencial, Sección Transversal y Axial)
+    // 3. Ventana vertical [hBot, hTop] de la "Ventana de cortes" (35 mm estilo Sirona GALILEOS)
+    // y cálculo en tiempo real de los 3 cortes MPR calibrados (Tangencial curvo, Sección Transversal y Axial)
+    const sliceWindowBounds = useMemo(() => {
+        if (!clinicalVol) return { hBot: 0, hTop: SLICE_WINDOW_HEIGHT_MM, height: SLICE_WINDOW_HEIGHT_MM }
+        const totalH = clinicalVol.heightMm
+        const winH = Math.min(totalH, SLICE_WINDOW_HEIGHT_MM)
+        const hBot = Math.max(0, Math.min(totalH - winH, axialH - winH * 0.5))
+        const hTop = hBot + winH
+        return { hBot, hTop, height: Math.max(1, hTop - hBot) }
+    }, [clinicalVol, axialH])
+
     const tangentialImg = useMemo(() => {
         if (!clinicalVol || !archModel) return null
-        const spec = tangentialPlane(
+        return renderTangentialSection(
             clinicalVol,
             archModel,
             archS,
             archD,
             TANGENTIAL_HALF_WIDTH_MM,
-            mprSlabMm
+            Math.max(mprSlabMm, 2.0),
+            sliceWindowBounds.hBot,
+            sliceWindowBounds.hTop
         )
-        return renderPlane(clinicalVol, spec)
-    }, [clinicalVol, archModel, archS, archD, mprSlabMm])
+    }, [clinicalVol, archModel, archS, archD, mprSlabMm, sliceWindowBounds])
 
     const crossImg = useMemo(() => {
         if (!clinicalVol || !archModel) return null
-        const spec = crossPlane(clinicalVol, archModel, archS, CROSS_HALF_WIDTH_MM, mprSlabMm)
+        const spec = crossPlane(
+            clinicalVol,
+            archModel,
+            archS,
+            CROSS_HALF_WIDTH_MM,
+            Math.max(mprSlabMm, 1.5),
+            sliceWindowBounds.hBot,
+            sliceWindowBounds.hTop
+        )
         return renderPlane(clinicalVol, spec)
-    }, [clinicalVol, archModel, archS, mprSlabMm])
+    }, [clinicalVol, archModel, archS, mprSlabMm, sliceWindowBounds])
 
     const axialImg = useMemo(() => {
         if (!clinicalVol) return null
-        const spec = axialPlane(clinicalVol, axialH)
+        const spec = axialPlane(clinicalVol, axialH, Math.min(mprSlabMm, 1.0))
         return renderPlane(clinicalVol, spec)
-    }, [clinicalVol, axialH])
+    }, [clinicalVol, axialH, mprSlabMm])
 
     // 4. Sincronización de la caja amarilla de enfoque en el visor 3D
     const volumeFocus = useMemo<VolumeFocus | null>(() => {
@@ -500,9 +522,9 @@ export function DicomViewerModalImpl({
         if (clinicalVol && archModel) {
             setArchS(archModel.length * 0.5)
             setArchD(0)
-            setAxialH(clinicalVol.heightMm * 0.48)
+            setAxialH(dentalBaseH)
         }
-    }, [clinicalVol, archModel, handleWlPresetChange])
+    }, [clinicalVol, archModel, dentalBaseH, handleWlPresetChange])
 
     const toggleFullscreen = () => {
         if (!document.fullscreenElement) {
@@ -591,15 +613,17 @@ export function DicomViewerModalImpl({
             if (!panoramaImage || !archModel) return
             const hTop = panoramaImage.hTop
             const yAxialMm = Math.max(0, Math.min(hTop, hTop - axialH))
+            const yWinTopMm = Math.max(0, Math.min(hTop, hTop - sliceWindowBounds.hTop))
+            const yWinBotMm = Math.max(0, Math.min(hTop, hTop - sliceWindowBounds.hBot))
 
             const [cx, cy] = mmToScreen(archS, yAxialMm)
             const [leftX, topY] = mmToScreen(
                 Math.max(0, archS - TANGENTIAL_HALF_WIDTH_MM),
-                0
+                yWinTopMm
             )
             const [rightX, botY] = mmToScreen(
                 Math.min(archModel.length, archS + TANGENTIAL_HALF_WIDTH_MM),
-                hTop
+                yWinBotMm
             )
             const [imgLeftX] = mmToScreen(0, 0)
             const [imgRightX] = mmToScreen(archModel.length, 0)
@@ -643,17 +667,17 @@ export function DicomViewerModalImpl({
             ctx.lineTo(rightX, cy)
             ctx.stroke()
         },
-        [panoramaImage, archModel, archS, axialH]
+        [panoramaImage, archModel, archS, axialH, sliceWindowBounds]
     )
 
     const renderTangentialOverlay = useCallback(
         ({ ctx, mmToScreen }: ViewportOverlayContext) => {
             if (!clinicalVol) return
-            const hTop = clinicalVol.heightMm
-            const yAxialMm = Math.max(0, Math.min(hTop, hTop - axialH))
+            const winHeight = sliceWindowBounds.height
+            const yAxialMm = Math.max(0, Math.min(winHeight, sliceWindowBounds.hTop - axialH))
             const [cx, cy] = mmToScreen(TANGENTIAL_HALF_WIDTH_MM, yAxialMm)
             const [x0, y0] = mmToScreen(0, 0)
-            const [x1, y1] = mmToScreen(TANGENTIAL_HALF_WIDTH_MM * 2, hTop)
+            const [x1, y1] = mmToScreen(TANGENTIAL_HALF_WIDTH_MM * 2, winHeight)
 
             ctx.strokeStyle = "rgba(250, 204, 21, 0.65)"
             ctx.lineWidth = 1.1
@@ -666,18 +690,18 @@ export function DicomViewerModalImpl({
             ctx.lineTo(x1, cy)
             ctx.stroke()
         },
-        [clinicalVol, axialH]
+        [clinicalVol, axialH, sliceWindowBounds]
     )
 
     const renderCrossOverlay = useCallback(
         ({ ctx, mmToScreen }: ViewportOverlayContext) => {
             if (!clinicalVol) return
-            const hTop = clinicalVol.heightMm
-            const yAxialMm = Math.max(0, Math.min(hTop, hTop - axialH))
+            const winHeight = sliceWindowBounds.height
+            const yAxialMm = Math.max(0, Math.min(winHeight, sliceWindowBounds.hTop - axialH))
             const xTanMm = Math.max(0, Math.min(CROSS_HALF_WIDTH_MM * 2, CROSS_HALF_WIDTH_MM + archD))
             const [cx, cy] = mmToScreen(xTanMm, yAxialMm)
             const [x0, y0] = mmToScreen(0, 0)
-            const [x1, y1] = mmToScreen(CROSS_HALF_WIDTH_MM * 2, hTop)
+            const [x1, y1] = mmToScreen(CROSS_HALF_WIDTH_MM * 2, winHeight)
 
             ctx.strokeStyle = "rgba(250, 204, 21, 0.65)"
             ctx.lineWidth = 1.1
@@ -690,7 +714,7 @@ export function DicomViewerModalImpl({
             ctx.lineTo(x1, cy)
             ctx.stroke()
         },
-        [clinicalVol, axialH, archD]
+        [clinicalVol, axialH, archD, sliceWindowBounds]
     )
 
     const renderAxialOverlay = useCallback(
@@ -772,6 +796,8 @@ export function DicomViewerModalImpl({
             if (!archModel || !panoramaImage || !clinicalVol) return
             setArchS(Math.max(0, Math.min(archModel.length, xMm)))
             setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, panoramaImage.hTop - yMm)))
+            // Mantener el corte tangencial centrado sobre las piezas dentales al navegar por Panorama
+            setArchD((d) => (Math.abs(d) > 3.5 ? 0 : d))
         },
         [archModel, panoramaImage, clinicalVol]
     )
@@ -782,9 +808,9 @@ export function DicomViewerModalImpl({
             if (!archModel || !clinicalVol) return
             const deltaS = xMm - TANGENTIAL_HALF_WIDTH_MM
             setArchS((s) => Math.max(0, Math.min(archModel.length, s + deltaS * 0.25)))
-            setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, clinicalVol.heightMm - yMm)))
+            setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, sliceWindowBounds.hTop - yMm)))
         },
-        [archModel, clinicalVol]
+        [archModel, clinicalVol, sliceWindowBounds]
     )
 
     const handleNavigateCross = useCallback(
@@ -793,9 +819,9 @@ export function DicomViewerModalImpl({
             if (!clinicalVol) return
             const newD = xMm - CROSS_HALF_WIDTH_MM
             setArchD(Math.max(-MAX_ARCH_OFFSET_D_MM, Math.min(MAX_ARCH_OFFSET_D_MM, newD)))
-            setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, clinicalVol.heightMm - yMm)))
+            setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, sliceWindowBounds.hTop - yMm)))
         },
-        [clinicalVol]
+        [clinicalVol, sliceWindowBounds]
     )
 
     const handleNavigateAxial = useCallback(
@@ -804,7 +830,12 @@ export function DicomViewerModalImpl({
             if (!archModel) return
             const proj = projectToArch(archModel, xMm, yMm)
             setArchS(Math.max(0, Math.min(archModel.length, proj.s)))
-            setArchD(Math.max(-MAX_ARCH_OFFSET_D_MM, Math.min(MAX_ARCH_OFFSET_D_MM, proj.d)))
+            // Evitar que un clic fuera del arco desplace el plano tangencial hacia el aire palatino/bucal
+            if (Math.abs(proj.d) <= 4.5) {
+                setArchD(Math.max(-3.5, Math.min(3.5, proj.d * 0.6)))
+            } else {
+                setArchD(0)
+            }
         },
         [archModel]
     )
@@ -1428,7 +1459,12 @@ export function DicomViewerModalImpl({
                                             size="sm"
                                             variant="ghost"
                                             className="h-5 px-1.5 text-[10px] text-slate-400 hover:text-white"
-                                            onClick={() => archModel && setArchS(archModel.length * 0.16)}
+                                            onClick={() => {
+                                                if (archModel) {
+                                                    setArchS(archModel.length * 0.16)
+                                                    setArchD(0)
+                                                }
+                                            }}
                                         >
                                             Molares Der.
                                         </Button>
@@ -1436,7 +1472,12 @@ export function DicomViewerModalImpl({
                                             size="sm"
                                             variant="ghost"
                                             className="h-5 px-1.5 text-[10px] text-slate-400 hover:text-white"
-                                            onClick={() => archModel && setArchS(archModel.length * 0.5)}
+                                            onClick={() => {
+                                                if (archModel) {
+                                                    setArchS(archModel.length * 0.5)
+                                                    setArchD(0)
+                                                }
+                                            }}
                                         >
                                             Incisivos
                                         </Button>
@@ -1444,7 +1485,12 @@ export function DicomViewerModalImpl({
                                             size="sm"
                                             variant="ghost"
                                             className="h-5 px-1.5 text-[10px] text-slate-400 hover:text-white"
-                                            onClick={() => archModel && setArchS(archModel.length * 0.84)}
+                                            onClick={() => {
+                                                if (archModel) {
+                                                    setArchS(archModel.length * 0.84)
+                                                    setArchD(0)
+                                                }
+                                            }}
                                         >
                                             Molares Izq.
                                         </Button>
@@ -1953,7 +1999,9 @@ export function DicomViewerModalImpl({
                                     size="sm"
                                     variant="ghost"
                                     className="h-6 px-2 text-[11px] text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                    onClick={() => setAxialH(clinicalVol.heightMm * 0.65)}
+                                    onClick={() =>
+                                        setAxialH(Math.min(clinicalVol.heightMm * 0.88, dentalBaseH + 10))
+                                    }
                                     disabled={loading}
                                     title="Ir a nivel anatómico superior (Maxilar Superior / Ápices superiores)"
                                 >
@@ -1967,11 +2015,11 @@ export function DicomViewerModalImpl({
                                     variant="ghost"
                                     className="h-6 px-2 text-[11px] bg-blue-950/50 text-blue-300 hover:bg-blue-900/60 hover:text-white font-medium rounded-md"
                                     onClick={() => {
-                                        setAxialH(clinicalVol.heightMm * 0.48)
+                                        setAxialH(dentalBaseH)
                                         setArchD(0)
                                     }}
                                     disabled={loading}
-                                    title="Ir al plano oclusal / coronas dentales"
+                                    title="Ir al plano dental / raíces y coronas"
                                 >
                                     Dientes
                                 </Button>
@@ -1982,9 +2030,11 @@ export function DicomViewerModalImpl({
                                     size="sm"
                                     variant="ghost"
                                     className="h-6 px-2 text-[11px] text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                    onClick={() => setAxialH(clinicalVol.heightMm * 0.32)}
+                                    onClick={() =>
+                                        setAxialH(Math.max(clinicalVol.heightMm * 0.1, dentalBaseH - 9))
+                                    }
                                     disabled={loading}
-                                    title="Ir a nivel anatómico inferior (Mandíbula)"
+                                    title="Ir a nivel anatómico inferior (Coronas / Mandíbula)"
                                 >
                                     Mandíbula
                                 </Button>

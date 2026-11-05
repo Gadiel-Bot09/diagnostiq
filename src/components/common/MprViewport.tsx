@@ -213,9 +213,9 @@ export function MprViewport({
 
         const wlWidth = Math.max(1, windowLevel.width)
         const wlMin = windowLevel.center - wlWidth * 0.5
-        const invWl = 255 / wlWidth
+        const invWl = 1 / wlWidth
 
-        // Mapear a escala 0..255 primero para poder aplicar realce de nitidez cortical (Unsharp Mask 3x3)
+        // Mapear a escala 0..255 con curva radiográfica de alto contraste (estilo Sirona GALILEOS)
         const lum = new Uint8ClampedArray(n)
         const validMask = new Uint8Array(n)
 
@@ -228,14 +228,24 @@ export function MprViewport({
             }
             validMask[i] = 1
             const modVal = rawVal * slope + intercept
-            const g = (modVal - wlMin) * invWl
-            lum[i] = g <= 0 ? 0 : g >= 255 ? 255 : g
+            const t = (modVal - wlMin) * invWl
+            if (t <= 0) {
+                lum[i] = 0
+            } else if (t >= 1) {
+                lum[i] = 255
+            } else {
+                // Curva S radiográfica suave: suprime velo de dispersión (scatter) en cavidades aéreas
+                // y maximiza la separación entre conducto radicular, dentina, hueso trabecular y cortical
+                const sCurve = t * t * (3 - 2 * t)
+                const blended = sCurve * 0.38 + Math.pow(t, 1.04) * 0.62
+                lum[i] = Math.round(blended * 255)
+            }
         }
 
-        // Aplicar realce de bordes óseos suave (como GALILEOS / Sidexis)
+        // Aplicar realce de bordes óseos y periodontales (Unsharp Mask 3x3 de 8 vecinos estilo GALILEOS / Sidexis)
         const finalLum = new Uint8ClampedArray(n)
         if (sharpen) {
-            const amount = 0.42
+            const amount = 0.58
             for (let r = 0; r < rows; r++) {
                 const rowOff = r * cols
                 const rUp = Math.max(0, r - 1) * cols
@@ -247,7 +257,16 @@ export function MprViewport({
                     const cR = Math.min(cols - 1, c + 1)
                     const center = lum[idx]
                     const blur =
-                        (lum[rUp + c] + lum[rDn + c] + lum[rowOff + cL] + lum[rowOff + cR] + center * 4) * 0.125
+                        (lum[rUp + c] * 2 +
+                            lum[rDn + c] * 2 +
+                            lum[rowOff + cL] * 2 +
+                            lum[rowOff + cR] * 2 +
+                            lum[rUp + cL] +
+                            lum[rUp + cR] +
+                            lum[rDn + cL] +
+                            lum[rDn + cR] +
+                            center * 4) *
+                        0.0625
                     finalLum[idx] = center + amount * (center - blur)
                 }
             }
