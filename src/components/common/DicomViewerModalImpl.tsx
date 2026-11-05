@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useRef, useState, useCallback } from "react"
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import {
@@ -26,30 +26,48 @@ import {
     Move,
     Sparkles,
     Palette,
-    Eye,
     Trash2,
     LayoutGrid,
-    Box,
-    ArrowLeft,
-    Compass,
     SlidersHorizontal,
     ChevronDown,
     Check,
+    Compass,
 } from "lucide-react"
 import JSZip from "jszip"
 import { Dental3DViewer, type VolumeFocus } from "./Dental3DViewer"
-import { DentalPanoramaViewer, type ArchSelection } from "./DentalPanoramaViewer"
+import {
+    MprViewport,
+    type ActiveClinicalTool,
+    type ClinicalColorMap,
+    type ClinicalMeasurement,
+    type ViewportOverlayContext,
+} from "./MprViewport"
 import {
     extractCbctVolume,
     buildRenderVolume,
     detectDentalArch,
-    computePanorama,
-    type CbctVolume,
     type RenderVolume,
-    type DentalArch,
-    type PanoramaData,
-    type PanoramaMode,
 } from "@/lib/cbctReconstruction"
+import {
+    createClinicalVolume,
+    buildArch,
+    archFrame,
+    projectToArch,
+    archControlPointsFromDetection,
+    axialPlane,
+    crossPlane,
+    tangentialPlane,
+    renderPlane,
+    renderPanorama,
+    presetWindow,
+    imageQuantile,
+    sliceIndexFromH,
+    type ClinicalVolume,
+    type ArchModel,
+    type PanoramaImage,
+    type WindowLevel,
+    type WlPresetId,
+} from "@/lib/cbct/mprEngine"
 import {
     detectArchiveFormat,
     isDicomSliceEntry,
@@ -65,60 +83,19 @@ export interface DicomViewerModalProps {
     subtitle?: string
 }
 
-type ToolType = "Scroll" | "ZoomAndPan" | "WindowLevel" | "Draw"
-type WlPreset = "default" | "bone" | "enamel" | "soft"
-type ColorMapType = "plain" | "invPlain" | "hot" | "rainbow"
 export type ViewMode = "multi" | "panorama" | "3d" | "tangential" | "cross" | "axial"
+type FocusPlane = "axial" | "cross" | "tangential"
 
-// Helpers para acceder a los controladores internos del motor DWV por cada ventana
-function getDwvLayerGroup(app: any, divId?: string) {
-    if (!app) return null
-    try {
-        if (divId && typeof app.getLayerGroupByDivId === "function") {
-            const lg = app.getLayerGroupByDivId(divId)
-            if (lg) return lg
-        }
-        if (typeof app.getActiveLayerGroup === "function") {
-            const lg = app.getActiveLayerGroup()
-            if (lg) return lg
-        }
-        if (typeof app.getLayerGroupByDivId === "function") {
-            const lg = app.getLayerGroupByDivId("dwv-view-axial") || app.getLayerGroupByDivId("dwv-layer-container")
-            if (lg) return lg
-        }
-    } catch {}
-    return null
-}
+const TANGENTIAL_HALF_WIDTH_MM = 18 // Ventana mesio-distal de 36 mm (aprox. 3-4 piezas dentales)
+const CROSS_HALF_WIDTH_MM = 16 // Ventana buco-lingual de 32 mm (oral <-> labial/bucal)
+const MAX_ARCH_OFFSET_D_MM = 12 // Rango de desplazamiento tangencial buco-lingual (-12 a +12 mm)
 
-function getDwvViewController(app: any, divId?: string) {
-    if (!app) return null
-    try {
-        const lg = getDwvLayerGroup(app, divId)
-        if (!lg) return null
-        const vl =
-            (typeof lg.getActiveViewLayer === "function" && lg.getActiveViewLayer()) ||
-            (typeof lg.getBaseViewLayer === "function" && lg.getBaseViewLayer()) ||
-            (typeof lg.getViewLayers === "function" && lg.getViewLayers()?.[0]) ||
-            null
-        return vl && typeof vl.getViewController === "function" ? vl.getViewController() : null
-    } catch {}
-    return null
-}
-
-function getDwvPositionHelper(app: any, divId?: string) {
-    if (!app) return null
-    try {
-        const lg = getDwvLayerGroup(app, divId)
-        if (lg && typeof lg.getPositionHelper === "function") {
-            const helper = lg.getPositionHelper()
-            if (helper) return helper
-        }
-        const vc = getDwvViewController(app, divId)
-        if (vc && typeof vc.getPositionHelper === "function") {
-            return vc.getPositionHelper()
-        }
-    } catch {}
-    return null
+function getDentalSectorLabel(normPos: number): string {
+    if (normPos < 0.18) return "Sector Molar Derecho (Piezas 18-16 / 48-46)"
+    if (normPos < 0.34) return "Sector Premolar / Canino Der. (15-13 / 45-43)"
+    if (normPos <= 0.66) return "Sector Anterior / Incisivos (12-22 / 42-32)"
+    if (normPos <= 0.82) return "Sector Premolar / Canino Izq. (23-25 / 33-35)"
+    return "Sector Molar Izquierdo (Piezas 26-28 / 36-38)"
 }
 
 export function DicomViewerModalImpl({
@@ -127,229 +104,81 @@ export function DicomViewerModalImpl({
     title,
     zipUrl,
     downloadUrl,
-    subtitle,
 }: DicomViewerModalProps) {
-    // Referencias a los contenedores DWV ortogonales
-    const axialRef = useRef<HTMLDivElement>(null)
-    const tangentialRef = useRef<HTMLDivElement>(null)
-    const crossRef = useRef<HTMLDivElement>(null)
-
+    const hiddenLoaderRef = useRef<HTMLDivElement>(null)
     const dwvAppRef = useRef<any>(null)
-    const dwvModuleRef = useRef<any>(null)
-    const sliceIndexRef = useRef<number>(0)
-    const totalSlicesRef = useRef<number>(0)
-    const activeToolRef = useRef<ToolType>("Scroll")
 
-    // Modo de visualización: "multi" (5 vistas estilo GALILEOS) o vista individual detallada
-    const [viewMode, setViewMode] = useState<ViewMode>("multi")
-    const [focusedViewId, setFocusedViewId] = useState<string>("dwv-view-axial")
-
-    // Refs para interacción táctil y ratón ultra-fluida
-    const isPointerDownRef = useRef(false)
-    const activePointerIdRef = useRef<number | null>(null)
-    const pointerLastRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
-    const accumulatedDragPxRef = useRef(0)
-    const initialPinchDistRef = useRef<number | null>(null)
-
+    // Estado de carga del estudio
     const [loading, setLoading] = useState(true)
     const [loadStep, setLoadStep] = useState("Conectando con almacenamiento seguro...")
     const [loadProgress, setLoadProgress] = useState(0)
-    const [sliceIndex, setSliceIndex] = useState(0)
-    const [totalSlices, setTotalSlices] = useState(0)
-    const [activeTool, setActiveTool] = useState<ToolType>("Scroll")
-    const [activeWlPreset, setActiveWlPreset] = useState<WlPreset>("default")
-    const [activeColorMap, setActiveColorMap] = useState<ColorMapType>("plain")
-    const [hudWl, setHudWl] = useState<{ center: number; width: number } | null>(null)
-    const [isPlaying, setIsPlaying] = useState(false)
-    const [playbackFps, setPlaybackFps] = useState<number>(25)
     const [errorMsg, setErrorMsg] = useState<string | null>(null)
-    const [isFullscreen, setIsFullscreen] = useState(false)
-    const [filtersMenuOpen, setFiltersMenuOpen] = useState(false)
-
-    // Estado de reconstrucción volumétrica real (Panorama CPR + Volumen 3D WebGL2)
-    const [renderVolume, setRenderVolume] = useState<RenderVolume | null>(null)
-    const [panoramaData, setPanoramaData] = useState<PanoramaData | null>(null)
     const [reconStatus, setReconStatus] = useState<string>("Preparando reconstrucción volumétrica...")
+
+    // Modos de vista y herramientas clínicas
+    const [viewMode, setViewMode] = useState<ViewMode>("multi")
+    const [focusedPlane, setFocusedPlane] = useState<FocusPlane>("axial")
+    const [activeTool, setActiveTool] = useState<ActiveClinicalTool>("navigate")
+    const [activeWlPreset, setActiveWlPreset] = useState<WlPresetId>("auto")
+    const [activeColorMap, setActiveColorMap] = useState<ClinicalColorMap>("plain")
+    const [sharpenEnabled, setSharpenEnabled] = useState<boolean>(true)
+    const [filtersMenuOpen, setFiltersMenuOpen] = useState(false)
+    const [isFullscreen, setIsFullscreen] = useState(false)
+    const [isPlaying, setIsPlaying] = useState(false)
+    const [resetTrigger, setResetTrigger] = useState(0)
+    const [externalZoomStep, setExternalZoomStep] = useState(0)
+
+    // Volúmenes y modelo matemático del arco dental
+    const [clinicalVol, setClinicalVol] = useState<ClinicalVolume | null>(null)
+    const [renderVolume, setRenderVolume] = useState<RenderVolume | null>(null)
+    const [archModel, setArchModel] = useState<ArchModel | null>(null)
+    const [panoramaImage, setPanoramaImage] = useState<PanoramaImage | null>(null)
+
+    // Parámetros de reconstrucción panorámica y MPR
     const [panoThickness, setPanoThickness] = useState<number>(18)
-    const [panoMode, setPanoMode] = useState<PanoramaMode>("xray")
-    const [volumeFocus, setVolumeFocus] = useState<VolumeFocus | null>(null)
+    const [panoMode, setPanoMode] = useState<"mean" | "mip">("mean")
+    const [mprSlabMm, setMprSlabMm] = useState<number>(0.8)
 
-    const cbctVolRef = useRef<CbctVolume | null>(null)
-    const dentalArchRef = useRef<DentalArch | null>(null)
+    // Coordenadas clínicas 3D sincronizadas (en milímetros reales)
+    // archS: posición a lo largo de la curva del arco dental (0 .. archModel.length mm)
+    // archD: desplazamiento buco-lingual perpendicular al arco (-12 .. +12 mm; negativo=oral, positivo=vestibular)
+    // axialH: altura vertical desde el borde inferior del volumen (0 .. clinicalVol.heightMm)
+    const [archS, setArchS] = useState<number>(50)
+    const [archD, setArchD] = useState<number>(0)
+    const [axialH, setAxialH] = useState<number>(40)
 
-    // Estado de cortes de cada ventana ortogonal
-    const [slicesInfo, setSlicesInfo] = useState({
-        axial: { current: 0, total: 0 },
-        tangential: { current: 0, total: 0 },
-        cross: { current: 0, total: 0 },
+    // Ventanas de brillo/contraste independientes para cortes MPR y para la Panorámica CPR
+    const [sliceWl, setSliceWl] = useState<WindowLevel>({ center: 800, width: 2200 })
+    const [panoWl, setPanoWl] = useState<WindowLevel>({ center: 900, width: 2000 })
+
+    // Mediciones calibradas por cada vista (persisten mientras el estudio está abierto)
+    const [measurementsByView, setMeasurementsByView] = useState<Record<string, ClinicalMeasurement[]>>({
+        panorama: [],
+        tangential: [],
+        cross: [],
+        axial: [],
     })
 
-    const slicesInfoRef = useRef(slicesInfo)
-    useEffect(() => {
-        slicesInfoRef.current = slicesInfo
-    }, [slicesInfo])
+    const totalMeasurementsCount = useMemo(
+        () =>
+            Object.values(measurementsByView).reduce((acc, list) => acc + list.length, 0),
+        [measurementsByView]
+    )
 
-    useEffect(() => {
-        sliceIndexRef.current = sliceIndex
-    }, [sliceIndex])
-
-    useEffect(() => {
-        totalSlicesRef.current = totalSlices
-    }, [totalSlices])
-
-    useEffect(() => {
-        activeToolRef.current = activeTool
-    }, [activeTool])
-
-    // Ajuste seguro de resolución de un contenedor DWV específico sin lanzar excepciones por divs ocultos
-    const safeFitView = useCallback((divId: string) => {
-        const app = dwvAppRef.current
-        if (!app) return
-        try {
-            const div = document.getElementById(divId)
-            if (!div || div.offsetWidth <= 0 || div.offsetHeight <= 0) return
-            const lg = getDwvLayerGroup(app, divId)
-            if (!lg) return
-            if (typeof lg.getDivToWorldSizeRatio === "function" && typeof lg.fitToContainer === "function") {
-                const ratio = lg.getDivToWorldSizeRatio()
-                if (typeof ratio === "number" && !isNaN(ratio) && ratio > 0) {
-                    lg.fitToContainer(ratio)
-                }
-            }
-            if (typeof lg.draw === "function") {
-                lg.draw()
-            }
-        } catch (e) {
-            console.warn(`Error al ajustar contenedor ${divId}:`, e)
-        }
+    const updateViewMeasurements = useCallback((viewKey: string, next: ClinicalMeasurement[]) => {
+        setMeasurementsByView((prev) => ({ ...prev, [viewKey]: next }))
     }, [])
 
-    // Ajustar resolución de cada contenedor visible al cambiar el modo de vista
-    useEffect(() => {
-        if (viewMode === "tangential") {
-            setFocusedViewId("dwv-view-tangential")
-        } else if (viewMode === "cross") {
-            setFocusedViewId("dwv-view-cross")
-        } else if (viewMode === "axial") {
-            setFocusedViewId("dwv-view-axial")
-        }
-
-        const timer = setTimeout(() => {
-            if (viewMode === "multi") {
-                safeFitView("dwv-view-axial")
-                safeFitView("dwv-view-tangential")
-                safeFitView("dwv-view-cross")
-            } else if (viewMode === "tangential") {
-                safeFitView("dwv-view-tangential")
-            } else if (viewMode === "cross") {
-                safeFitView("dwv-view-cross")
-            } else if (viewMode === "axial") {
-                safeFitView("dwv-view-axial")
-            }
-        }, 50)
-        return () => clearTimeout(timer)
-    }, [viewMode, safeFitView])
-
-    // Observador de redimensionamiento automático para adaptar los lienzos DICOM al tamaño visible
-    useEffect(() => {
-        const axialEl = axialRef.current
-        const tanEl = tangentialRef.current
-        const crossEl = crossRef.current
-
-        if (!axialEl && !tanEl && !crossEl) return
-
-        let resizeTimeout: any = null
-        const ro = new ResizeObserver((entries) => {
-            clearTimeout(resizeTimeout)
-            resizeTimeout = setTimeout(() => {
-                for (const entry of entries) {
-                    if (entry.contentRect.width > 0 && entry.contentRect.height > 0) {
-                        const targetId = entry.target.id
-                        if (targetId) safeFitView(targetId)
-                    }
-                }
-            }, 40)
+    const handleClearAllMeasurements = useCallback(() => {
+        setMeasurementsByView({
+            panorama: [],
+            tangential: [],
+            cross: [],
+            axial: [],
         })
-
-        if (axialEl) ro.observe(axialEl)
-        if (tanEl) ro.observe(tanEl)
-        if (crossEl) ro.observe(crossEl)
-
-        return () => {
-            clearTimeout(resizeTimeout)
-            ro.disconnect()
-        }
-    }, [open, safeFitView])
-
-    // Función principal para cambiar de corte en una ventana específica
-    const goToSliceInDiv = useCallback((targetSlice: number, divId = "dwv-view-axial") => {
-        const app = dwvAppRef.current
-        if (!app) return
-
-        const lg = getDwvLayerGroup(app, divId)
-        const posHelper = getDwvPositionHelper(app, divId)
-        if (!posHelper) return
-
-        try {
-            const current = typeof posHelper.getCurrentPositionScrollValue === "function"
-                ? posHelper.getCurrentPositionScrollValue()
-                : (divId === "dwv-view-tangential"
-                    ? slicesInfoRef.current.tangential.current
-                    : divId === "dwv-view-cross"
-                    ? slicesInfoRef.current.cross.current
-                    : sliceIndexRef.current)
-
-            const diff = targetSlice - current
-            if (diff > 0) {
-                for (let i = 0; i < diff; i++) {
-                    if (!posHelper.incrementPositionAlongScroll()) break
-                }
-            } else if (diff < 0) {
-                for (let i = 0; i < Math.abs(diff); i++) {
-                    if (!posHelper.decrementPositionAlongScroll()) break
-                }
-            }
-            if (lg && typeof lg.draw === "function") lg.draw()
-            const finalSlice = typeof posHelper.getCurrentPositionScrollValue === "function"
-                ? posHelper.getCurrentPositionScrollValue()
-                : targetSlice
-
-            if (divId === "dwv-view-axial") {
-                setSliceIndex(finalSlice)
-                sliceIndexRef.current = finalSlice
-            }
-
-            // Actualizar estado general de cortes
-            updateSlicesMetrics()
-        } catch (err) {
-            console.error("Error al navegar corte:", err)
-        }
     }, [])
 
-    const updateSlicesMetrics = () => {
-        const app = dwvAppRef.current
-        if (!app) return
-        try {
-            const getMetrics = (divId: string) => {
-                const lg = getDwvLayerGroup(app, divId)
-                if (!lg) return { current: 0, total: 0 }
-                const ph = lg.getPositionHelper()
-                const cur = typeof ph?.getCurrentPositionScrollValue === "function" ? ph.getCurrentPositionScrollValue() : 0
-                const vl = lg.getActiveViewLayer() || lg.getBaseViewLayer()
-                const vc = vl?.getViewController()
-                const scrollDim = typeof vc?.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 2
-                const total = vc?.getImageSize()?.get(scrollDim) || totalSlicesRef.current || 0
-                return { current: cur, total }
-            }
-            setSlicesInfo({
-                axial: getMetrics("dwv-view-axial"),
-                tangential: getMetrics("dwv-view-tangential"),
-                cross: getMetrics("dwv-view-cross"),
-            })
-        } catch {}
-    }
-
-    // Carga inicial de archivos DICOM y configuración de los 3 planos ortogonales de DWV
+    // 1. Descarga, descompresión (ZIP/RAR/DICOM) y extracción del volumen 3D de 16 bits
     useEffect(() => {
         if (!open || !zipUrl) return
 
@@ -357,22 +186,20 @@ export function DicomViewerModalImpl({
         setLoading(true)
         setErrorMsg(null)
         setLoadProgress(5)
-        setSliceIndex(0)
-        setTotalSlices(0)
         setIsPlaying(false)
-        setActiveTool("Scroll")
-        setActiveWlPreset("default")
+        setActiveTool("navigate")
+        setActiveWlPreset("auto")
         setActiveColorMap("plain")
         setViewMode("multi")
+        setClinicalVol(null)
         setRenderVolume(null)
-        setPanoramaData(null)
-        setVolumeFocus(null)
-        cbctVolRef.current = null
-        dentalArchRef.current = null
+        setArchModel(null)
+        setPanoramaImage(null)
+        setMeasurementsByView({ panorama: [], tangential: [], cross: [], axial: [] })
         setReconStatus("Analizando vóxeles CBCT...")
         setLoadStep("Conectando con almacenamiento seguro...")
 
-        const loadDicomZip = async () => {
+        const loadStudy = async () => {
             try {
                 setLoadStep("Descargando estudio tomográfico...")
                 setLoadProgress(15)
@@ -385,7 +212,7 @@ export function DicomViewerModalImpl({
                 const blob = await response.blob()
                 if (isCancelled) return
 
-                setLoadProgress(35)
+                setLoadProgress(32)
                 setLoadStep("Descomprimiendo cortes tomográficos...")
 
                 const dcmFiles: File[] = []
@@ -396,14 +223,16 @@ export function DicomViewerModalImpl({
                     const { dcmFiles: rarFiles } = await extractDicomFilesFromRar(blob, (pct, msg) => {
                         if (!isCancelled) {
                             setLoadStep(msg)
-                            setLoadProgress(Math.min(82, 30 + Math.round(pct * 0.52)))
+                            setLoadProgress(Math.min(80, 30 + Math.round(pct * 0.5)))
                         }
                     })
                     dcmFiles.push(...rarFiles)
-                } else if (archiveFormat === "zip" || (archiveFormat === "unknown" && (blob.type.includes("zip") || zipUrl.toLowerCase().includes(".zip")))) {
+                } else if (
+                    archiveFormat === "zip" ||
+                    (archiveFormat === "unknown" &&
+                        (blob.type.includes("zip") || zipUrl.toLowerCase().includes(".zip")))
+                ) {
                     const zip = await JSZip.loadAsync(blob)
-
-                    // Filtro universal: descarta ejecutables de PC y toma solo cortes tomográficos válidos
                     const validEntries = Object.keys(zip.files).filter((fileName) => {
                         const entry = zip.files[fileName]
                         if (entry.dir) return false
@@ -419,214 +248,121 @@ export function DicomViewerModalImpl({
 
                         processed++
                         if (processed % 25 === 0 || processed === validEntries.length) {
-                            setLoadProgress(35 + Math.round((processed / validEntries.length) * 45))
+                            setLoadProgress(32 + Math.round((processed / validEntries.length) * 45))
                         }
                     }
                 } else {
                     const baseName = zipUrl.split("/").pop()?.split("?")[0] || "image.dcm"
                     dcmFiles.push(new File([blob], baseName, { type: "application/dicom" }))
-                    setLoadProgress(80)
+                    setLoadProgress(78)
                 }
 
                 if (dcmFiles.length === 0) {
                     throw new Error("No se detectaron cortes tomográficos DICOM válidos en el archivo.")
                 }
 
-                // Ordenamiento numérico inteligente
-                dcmFiles.sort((a, b) => {
-                    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })
-                })
+                dcmFiles.sort((a, b) =>
+                    a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })
+                )
 
                 if (isCancelled) return
-                setLoadProgress(85)
-                setLoadStep("Configurando planos ortogonales (Axial, Tangencial, Transversal)...")
+                setLoadProgress(84)
+                setLoadStep("Ensamblando matriz volumétrica 3D calibrada...")
 
-                if (axialRef.current) axialRef.current.innerHTML = ""
-                if (tangentialRef.current) tangentialRef.current.innerHTML = ""
-                if (crossRef.current) crossRef.current.innerHTML = ""
+                if (hiddenLoaderRef.current) hiddenLoaderRef.current.innerHTML = ""
 
                 const dwv = await import("dwv")
                 if (isCancelled) return
-                dwvModuleRef.current = dwv
 
                 const app = new dwv.App()
                 dwvAppRef.current = app
 
-                // Inicializar DWV con los 3 planos ortogonales de reconstrucción médica
                 app.init({
                     dataViewConfigs: {
-                        "*": [
-                            { divId: "dwv-view-axial", orientation: "axial" },
-                            { divId: "dwv-view-tangential", orientation: "coronal" },
-                            { divId: "dwv-view-cross", orientation: "sagittal" },
-                        ],
-                    },
-                    tools: {
-                        Scroll: {},
-                        ZoomAndPan: {},
-                        WindowLevel: {},
-                        Draw: { options: ["Ruler"] },
+                        "*": [{ divId: "dwv-hidden-loader", orientation: "axial" }],
                     },
                 } as any)
 
                 let hasLoaded = false
-                const onLoadSuccess = () => {
+                const onLoadEnd = async () => {
                     if (isCancelled || hasLoaded) return
                     hasLoaded = true
 
-                    let nSlices = dcmFiles.length
                     try {
-                        const ids = typeof app.getDataIds === "function" ? app.getDataIds() : []
-                        const image = ids.length > 0 ? app.getImage(ids[0]) : (app as any).getImage?.(0)
-                        if (image) {
-                            const sz = image.getGeometry().getSize()
-                            nSlices = sz.get(2) || (sz as any).getNumberOfSlices?.() || dcmFiles.length
-                        }
-                    } catch {}
-
-                    totalSlicesRef.current = nSlices
-                    setTotalSlices(nSlices)
-                    setLoading(false)
-                    setLoadProgress(100)
-
-                    app.setTool("Scroll")
-                    setActiveTool("Scroll")
-                    activeToolRef.current = "Scroll"
-
-                    try {
-                        safeFitView("dwv-view-axial")
-                        safeFitView("dwv-view-tangential")
-                        safeFitView("dwv-view-cross")
-                    } catch {}
-
-                    // Posicionar inicialmente el corte axial en el plano dental central (~48%) en lugar del borde vacío (corte 1)
-                    try {
-                        const initialAxial = Math.max(0, Math.floor(nSlices * 0.48))
-                        goToSliceInDiv(initialAxial, "dwv-view-axial")
-
-                        const vc = getDwvViewController(app, "dwv-view-axial")
-                        if (vc && typeof vc.getWindowLevel === "function") {
-                            const wl = vc.getWindowLevel()
-                            if (wl) setHudWl({ center: Math.round(wl.center), width: Math.round(wl.width) })
-                        }
-                        updateSlicesMetrics()
-                    } catch (e) {
-                        console.warn("Error leyendo cortes iniciales:", e)
-                    }
-
-                    // Reajustar lienzos tras cerrar el overlay de carga
-                    setTimeout(() => {
+                        setLoadProgress(92)
+                        setLoadStep("Detectando arco dental y generando vistas MPR...")
+                        await new Promise((r) => setTimeout(r, 20))
                         if (isCancelled) return
-                        safeFitView("dwv-view-axial")
-                        safeFitView("dwv-view-tangential")
-                        safeFitView("dwv-view-cross")
-                    }, 80)
 
-                    // Pipeline asíncrono de Reconstrucción Volumétrica Real (Panorama CPR + Volumen 3D WebGL2)
-                    ;(async () => {
-                        try {
-                            setReconStatus("Extrayendo matriz volumétrica DICOM...")
-                            await new Promise((r) => setTimeout(r, 20))
-                            if (isCancelled) return
-
-                            const vol = extractCbctVolume(app)
-                            if (!vol || isCancelled) return
-                            cbctVolRef.current = vol
-
-                            setReconStatus("Construyendo volumen 3D en GPU...")
-                            const rv = await buildRenderVolume(vol, 224, () => isCancelled)
-                            if (!rv || isCancelled) return
-                            setRenderVolume(rv)
-
-                            setReconStatus("Detectando arco dental y calculando Panorámica CPR...")
-                            await new Promise((r) => setTimeout(r, 15))
-                            if (isCancelled) return
-
-                            const arch = detectDentalArch(rv, vol)
-                            dentalArchRef.current = arch
-
-                            const pano = await computePanorama(
-                                vol,
-                                arch,
-                                { thicknessMm: 18, mode: "xray" },
-                                () => isCancelled
-                            )
-                            if (!pano || isCancelled) return
-                            setPanoramaData(pano)
-                            setReconStatus("")
-
-                            // Enfocar corte axial, tangencial, transversal y caja 3D en el centro del arco dental
-                            try {
-                                const zNorm = typeof arch.zMidNorm === "number" && !isNaN(arch.zMidNorm) ? arch.zMidNorm : 0.48
-                                const targetAxial = Math.max(0, Math.min(vol.nz - 1, Math.round(zNorm * (vol.nz - 1))))
-                                goToSliceInDiv(targetAxial, "dwv-view-axial")
-
-                                if (pano.columns && pano.width > 0) {
-                                    const midCol = Math.floor(pano.width / 2)
-                                    const base = midCol * 4
-                                    const midX = pano.columns[base]
-                                    const midY = pano.columns[base + 1]
-                                    const midTx = pano.columns[base + 2]
-                                    const midTy = pano.columns[base + 3]
-
-                                    goToSliceInDiv(Math.max(0, Math.min(vol.nx - 1, Math.round(midX))), "dwv-view-cross")
-                                    goToSliceInDiv(Math.max(0, Math.min(vol.ny - 1, Math.round(midY))), "dwv-view-tangential")
-                                    setVolumeFocus({
-                                        cx: midX / Math.max(1, vol.nx),
-                                        cy: midY / Math.max(1, vol.ny),
-                                        tx: midTx,
-                                        ty: midTy,
-                                        halfWidthMm: 14,
-                                        halfDepthMm: 12,
-                                    })
-                                }
-                            } catch (navErr) {
-                                console.warn("Aviso al posicionar cortes iniciales sobre el arco:", navErr)
-                            }
-                        } catch (reconErr) {
-                            console.error("Error en reconstrucción volumétrica CBCT:", reconErr)
-                            setReconStatus("No fue posible reconstruir el volumen.")
+                        const baseVol = extractCbctVolume(app)
+                        if (!baseVol) {
+                            throw new Error("No se pudo extraer la matriz tridimensional del estudio DICOM.")
                         }
-                    })()
+
+                        const cVol = createClinicalVolume(baseVol, {
+                            slope: baseVol.slope ?? 1,
+                            intercept: baseVol.intercept ?? 0,
+                        })
+                        if (isCancelled) return
+
+                        // Ventana inicial automática basada en los percentiles reales del estudio
+                        const initSliceWl = presetWindow(cVol.quantile, "auto", cVol.dicomWindow)
+                        setSliceWl(initSliceWl)
+
+                        // Construir volumen 3D para ray-casting en GPU y detectar la curva del arco dental
+                        const rv = await buildRenderVolume(baseVol, 224, () => isCancelled)
+                        if (!rv || isCancelled) return
+
+                        const det = detectDentalArch(rv, baseVol)
+                        const ctrlPts = archControlPointsFromDetection(det, cVol, 9)
+                        const builtArch = buildArch(ctrlPts)
+
+                        const initH = Math.max(
+                            cVol.heightMm * 0.2,
+                            Math.min(cVol.heightMm * 0.85, det.zMidNorm * cVol.heightMm)
+                        )
+                        const initS = builtArch.length * 0.5
+
+                        setClinicalVol(cVol)
+                        setRenderVolume(rv)
+                        setArchModel(builtArch)
+                        setArchS(initS)
+                        setArchD(0)
+                        setAxialH(initH)
+                        setLoading(false)
+                        setLoadProgress(100)
+
+                        // Generar la Panorámica CPR isotrópica real
+                        setReconStatus("Generando Panorámica CPR de alta resolución...")
+                        const pano = await renderPanorama(
+                            cVol,
+                            builtArch,
+                            { thicknessMm: 18, mode: "mean" },
+                            () => isCancelled
+                        )
+                        if (!pano || isCancelled) return
+
+                        const pQuant = imageQuantile(pano.data, cVol.slope, cVol.intercept)
+                        setPanoWl(presetWindow(pQuant, "auto"))
+                        setPanoramaImage(pano)
+                        setReconStatus("")
+                    } catch (e: any) {
+                        console.error("Error procesando volumen clínico:", e)
+                        if (!isCancelled) {
+                            setErrorMsg(e.message || "Error al construir el volumen tomográfico.")
+                            setLoading(false)
+                        }
+                    }
                 }
 
-                app.addEventListener("loadend", onLoadSuccess)
-
-                app.addEventListener("drawlayeradd", () => {
-                    try {
-                        const lgs = ["dwv-view-axial", "dwv-view-tangential", "dwv-view-cross"]
-                        lgs.forEach((id) => {
-                            const lg = getDwvLayerGroup(app, id)
-                            if (lg && typeof lg.getNumberOfLayers === "function" && lg.getNumberOfLayers() > 1) {
-                                if (activeToolRef.current === "Draw") {
-                                    lg.setActiveLayer(1)
-                                }
-                            }
-                        })
-                    } catch {}
-                })
-
-                app.addEventListener("positionchange", (event: any) => {
-                    try {
-                        updateSlicesMetrics()
-                        const posHelper = getDwvPositionHelper(app, "dwv-view-axial")
-                        if (posHelper && typeof posHelper.getCurrentPositionScrollValue === "function") {
-                            const idx = posHelper.getCurrentPositionScrollValue()
-                            if (typeof idx === "number" && !isNaN(idx)) {
-                                setSliceIndex(idx)
-                                sliceIndexRef.current = idx
-                            }
-                        }
-                    } catch {}
-                })
-
-                app.addEventListener("error", (event: any) => {
-                    console.error("DWV error:", event)
+                app.addEventListener("loadend", onLoadEnd)
+                app.addEventListener("error", (ev: any) => {
+                    console.error("DWV load error:", ev)
                 })
 
                 app.loadFiles(dcmFiles)
             } catch (err: any) {
-                console.error("Error al montar visor DICOM:", err)
+                console.error("Error al cargar visor DICOM:", err)
                 if (!isCancelled) {
                     setErrorMsg(err.message || "Error al procesar el archivo tomográfico.")
                     setLoading(false)
@@ -634,445 +370,129 @@ export function DicomViewerModalImpl({
             }
         }
 
-        loadDicomZip()
-
-        const handleResize = () => {
-            if (dwvAppRef.current) {
-                if (viewMode === "multi") {
-                    safeFitView("dwv-view-axial")
-                    safeFitView("dwv-view-tangential")
-                    safeFitView("dwv-view-cross")
-                } else if (viewMode === "tangential") {
-                    safeFitView("dwv-view-tangential")
-                } else if (viewMode === "cross") {
-                    safeFitView("dwv-view-cross")
-                } else if (viewMode === "axial") {
-                    safeFitView("dwv-view-axial")
-                }
-            }
-        }
-        window.addEventListener("resize", handleResize)
+        loadStudy()
 
         return () => {
             isCancelled = true
-            window.removeEventListener("resize", handleResize)
             if (dwvAppRef.current) {
                 try {
                     dwvAppRef.current.reset()
                 } catch {}
                 dwvAppRef.current = null
             }
-            if (axialRef.current) axialRef.current.innerHTML = ""
-            if (tangentialRef.current) tangentialRef.current.innerHTML = ""
-            if (crossRef.current) crossRef.current.innerHTML = ""
+            if (hiddenLoaderRef.current) hiddenLoaderRef.current.innerHTML = ""
         }
     }, [open, zipUrl])
 
-    // Recalcular Panorámica CPR cuando el especialista cambia el grosor en mm o el modo (Rx / MIP)
+    // 2. Recalcular la Panorámica CPR cuando cambia el grosor en mm o el modo (Rx vs MIP)
     useEffect(() => {
-        const vol = cbctVolRef.current
-        const arch = dentalArchRef.current
-        if (!vol || !arch) return
-
+        if (!clinicalVol || !archModel) return
         let cancelled = false
         ;(async () => {
-            try {
-                const pano = await computePanorama(
-                    vol,
-                    arch,
-                    { thicknessMm: panoThickness, mode: panoMode },
-                    () => cancelled
-                )
-                if (!cancelled && pano) {
-                    setPanoramaData(pano)
-                }
-            } catch (e) {
-                console.warn("Error recalculando panorámica:", e)
+            const pano = await renderPanorama(
+                clinicalVol,
+                archModel,
+                { thicknessMm: panoThickness, mode: panoMode },
+                () => cancelled
+            )
+            if (!cancelled && pano) {
+                const pQuant = imageQuantile(pano.data, clinicalVol.slope, clinicalVol.intercept)
+                setPanoWl(presetWindow(pQuant, activeWlPreset === "auto" ? "auto" : activeWlPreset))
+                setPanoramaImage(pano)
             }
         })()
-
         return () => {
             cancelled = true
         }
-    }, [panoThickness, panoMode])
+    }, [clinicalVol, archModel, panoThickness, panoMode, activeWlPreset])
 
-    // Sincronizar desde las coordenadas reales del arco en la Panorámica hacia 3D, Tangencial y Transversal
-    const handleSelectArchPoint = useCallback(
-        (sel: ArchSelection) => {
-            const vol = cbctVolRef.current
-            if (vol) {
-                setVolumeFocus({
-                    cx: sel.voxelX / Math.max(1, vol.nx),
-                    cy: sel.voxelY / Math.max(1, vol.ny),
-                    tx: sel.tx,
-                    ty: sel.ty,
-                    halfWidthMm: 14,
-                    halfDepthMm: Math.max(10, panoThickness * 0.7),
-                })
-                goToSliceInDiv(Math.max(0, Math.min(vol.nx - 1, Math.round(sel.voxelX))), "dwv-view-cross")
-                goToSliceInDiv(Math.max(0, Math.min(vol.ny - 1, Math.round(sel.voxelY))), "dwv-view-tangential")
+    // 3. Cálculo en tiempo real de los 3 cortes MPR calibrados (Tangencial, Sección Transversal y Axial)
+    const tangentialImg = useMemo(() => {
+        if (!clinicalVol || !archModel) return null
+        const spec = tangentialPlane(
+            clinicalVol,
+            archModel,
+            archS,
+            archD,
+            TANGENTIAL_HALF_WIDTH_MM,
+            mprSlabMm
+        )
+        return renderPlane(clinicalVol, spec)
+    }, [clinicalVol, archModel, archS, archD, mprSlabMm])
+
+    const crossImg = useMemo(() => {
+        if (!clinicalVol || !archModel) return null
+        const spec = crossPlane(clinicalVol, archModel, archS, CROSS_HALF_WIDTH_MM, mprSlabMm)
+        return renderPlane(clinicalVol, spec)
+    }, [clinicalVol, archModel, archS, mprSlabMm])
+
+    const axialImg = useMemo(() => {
+        if (!clinicalVol) return null
+        const spec = axialPlane(clinicalVol, axialH)
+        return renderPlane(clinicalVol, spec)
+    }, [clinicalVol, axialH])
+
+    // 4. Sincronización de la caja amarilla de enfoque en el visor 3D
+    const volumeFocus = useMemo<VolumeFocus | null>(() => {
+        if (!clinicalVol || !archModel) return null
+        const f = archFrame(archModel, archS)
+        const cxMm = f.x + f.nx * archD
+        const cyMm = f.y + f.ny * archD
+        return {
+            cx: Math.max(0, Math.min(1, cxMm / Math.max(1, clinicalVol.widthMm))),
+            cy: Math.max(0, Math.min(1, cyMm / Math.max(1, clinicalVol.depthMm))),
+            tx: f.tx,
+            ty: f.ty,
+            halfWidthMm: TANGENTIAL_HALF_WIDTH_MM,
+            halfDepthMm: CROSS_HALF_WIDTH_MM,
+        }
+    }, [clinicalVol, archModel, archS, archD])
+
+    const currentSliceIndex = useMemo(() => {
+        if (!clinicalVol) return 0
+        return sliceIndexFromH(clinicalVol, axialH)
+    }, [clinicalVol, axialH])
+
+    const totalSlices = clinicalVol?.nz || 0
+
+    // 5. Cambiar preset de densidad ósea (Window/Level basado en percentiles reales del volumen)
+    const handleWlPresetChange = useCallback(
+        (preset: WlPresetId) => {
+            setActiveWlPreset(preset)
+            if (!clinicalVol) return
+            setSliceWl(presetWindow(clinicalVol.quantile, preset, clinicalVol.dicomWindow))
+            if (panoramaImage) {
+                const pq = imageQuantile(panoramaImage.data, clinicalVol.slope, clinicalVol.intercept)
+                setPanoWl(presetWindow(pq, preset))
             }
         },
-        [goToSliceInDiv, panoThickness]
+        [clinicalVol, panoramaImage]
     )
 
-    // Sincronizar desde la "Ventana de cortes" en la Panorámica hacia Tangencial y Transversal
-    const handleSelectToothRegion = (normalizedX: number) => {
-        if (cbctVolRef.current && panoramaData) {
-            return
+    const handleAdjustSliceWl = useCallback((dWidth: number, dCenter: number) => {
+        setSliceWl((prev) => ({
+            width: Math.max(20, Math.round(prev.width + dWidth)),
+            center: Math.round(prev.center + dCenter),
+        }))
+    }, [])
+
+    const handleAdjustPanoWl = useCallback((dWidth: number, dCenter: number) => {
+        setPanoWl((prev) => ({
+            width: Math.max(20, Math.round(prev.width + dWidth)),
+            center: Math.round(prev.center + dCenter),
+        }))
+    }, [])
+
+    const handleResetView = useCallback(() => {
+        setResetTrigger((n) => n + 1)
+        setActiveColorMap("plain")
+        handleWlPresetChange("auto")
+        if (clinicalVol && archModel) {
+            setArchS(archModel.length * 0.5)
+            setArchD(0)
+            setAxialH(clinicalVol.heightMm * 0.48)
         }
-        const app = dwvAppRef.current
-        if (!app) return
-
-        // 1. Sincronizar Sección Transversal (Sagital Left-Right)
-        const lgCross = getDwvLayerGroup(app, "dwv-view-cross")
-        if (lgCross) {
-            const vl = lgCross.getActiveViewLayer() || lgCross.getBaseViewLayer()
-            const vc = vl?.getViewController()
-            const scrollDim = typeof vc?.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 0
-            const totalCross = vc?.getImageSize()?.get(scrollDim) || 512
-            const targetCross = Math.round(normalizedX * (totalCross - 1))
-            goToSliceInDiv(targetCross, "dwv-view-cross")
-        }
-
-        // 2. Sincronizar Tangencial (Coronal Anterior-Posterior)
-        const lgTangential = getDwvLayerGroup(app, "dwv-view-tangential")
-        if (lgTangential) {
-            const vl = lgTangential.getActiveViewLayer() || lgTangential.getBaseViewLayer()
-            const vc = vl?.getViewController()
-            const scrollDim = typeof vc?.getScrollDimIndex === "function" ? vc.getScrollDimIndex() : 1
-            const totalTangential = vc?.getImageSize()?.get(scrollDim) || 512
-            const distFromCenter = Math.abs(normalizedX - 0.5) * 2 // 0 en incisivos, 1 en molares
-            const targetTangential = Math.round((0.32 + distFromCenter * 0.32) * (totalTangential - 1))
-            goToSliceInDiv(targetTangential, "dwv-view-tangential")
-        }
-    }
-
-    // Navegación por rueda en cualquier ventana
-    const handleViewWheel = (divId: string, e: React.WheelEvent) => {
-        e.preventDefault()
-        e.stopPropagation()
-        const app = dwvAppRef.current
-        if (!app) return
-        const lg = getDwvLayerGroup(app, divId)
-        if (!lg) return
-        const posHelper = lg.getPositionHelper()
-        if (!posHelper) return
-
-        let moved = false
-        if (e.deltaY > 0) {
-            moved = posHelper.incrementPositionAlongScroll()
-        } else {
-            moved = posHelper.decrementPositionAlongScroll()
-        }
-
-        if (moved) {
-            if (typeof lg.draw === "function") lg.draw()
-            if (divId === "dwv-view-axial") {
-                const cur = typeof posHelper.getCurrentPositionScrollValue === "function"
-                    ? posHelper.getCurrentPositionScrollValue()
-                    : sliceIndexRef.current
-                setSliceIndex(cur)
-                sliceIndexRef.current = cur
-            }
-            updateSlicesMetrics()
-        }
-    }
-
-    // Interacción táctil / arrastre por ventana
-    const handleViewPointerDown = (divId: string, e: React.PointerEvent) => {
-        if (loading || !!errorMsg) return
-        setFocusedViewId(divId)
-        if (activeToolRef.current === "Draw") return
-
-        isPointerDownRef.current = true
-        activePointerIdRef.current = e.pointerId
-        pointerLastRef.current = { x: e.clientX, y: e.clientY }
-        accumulatedDragPxRef.current = 0
-
-        try {
-            e.currentTarget.setPointerCapture(e.pointerId)
-        } catch {}
-    }
-
-    const handleViewPointerMove = (divId: string, e: React.PointerEvent) => {
-        if (!isPointerDownRef.current || activePointerIdRef.current !== e.pointerId) return
-        if (activeToolRef.current === "Draw") return
-
-        const app = dwvAppRef.current
-        const lg = getDwvLayerGroup(app, divId)
-        const dx = e.clientX - pointerLastRef.current.x
-        const dy = e.clientY - pointerLastRef.current.y
-        pointerLastRef.current = { x: e.clientX, y: e.clientY }
-
-        if (activeToolRef.current === "Scroll") {
-            accumulatedDragPxRef.current += dy
-            const threshold = 12
-
-            const posHelper = getDwvPositionHelper(app, divId)
-            if (!posHelper) return
-
-            let moved = false
-            while (accumulatedDragPxRef.current <= -threshold) {
-                if (!posHelper.incrementPositionAlongScroll()) break
-                accumulatedDragPxRef.current += threshold
-                moved = true
-            }
-            while (accumulatedDragPxRef.current >= threshold) {
-                if (!posHelper.decrementPositionAlongScroll()) break
-                accumulatedDragPxRef.current -= threshold
-                moved = true
-            }
-
-            if (moved) {
-                if (lg && typeof lg.draw === "function") lg.draw()
-                if (divId === "dwv-view-axial") {
-                    const cur = typeof posHelper.getCurrentPositionScrollValue === "function"
-                        ? posHelper.getCurrentPositionScrollValue()
-                        : sliceIndexRef.current
-                    setSliceIndex(cur)
-                    sliceIndexRef.current = cur
-                }
-                updateSlicesMetrics()
-            }
-        } else if (activeToolRef.current === "ZoomAndPan") {
-            if (app && typeof app.translate === "function") {
-                app.translate(dx, dy)
-            }
-        } else if (activeToolRef.current === "WindowLevel") {
-            const vc = getDwvViewController(app, divId)
-            const dwv = dwvModuleRef.current
-            if (vc && dwv?.WindowLevel) {
-                const cur = vc.getWindowLevel()
-                if (cur) {
-                    const scale = 5
-                    const newCenter = cur.center - (dy * scale)
-                    const newWidth = Math.max(10, cur.width + (dx * scale))
-                    vc.setWindowLevel(new dwv.WindowLevel(newCenter, newWidth))
-                    if (lg && typeof lg.draw === "function") lg.draw()
-                    setHudWl({ center: Math.round(newCenter), width: Math.round(newWidth) })
-                }
-            }
-        }
-    }
-
-    const handleViewPointerUp = (e: React.PointerEvent) => {
-        if (activePointerIdRef.current === e.pointerId) {
-            isPointerDownRef.current = false
-            activePointerIdRef.current = null
-            try {
-                e.currentTarget.releasePointerCapture(e.pointerId)
-            } catch {}
-        }
-    }
-
-    // Teclado
-    useEffect(() => {
-        if (!open) return
-
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-
-            const targetDivId =
-                viewMode === "tangential"
-                    ? "dwv-view-tangential"
-                    : viewMode === "cross"
-                    ? "dwv-view-cross"
-                    : focusedViewId || "dwv-view-axial"
-
-            const targetCur =
-                targetDivId === "dwv-view-tangential"
-                    ? slicesInfoRef.current.tangential.current
-                    : targetDivId === "dwv-view-cross"
-                    ? slicesInfoRef.current.cross.current
-                    : sliceIndexRef.current
-
-            if (e.key === "ArrowDown" || e.key === "ArrowRight") {
-                e.preventDefault()
-                goToSliceInDiv(targetCur + 1, targetDivId)
-            } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
-                e.preventDefault()
-                goToSliceInDiv(targetCur - 1, targetDivId)
-            } else if (e.key === "PageDown") {
-                e.preventDefault()
-                goToSliceInDiv(targetCur + 10, targetDivId)
-            } else if (e.key === "PageUp") {
-                e.preventDefault()
-                goToSliceInDiv(targetCur - 10, targetDivId)
-            } else if (e.key === " " || e.code === "Space") {
-                e.preventDefault()
-                setIsPlaying((p) => !p)
-            }
-        }
-
-        window.addEventListener("keydown", onKeyDown)
-        return () => window.removeEventListener("keydown", onKeyDown)
-    }, [open, goToSliceInDiv, focusedViewId, viewMode])
-
-    // Cine Loop
-    useEffect(() => {
-        if (!isPlaying) return
-
-        const interval = setInterval(() => {
-            const targetDivId =
-                viewMode === "tangential"
-                    ? "dwv-view-tangential"
-                    : viewMode === "cross"
-                    ? "dwv-view-cross"
-                    : focusedViewId || "dwv-view-axial"
-
-            const app = dwvAppRef.current
-            const lg = getDwvLayerGroup(app, targetDivId)
-            const posHelper = getDwvPositionHelper(app, targetDivId)
-            if (!posHelper) return
-
-            const moved = posHelper.incrementPositionAlongScroll()
-            if (!moved) {
-                while (posHelper.decrementPositionAlongScroll()) {}
-            }
-            if (lg && typeof lg.draw === "function") lg.draw()
-            if (targetDivId === "dwv-view-axial") {
-                const cur = typeof posHelper.getCurrentPositionScrollValue === "function" ? posHelper.getCurrentPositionScrollValue() : sliceIndexRef.current
-                setSliceIndex(cur)
-                sliceIndexRef.current = cur
-            }
-            updateSlicesMetrics()
-        }, 1000 / playbackFps)
-
-        return () => clearInterval(interval)
-    }, [isPlaying, playbackFps, focusedViewId, viewMode])
-
-    // Cambio de herramienta de interacción
-    const handleToolChange = (tool: ToolType) => {
-        setActiveTool(tool)
-        activeToolRef.current = tool
-        const app = dwvAppRef.current
-        if (!app) return
-
-        try {
-            app.setTool(tool)
-            const lgs = ["dwv-view-axial", "dwv-view-tangential", "dwv-view-cross"]
-            lgs.forEach((id) => {
-                const lg = getDwvLayerGroup(app, id)
-                if (!lg) return
-                if (tool === "Draw") {
-                    app.setToolFeatures({ shapeName: "Ruler" })
-                    if (typeof lg.getNumberOfLayers === "function" && lg.getNumberOfLayers() > 1) {
-                        lg.setActiveLayer(1)
-                    }
-                } else {
-                    if (typeof lg.setActiveLayer === "function") {
-                        lg.setActiveLayer(0)
-                    }
-                }
-            })
-        } catch (err) {
-            console.warn("Error changing tool:", err)
-        }
-    }
-
-    const handleClearDrawings = () => {
-        const app = dwvAppRef.current
-        if (!app) return
-        const lgs = ["dwv-view-axial", "dwv-view-tangential", "dwv-view-cross"]
-        lgs.forEach((id) => {
-            const lg = getDwvLayerGroup(app, id)
-            if (!lg) return
-            try {
-                const drawLayers = typeof lg.getDrawLayers === "function" ? lg.getDrawLayers() : []
-                drawLayers.forEach((dl: any) => {
-                    if (typeof dl.deleteDraws === "function") dl.deleteDraws()
-                })
-                if (typeof lg.draw === "function") lg.draw()
-            } catch {}
-        })
-    }
-
-    // Presets de Contraste
-    const handleWlPresetChange = (preset: WlPreset) => {
-        setActiveWlPreset(preset)
-        const app = dwvAppRef.current
-        if (!app) return
-
-        const lgs = ["dwv-view-axial", "dwv-view-tangential", "dwv-view-cross"]
-        lgs.forEach((id) => {
-            const vc = getDwvViewController(app, id)
-            const lg = getDwvLayerGroup(app, id)
-            if (!vc) return
-
-            try {
-                if (preset === "default") {
-                    vc.resetWindowLevel()
-                    setHudWl(null)
-                } else {
-                    const dwv = dwvModuleRef.current
-                    const WindowLevelClass = dwv?.WindowLevel
-                    if (!WindowLevelClass) return
-
-                    let center = 400
-                    let width = 1800
-                    if (preset === "bone") {
-                        center = 400
-                        width = 1800
-                    } else if (preset === "enamel") {
-                        center = 800
-                        width = 2500
-                    } else if (preset === "soft") {
-                        center = 40
-                        width = 400
-                    }
-                    vc.setWindowLevel(new WindowLevelClass(center, width))
-                    setHudWl({ center, width })
-                }
-                if (lg && typeof lg.draw === "function") lg.draw()
-            } catch {}
-        })
-    }
-
-    // Mapas de Color
-    const handleColorMapChange = (cm: ColorMapType) => {
-        setActiveColorMap(cm)
-        const app = dwvAppRef.current
-        if (!app) return
-        const lgs = ["dwv-view-axial", "dwv-view-tangential", "dwv-view-cross"]
-        lgs.forEach((id) => {
-            const vc = getDwvViewController(app, id)
-            const lg = getDwvLayerGroup(app, id)
-            try {
-                if (vc && typeof vc.setColourMap === "function") {
-                    vc.setColourMap(cm)
-                }
-                if (lg && typeof lg.draw === "function") lg.draw()
-            } catch {}
-        })
-    }
-
-    const handleZoomIn = () => {
-        const app = dwvAppRef.current
-        if (!app) return
-        try {
-            app.zoom(0.2, 200, 200)
-        } catch {}
-    }
-
-    const handleZoomOut = () => {
-        const app = dwvAppRef.current
-        if (!app) return
-        try {
-            app.zoom(-0.2, 200, 200)
-        } catch {}
-    }
-
-    const handleResetView = () => {
-        const app = dwvAppRef.current
-        if (!app) return
-        try {
-            app.resetZoomPan()
-            app.fitToContainer()
-            handleWlPresetChange("default")
-            handleColorMapChange("plain")
-        } catch {}
-    }
+    }, [clinicalVol, archModel, handleWlPresetChange])
 
     const toggleFullscreen = () => {
         if (!document.fullscreenElement) {
@@ -1084,6 +504,302 @@ export function DicomViewerModalImpl({
         }
     }
 
+    // 6. Navegación por teclado y Cine Loop sobre el plano enfocado
+    const activePlaneAfterViewMode: FocusPlane =
+        viewMode === "tangential"
+            ? "tangential"
+            : viewMode === "cross"
+            ? "cross"
+            : viewMode === "axial"
+            ? "axial"
+            : focusedPlane
+
+    const stepFocusedPlane = useCallback(
+        (steps: number, plane: FocusPlane = activePlaneAfterViewMode) => {
+            if (!clinicalVol || !archModel) return
+            if (plane === "axial") {
+                const stepMm = Math.max(0.25, clinicalVol.sz)
+                setAxialH((h) => Math.max(0, Math.min(clinicalVol.heightMm, h + steps * stepMm)))
+            } else if (plane === "cross") {
+                const stepMm = 0.5
+                setArchS((s) => Math.max(0, Math.min(archModel.length, s + steps * stepMm)))
+            } else if (plane === "tangential") {
+                const stepMm = 0.25
+                setArchD((d) =>
+                    Math.max(-MAX_ARCH_OFFSET_D_MM, Math.min(MAX_ARCH_OFFSET_D_MM, d + steps * stepMm))
+                )
+            }
+        },
+        [clinicalVol, archModel, activePlaneAfterViewMode]
+    )
+
+    useEffect(() => {
+        if (!open || !clinicalVol || !archModel) return
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+            if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+                e.preventDefault()
+                stepFocusedPlane(1)
+            } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+                e.preventDefault()
+                stepFocusedPlane(-1)
+            } else if (e.key === "PageDown") {
+                e.preventDefault()
+                stepFocusedPlane(8)
+            } else if (e.key === "PageUp") {
+                e.preventDefault()
+                stepFocusedPlane(-8)
+            } else if (e.key === " " || e.code === "Space") {
+                e.preventDefault()
+                setIsPlaying((p) => !p)
+            } else if (e.key === "Escape") {
+                setFiltersMenuOpen(false)
+            }
+        }
+        window.addEventListener("keydown", onKeyDown)
+        return () => window.removeEventListener("keydown", onKeyDown)
+    }, [open, clinicalVol, archModel, stepFocusedPlane])
+
+    useEffect(() => {
+        if (!isPlaying || !clinicalVol || !archModel) return
+        const interval = setInterval(() => {
+            if (activePlaneAfterViewMode === "axial") {
+                const stepMm = Math.max(0.3, clinicalVol.sz)
+                setAxialH((h) => (h + stepMm > clinicalVol.heightMm ? 0 : h + stepMm))
+            } else if (activePlaneAfterViewMode === "cross") {
+                setArchS((s) => (s + 0.6 > archModel.length ? 0 : s + 0.6))
+            } else {
+                setArchD((d) => (d + 0.3 > MAX_ARCH_OFFSET_D_MM ? -MAX_ARCH_OFFSET_D_MM : d + 0.3))
+            }
+        }, 65)
+        return () => clearInterval(interval)
+    }, [isPlaying, clinicalVol, archModel, activePlaneAfterViewMode])
+
+    // 7. Superposiciones gráficas estilo Sirona GALILEOS para cada una de las 4 vistas 2D
+    const renderPanoramaOverlay = useCallback(
+        ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+            if (!panoramaImage || !archModel) return
+            const hTop = panoramaImage.hTop
+            const yAxialMm = Math.max(0, Math.min(hTop, hTop - axialH))
+
+            const [cx, cy] = mmToScreen(archS, yAxialMm)
+            const [leftX, topY] = mmToScreen(
+                Math.max(0, archS - TANGENTIAL_HALF_WIDTH_MM),
+                0
+            )
+            const [rightX, botY] = mmToScreen(
+                Math.min(archModel.length, archS + TANGENTIAL_HALF_WIDTH_MM),
+                hTop
+            )
+            const [imgLeftX] = mmToScreen(0, 0)
+            const [imgRightX] = mmToScreen(archModel.length, 0)
+
+            // Línea amarilla horizontal (nivel del corte Axial)
+            ctx.strokeStyle = "rgba(250, 204, 21, 0.55)"
+            ctx.lineWidth = 1.1
+            ctx.beginPath()
+            ctx.moveTo(imgLeftX, cy)
+            ctx.lineTo(imgRightX, cy)
+            ctx.stroke()
+
+            // Marco celeste de la "Ventana de cortes" estilo Sirona GALILEOS
+            const boxW = Math.max(28, rightX - leftX)
+            const boxH = Math.max(36, botY - topY)
+            const headerH = 16
+
+            ctx.fillStyle = "rgba(56, 189, 248, 0.06)"
+            ctx.fillRect(leftX, topY, boxW, boxH)
+
+            ctx.strokeStyle = "rgba(125, 211, 252, 0.9)"
+            ctx.lineWidth = 1.5
+            ctx.strokeRect(leftX, topY, boxW, boxH)
+
+            // Barra de título de la "Ventana de cortes"
+            ctx.fillStyle = "rgba(14, 116, 144, 0.88)"
+            ctx.fillRect(leftX, topY, boxW, headerH)
+            ctx.fillStyle = "#e0f2fe"
+            ctx.font = "600 10px system-ui, -apple-system, sans-serif"
+            ctx.textAlign = "left"
+            ctx.textBaseline = "middle"
+            ctx.fillText("Ventana de cortes", leftX + 5, topY + headerH * 0.5, Math.max(20, boxW - 8))
+
+            // Cruz amarilla interna dentro de la Ventana de cortes
+            ctx.strokeStyle = "rgba(250, 204, 21, 0.92)"
+            ctx.lineWidth = 1.3
+            ctx.beginPath()
+            ctx.moveTo(cx, topY + headerH)
+            ctx.lineTo(cx, botY)
+            ctx.moveTo(leftX, cy)
+            ctx.lineTo(rightX, cy)
+            ctx.stroke()
+        },
+        [panoramaImage, archModel, archS, axialH]
+    )
+
+    const renderTangentialOverlay = useCallback(
+        ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+            if (!clinicalVol) return
+            const hTop = clinicalVol.heightMm
+            const yAxialMm = Math.max(0, Math.min(hTop, hTop - axialH))
+            const [cx, cy] = mmToScreen(TANGENTIAL_HALF_WIDTH_MM, yAxialMm)
+            const [x0, y0] = mmToScreen(0, 0)
+            const [x1, y1] = mmToScreen(TANGENTIAL_HALF_WIDTH_MM * 2, hTop)
+
+            ctx.strokeStyle = "rgba(250, 204, 21, 0.65)"
+            ctx.lineWidth = 1.1
+            ctx.beginPath()
+            // Línea vertical: centro de la sección transversal (s = archS)
+            ctx.moveTo(cx, y0)
+            ctx.lineTo(cx, y1)
+            // Línea horizontal: nivel del corte axial (h = axialH)
+            ctx.moveTo(x0, cy)
+            ctx.lineTo(x1, cy)
+            ctx.stroke()
+        },
+        [clinicalVol, axialH]
+    )
+
+    const renderCrossOverlay = useCallback(
+        ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+            if (!clinicalVol) return
+            const hTop = clinicalVol.heightMm
+            const yAxialMm = Math.max(0, Math.min(hTop, hTop - axialH))
+            const xTanMm = Math.max(0, Math.min(CROSS_HALF_WIDTH_MM * 2, CROSS_HALF_WIDTH_MM + archD))
+            const [cx, cy] = mmToScreen(xTanMm, yAxialMm)
+            const [x0, y0] = mmToScreen(0, 0)
+            const [x1, y1] = mmToScreen(CROSS_HALF_WIDTH_MM * 2, hTop)
+
+            ctx.strokeStyle = "rgba(250, 204, 21, 0.65)"
+            ctx.lineWidth = 1.1
+            ctx.beginPath()
+            // Línea vertical: posición del plano tangencial (d = archD)
+            ctx.moveTo(cx, y0)
+            ctx.lineTo(cx, y1)
+            // Línea horizontal: nivel del corte axial (h = axialH)
+            ctx.moveTo(x0, cy)
+            ctx.lineTo(x1, cy)
+            ctx.stroke()
+        },
+        [clinicalVol, axialH, archD]
+    )
+
+    const renderAxialOverlay = useCallback(
+        ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+            if (!archModel) return
+
+            // 1. Curva panorámica del arco dental sobre el corte axial
+            const xs = archModel.xs
+            const ys = archModel.ys
+            if (xs.length > 1) {
+                ctx.save()
+                ctx.strokeStyle = "rgba(226, 232, 240, 0.75)"
+                ctx.lineWidth = 1.4
+                ctx.beginPath()
+                for (let i = 0; i < xs.length; i++) {
+                    const [sx, sy] = mmToScreen(xs[i], ys[i])
+                    if (i === 0) ctx.moveTo(sx, sy)
+                    else ctx.lineTo(sx, sy)
+                }
+                ctx.stroke()
+                ctx.restore()
+            }
+
+            // 2. Caja e intersección amarilla de los planos Tangencial y Sección Transversal en (archS, archD)
+            const f = archFrame(archModel, archS)
+            const cx = f.x + f.nx * archD
+            const cy = f.y + f.ny * archD
+
+            const hw = TANGENTIAL_HALF_WIDTH_MM
+            const hd = CROSS_HALF_WIDTH_MM
+
+            // Esquinas del rectángulo de inspección rotado según la tangente del diente actual
+            const c1 = mmToScreen(cx - f.tx * hw - f.nx * hd, cy - f.ty * hw - f.ny * hd)
+            const c2 = mmToScreen(cx + f.tx * hw - f.nx * hd, cy + f.ty * hw - f.ny * hd)
+            const c3 = mmToScreen(cx + f.tx * hw + f.nx * hd, cy + f.ty * hw + f.ny * hd)
+            const c4 = mmToScreen(cx - f.tx * hw + f.nx * hd, cy - f.ty * hw + f.ny * hd)
+
+            ctx.save()
+            ctx.strokeStyle = "rgba(250, 204, 21, 0.45)"
+            ctx.lineWidth = 1
+            ctx.setLineDash([3, 3])
+            ctx.beginPath()
+            ctx.moveTo(c1[0], c1[1])
+            ctx.lineTo(c2[0], c2[1])
+            ctx.lineTo(c3[0], c3[1])
+            ctx.lineTo(c4[0], c4[1])
+            ctx.closePath()
+            ctx.stroke()
+            ctx.setLineDash([])
+
+            // Eje Tangencial (mesio-distal) y Eje Transversal (buco-lingual) en amarillo brillante
+            const tA = mmToScreen(cx - f.tx * hw, cy - f.ty * hw)
+            const tB = mmToScreen(cx + f.tx * hw, cy + f.ty * hw)
+            const nA = mmToScreen(f.x - f.nx * hd, f.y - f.ny * hd)
+            const nB = mmToScreen(f.x + f.nx * hd, f.y + f.ny * hd)
+
+            ctx.strokeStyle = "rgba(250, 204, 21, 0.92)"
+            ctx.lineWidth = 1.4
+            ctx.beginPath()
+            ctx.moveTo(tA[0], tA[1])
+            ctx.lineTo(tB[0], tB[1])
+            ctx.moveTo(nA[0], nA[1])
+            ctx.lineTo(nB[0], nB[1])
+            ctx.stroke()
+
+            const [scx, scy] = mmToScreen(cx, cy)
+            ctx.fillStyle = "#facc15"
+            ctx.beginPath()
+            ctx.arc(scx, scy, 2.8, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.restore()
+        },
+        [archModel, archS, archD]
+    )
+
+    // 8. Handlers de navegación interactiva en cada vista cuando activeTool === "navigate"
+    const handleNavigatePanorama = useCallback(
+        (xMm: number, yMm: number) => {
+            if (!archModel || !panoramaImage || !clinicalVol) return
+            setArchS(Math.max(0, Math.min(archModel.length, xMm)))
+            setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, panoramaImage.hTop - yMm)))
+        },
+        [archModel, panoramaImage, clinicalVol]
+    )
+
+    const handleNavigateTangential = useCallback(
+        (xMm: number, yMm: number) => {
+            setFocusedPlane("tangential")
+            if (!archModel || !clinicalVol) return
+            const deltaS = xMm - TANGENTIAL_HALF_WIDTH_MM
+            setArchS((s) => Math.max(0, Math.min(archModel.length, s + deltaS * 0.25)))
+            setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, clinicalVol.heightMm - yMm)))
+        },
+        [archModel, clinicalVol]
+    )
+
+    const handleNavigateCross = useCallback(
+        (xMm: number, yMm: number) => {
+            setFocusedPlane("cross")
+            if (!clinicalVol) return
+            const newD = xMm - CROSS_HALF_WIDTH_MM
+            setArchD(Math.max(-MAX_ARCH_OFFSET_D_MM, Math.min(MAX_ARCH_OFFSET_D_MM, newD)))
+            setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, clinicalVol.heightMm - yMm)))
+        },
+        [clinicalVol]
+    )
+
+    const handleNavigateAxial = useCallback(
+        (xMm: number, yMm: number) => {
+            setFocusedPlane("axial")
+            if (!archModel) return
+            const proj = projectToArch(archModel, xMm, yMm)
+            setArchS(Math.max(0, Math.min(archModel.length, proj.s)))
+            setArchD(Math.max(-MAX_ARCH_OFFSET_D_MM, Math.min(MAX_ARCH_OFFSET_D_MM, proj.d)))
+        },
+        [archModel]
+    )
+
+    // Etiquetas dinámicas para barra superior e inferior
     const activePresetLabel =
         activeWlPreset === "bone"
             ? "Hueso"
@@ -1091,7 +807,7 @@ export function DicomViewerModalImpl({
             ? "Esmalte"
             : activeWlPreset === "soft"
             ? "Tejidos"
-            : "Original"
+            : "Óptimo"
 
     const activeColorLabel =
         activeColorMap === "hot"
@@ -1100,18 +816,24 @@ export function DicomViewerModalImpl({
             ? " · Invertido"
             : ""
 
+    const normArchPos = archModel && archModel.length > 0 ? archS / archModel.length : 0.5
+    const selectedToothLabel = getDentalSectorLabel(normArchPos)
+
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
                 className="sm:max-w-[98vw] max-w-[98vw] w-[98vw] h-[96vh] flex flex-col p-0 gap-0 overflow-hidden bg-slate-950 text-white rounded-2xl border-slate-800 shadow-2xl focus:outline-hidden"
                 showCloseButton={false}
             >
-                {/* 1. Barra Superior Unificada de Estación de Trabajo PACS / CBCT 3D */}
+                {/* Contenedor oculto utilizado únicamente para que DWV decodifique los archivos DICOM */}
+                <div id="dwv-hidden-loader" ref={hiddenLoaderRef} className="hidden" />
+
+                {/* 1. Barra Superior Unificada de Estación de Trabajo PACS / Sirona GALILEOS */}
                 <div className="relative z-30 flex flex-wrap items-center justify-between px-2.5 sm:px-4 py-1.5 border-b border-slate-800/90 bg-slate-900/95 shrink-0 gap-1.5">
                     {/* Grupo A: Identificador del Estudio + Selector de Vistas */}
                     <div className="flex items-center gap-2 min-w-0 flex-wrap">
                         <DialogTitle
-                            className="text-xs sm:text-[13px] font-semibold truncate text-white flex items-center gap-1.5 max-w-[170px] xl:max-w-[230px]"
+                            className="text-xs sm:text-[13px] font-semibold truncate text-white flex items-center gap-1.5 max-w-[165px] xl:max-w-[220px]"
                             title={title}
                         >
                             <div className="h-6 w-6 rounded-md bg-blue-500/15 border border-blue-500/30 flex items-center justify-center shrink-0">
@@ -1120,7 +842,7 @@ export function DicomViewerModalImpl({
                             <span className="truncate">{title}</span>
                         </DialogTitle>
 
-                        {/* Dock Segmentado de Vistas (Multivista 5 Paneles vs Individual) */}
+                        {/* Dock Segmentado de Vistas (5 Vistas vs Individual) */}
                         <div className="flex items-center gap-0.5 bg-slate-950/90 p-0.5 rounded-lg border border-slate-800 overflow-x-auto max-w-full">
                             <Button
                                 size="sm"
@@ -1131,7 +853,7 @@ export function DicomViewerModalImpl({
                                         : "text-slate-400 hover:text-white"
                                 }`}
                                 onClick={() => setViewMode("multi")}
-                                title="Ver las 5 secciones simultáneas: Panorama, 3D, Tangencial, Transversal y Axial"
+                                title="Ver las 5 secciones simultáneas estilo GALILEOS: Panorama, 3D, Tangencial, Sección Transversal y Axial"
                             >
                                 <LayoutGrid className="h-3 w-3 shrink-0" />
                                 <span>5 Vistas</span>
@@ -1143,10 +865,12 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant={viewMode === "panorama" ? "default" : "ghost"}
                                 className={`h-6 px-2 text-[11px] rounded-md ${
-                                    viewMode === "panorama" ? "bg-blue-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                                    viewMode === "panorama"
+                                        ? "bg-blue-600 text-white font-semibold"
+                                        : "text-slate-400 hover:text-white"
                                 }`}
                                 onClick={() => setViewMode("panorama")}
-                                title="Vista detallada de Panorámica Dental"
+                                title="Vista detallada de Panorámica Dental CPR"
                             >
                                 Panorama
                             </Button>
@@ -1155,10 +879,12 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant={viewMode === "3d" ? "default" : "ghost"}
                                 className={`h-6 px-2 text-[11px] rounded-md ${
-                                    viewMode === "3d" ? "bg-amber-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                                    viewMode === "3d"
+                                        ? "bg-amber-600 text-white font-semibold"
+                                        : "text-slate-400 hover:text-white"
                                 }`}
                                 onClick={() => setViewMode("3d")}
-                                title="Vista detallada de Volumen 3D Interactivo"
+                                title="Vista detallada de Reconstrucción 3D Volumétrica"
                             >
                                 3D
                             </Button>
@@ -1167,10 +893,15 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant={viewMode === "tangential" ? "default" : "ghost"}
                                 className={`h-6 px-2 text-[11px] rounded-md ${
-                                    viewMode === "tangential" ? "bg-emerald-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                                    viewMode === "tangential"
+                                        ? "bg-emerald-600 text-white font-semibold"
+                                        : "text-slate-400 hover:text-white"
                                 }`}
-                                onClick={() => setViewMode("tangential")}
-                                title="Vista detallada de Corte Tangencial"
+                                onClick={() => {
+                                    setFocusedPlane("tangential")
+                                    setViewMode("tangential")
+                                }}
+                                title="Vista detallada de Corte Tangencial al arco dental"
                             >
                                 Tangencial
                             </Button>
@@ -1179,10 +910,15 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant={viewMode === "cross" ? "default" : "ghost"}
                                 className={`h-6 px-2 text-[11px] rounded-md ${
-                                    viewMode === "cross" ? "bg-purple-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                                    viewMode === "cross"
+                                        ? "bg-purple-600 text-white font-semibold"
+                                        : "text-slate-400 hover:text-white"
                                 }`}
-                                onClick={() => setViewMode("cross")}
-                                title="Vista detallada de Sección Transversal"
+                                onClick={() => {
+                                    setFocusedPlane("cross")
+                                    setViewMode("cross")
+                                }}
+                                title="Vista detallada de Sección Transversal (Buco-Lingual)"
                             >
                                 Transversal
                             </Button>
@@ -1191,31 +927,36 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant={viewMode === "axial" ? "default" : "ghost"}
                                 className={`h-6 px-2 text-[11px] rounded-md ${
-                                    viewMode === "axial" ? "bg-cyan-600 text-white font-semibold" : "text-slate-400 hover:text-white"
+                                    viewMode === "axial"
+                                        ? "bg-cyan-600 text-white font-semibold"
+                                        : "text-slate-400 hover:text-white"
                                 }`}
-                                onClick={() => setViewMode("axial")}
-                                title="Vista detallada de Corte Axial"
+                                onClick={() => {
+                                    setFocusedPlane("axial")
+                                    setViewMode("axial")
+                                }}
+                                title="Vista detallada de Corte Axial (desde arriba)"
                             >
                                 Axial
                             </Button>
                         </div>
                     </div>
 
-                    {/* Grupo B: Dock Clínico Agrupado (Herramientas + Zoom + Menú de Filtros y Color) */}
+                    {/* Grupo B: Dock Clínico Agrupado (Herramientas + Medición Calibrada + Zoom + Filtros) */}
                     <div className="flex items-center gap-1.5 flex-wrap">
-                        {/* Cápsula de Herramientas de Interacción */}
+                        {/* Cápsula de Herramientas de Diagnóstico */}
                         <div className="flex items-center gap-0.5 bg-slate-950/90 p-0.5 rounded-lg border border-slate-800">
                             <Button
                                 size="sm"
-                                variant={activeTool === "Scroll" ? "default" : "ghost"}
+                                variant={activeTool === "navigate" ? "default" : "ghost"}
                                 className={`h-6 px-2 text-[11px] gap-1 rounded-md ${
-                                    activeTool === "Scroll"
+                                    activeTool === "navigate"
                                         ? "bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs"
                                         : "text-slate-300 hover:text-white hover:bg-slate-800"
                                 }`}
-                                onClick={() => handleToolChange("Scroll")}
+                                onClick={() => setActiveTool("navigate")}
                                 disabled={loading || !!errorMsg}
-                                title="Desplazarse entre cortes con rueda o arrastre"
+                                title="Explorar cortes y mover la Ventana de cortes sincronizada en las 5 vistas"
                             >
                                 <Layers className="h-3 w-3" />
                                 <span>Cortes</span>
@@ -1223,15 +964,15 @@ export function DicomViewerModalImpl({
 
                             <Button
                                 size="sm"
-                                variant={activeTool === "ZoomAndPan" ? "default" : "ghost"}
+                                variant={activeTool === "pan" ? "default" : "ghost"}
                                 className={`h-6 px-2 text-[11px] gap-1 rounded-md ${
-                                    activeTool === "ZoomAndPan"
+                                    activeTool === "pan"
                                         ? "bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs"
                                         : "text-slate-300 hover:text-white hover:bg-slate-800"
                                 }`}
-                                onClick={() => handleToolChange("ZoomAndPan")}
+                                onClick={() => setActiveTool("pan")}
                                 disabled={loading || !!errorMsg}
-                                title="Arrastrar para mover o encuadrar la imagen"
+                                title="Arrastrar para encuadrar y usar rueda del ratón para hacer zoom"
                             >
                                 <Move className="h-3 w-3" />
                                 <span>Mover</span>
@@ -1239,15 +980,15 @@ export function DicomViewerModalImpl({
 
                             <Button
                                 size="sm"
-                                variant={activeTool === "WindowLevel" ? "default" : "ghost"}
+                                variant={activeTool === "wl" ? "default" : "ghost"}
                                 className={`h-6 px-2 text-[11px] gap-1 rounded-md ${
-                                    activeTool === "WindowLevel"
+                                    activeTool === "wl"
                                         ? "bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs"
                                         : "text-slate-300 hover:text-white hover:bg-slate-800"
                                 }`}
-                                onClick={() => handleToolChange("WindowLevel")}
+                                onClick={() => setActiveTool("wl")}
                                 disabled={loading || !!errorMsg}
-                                title="Ajustar brillo y contraste arrastrando el ratón"
+                                title="Ajustar ventana de brillo y contraste arrastrando el ratón"
                             >
                                 <Sun className="h-3 w-3" />
                                 <span>Contraste</span>
@@ -1255,30 +996,46 @@ export function DicomViewerModalImpl({
 
                             <Button
                                 size="sm"
-                                variant={activeTool === "Draw" ? "default" : "ghost"}
+                                variant={activeTool === "ruler" ? "default" : "ghost"}
                                 className={`h-6 px-2 text-[11px] gap-1 rounded-md ${
-                                    activeTool === "Draw"
-                                        ? "bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs"
+                                    activeTool === "ruler"
+                                        ? "bg-cyan-600 hover:bg-cyan-700 text-white font-semibold shadow-xs"
                                         : "text-slate-300 hover:text-white hover:bg-slate-800"
                                 }`}
-                                onClick={() => handleToolChange("Draw")}
+                                onClick={() => setActiveTool("ruler")}
                                 disabled={loading || !!errorMsg}
-                                title="Medición milimétrica calibrada en el hueso"
+                                title="Regla milimétrica calibrada (funciona en Panorama, Tangencial, Transversal y Axial)"
                             >
                                 <Ruler className="h-3 w-3" />
                                 <span>Medir (mm)</span>
                             </Button>
 
-                            {activeTool === "Draw" && (
+                            <Button
+                                size="sm"
+                                variant={activeTool === "angle" ? "default" : "ghost"}
+                                className={`h-6 px-2 text-[11px] gap-1 rounded-md ${
+                                    activeTool === "angle"
+                                        ? "bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow-xs"
+                                        : "text-slate-300 hover:text-white hover:bg-slate-800"
+                                }`}
+                                onClick={() => setActiveTool("angle")}
+                                disabled={loading || !!errorMsg}
+                                title="Medir inclinación radicular o eje de implante en grados (°)"
+                            >
+                                <Compass className="h-3 w-3" />
+                                <span className="hidden sm:inline">Ángulo (°)</span>
+                            </Button>
+
+                            {totalMeasurementsCount > 0 && (
                                 <Button
                                     size="sm"
                                     variant="ghost"
                                     className="h-6 px-1.5 text-[11px] text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 gap-1 rounded-md"
-                                    onClick={handleClearDrawings}
-                                    title="Borrar todas las medidas realizadas"
+                                    onClick={handleClearAllMeasurements}
+                                    title="Borrar todas las mediciones y ángulos trazados"
                                 >
                                     <Trash2 className="h-3 w-3" />
-                                    <span className="hidden xl:inline">Borrar</span>
+                                    <span className="hidden xl:inline">Borrar ({totalMeasurementsCount})</span>
                                 </Button>
                             )}
                         </div>
@@ -1289,7 +1046,7 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="ghost"
                                 className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                onClick={handleZoomOut}
+                                onClick={() => setExternalZoomStep((s) => s - 1)}
                                 disabled={loading || !!errorMsg}
                                 title="Alejar (-)"
                             >
@@ -1299,7 +1056,7 @@ export function DicomViewerModalImpl({
                                 size="sm"
                                 variant="ghost"
                                 className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                onClick={handleZoomIn}
+                                onClick={() => setExternalZoomStep((s) => s + 1)}
                                 disabled={loading || !!errorMsg}
                                 title="Acercar (+)"
                             >
@@ -1311,25 +1068,25 @@ export function DicomViewerModalImpl({
                                 className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
                                 onClick={handleResetView}
                                 disabled={loading || !!errorMsg}
-                                title="Restablecer zoom, posición y contraste original"
+                                title="Restablecer zoom, posición y contraste óptimo"
                             >
                                 <RotateCcw className="h-3 w-3" />
                             </Button>
                         </div>
 
-                        {/* Menú Agrupado: Filtros Óseos y Mapa de Color */}
+                        {/* Menú Agrupado: Filtros Óseos, Nitidez y Mapa de Color */}
                         <div className="relative">
                             <Button
                                 size="sm"
                                 variant="outline"
                                 className={`h-7 px-2.5 text-[11px] gap-1.5 rounded-lg border ${
-                                    activeWlPreset !== "default" || activeColorMap !== "plain"
+                                    activeWlPreset !== "auto" || activeColorMap !== "plain"
                                         ? "border-indigo-500/60 bg-indigo-950/60 text-indigo-200 hover:bg-indigo-900/70"
                                         : "border-slate-800 bg-slate-950/90 text-slate-300 hover:bg-slate-800 hover:text-white"
                                 }`}
                                 onClick={() => setFiltersMenuOpen((prev) => !prev)}
                                 disabled={loading || !!errorMsg}
-                                title="Agrupación de Filtros de Densidad Ósea y Mapas de Color"
+                                title="Preajustes de densidad ósea, grosor MPR y mapa de color"
                             >
                                 <SlidersHorizontal className="h-3 w-3 text-indigo-400" />
                                 <span>Filtros:</span>
@@ -1337,7 +1094,11 @@ export function DicomViewerModalImpl({
                                     {activePresetLabel}
                                     {activeColorLabel}
                                 </span>
-                                <ChevronDown className={`h-3 w-3 text-slate-400 transition-transform ${filtersMenuOpen ? "rotate-180" : ""}`} />
+                                <ChevronDown
+                                    className={`h-3 w-3 text-slate-400 transition-transform ${
+                                        filtersMenuOpen ? "rotate-180" : ""
+                                    }`}
+                                />
                             </Button>
 
                             {filtersMenuOpen && (
@@ -1346,22 +1107,20 @@ export function DicomViewerModalImpl({
                                         className="fixed inset-0 z-40"
                                         onClick={() => setFiltersMenuOpen(false)}
                                     />
-                                    <div className="absolute right-0 mt-1.5 w-64 rounded-xl border border-slate-700/90 bg-slate-900/98 backdrop-blur-xl shadow-2xl p-2.5 z-50 text-xs space-y-2.5">
+                                    <div className="absolute right-0 mt-1.5 w-72 rounded-xl border border-slate-700/90 bg-slate-900/98 backdrop-blur-xl shadow-2xl p-3 z-50 text-xs space-y-3">
                                         <div>
-                                            <div className="flex items-center justify-between px-1.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                            <div className="flex items-center justify-between px-1 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
                                                 <span>Densidad Ósea (Window/Level)</span>
-                                                {hudWl && (
-                                                    <span className="font-mono text-[9px] text-indigo-400">
-                                                        W:{hudWl.width} L:{hudWl.center}
-                                                    </span>
-                                                )}
+                                                <span className="font-mono text-[9px] text-indigo-400">
+                                                    W:{sliceWl.width} L:{sliceWl.center}
+                                                </span>
                                             </div>
                                             <div className="grid grid-cols-2 gap-1">
                                                 {[
-                                                    { id: "default" as WlPreset, label: "Original DICOM", desc: "Calibración nativa" },
-                                                    { id: "bone" as WlPreset, label: "Dientes / Hueso", desc: "Raíces y cortical" },
-                                                    { id: "enamel" as WlPreset, label: "Esmalte / Metal", desc: "Endodoncia e implantes" },
-                                                    { id: "soft" as WlPreset, label: "Tejidos Blandos", desc: "Senos y vías aéreas" },
+                                                    { id: "auto" as WlPresetId, label: "Óptimo CBCT", desc: "Balance raíces/cortical" },
+                                                    { id: "bone" as WlPresetId, label: "Dientes / Hueso", desc: "Trabécula y ligamento" },
+                                                    { id: "enamel" as WlPresetId, label: "Esmalte / Metal", desc: "Conductos e implantes" },
+                                                    { id: "soft" as WlPresetId, label: "Tejidos / Senos", desc: "Mucosa y vías aéreas" },
                                                 ].map((item) => (
                                                     <button
                                                         key={item.id}
@@ -1378,7 +1137,9 @@ export function DicomViewerModalImpl({
                                                     >
                                                         <div className="flex items-center justify-between w-full">
                                                             <span className="font-semibold text-[11px]">{item.label}</span>
-                                                            {activeWlPreset === item.id && <Check className="h-3 w-3 text-indigo-400 shrink-0" />}
+                                                            {activeWlPreset === item.id && (
+                                                                <Check className="h-3 w-3 text-indigo-400 shrink-0" />
+                                                            )}
                                                         </div>
                                                         <span className="text-[9px] text-slate-400">{item.desc}</span>
                                                     </button>
@@ -1387,14 +1148,52 @@ export function DicomViewerModalImpl({
                                         </div>
 
                                         <div className="border-t border-slate-800 pt-2">
-                                            <div className="px-1.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                                                Mapa de Color Radiográfico
+                                            <div className="px-1 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                Grosor de Integración MPR (Tangencial / Transversal)
+                                            </div>
+                                            <div className="grid grid-cols-4 gap-1">
+                                                {[
+                                                    { mm: 0, label: "0.2 mm (Fino)" },
+                                                    { mm: 0.8, label: "0.8 mm" },
+                                                    { mm: 2.0, label: "2.0 mm" },
+                                                    { mm: 5.0, label: "5.0 mm" },
+                                                ].map((opt) => (
+                                                    <button
+                                                        key={opt.mm}
+                                                        type="button"
+                                                        onClick={() => setMprSlabMm(opt.mm)}
+                                                        className={`py-1 px-1.5 rounded-md border text-[10px] font-mono ${
+                                                            mprSlabMm === opt.mm
+                                                                ? "bg-cyan-600/30 border-cyan-500 text-cyan-200 font-semibold"
+                                                                : "bg-slate-950/70 border-slate-800 text-slate-400 hover:text-white"
+                                                        }`}
+                                                    >
+                                                        {opt.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="border-t border-slate-800 pt-2">
+                                            <div className="flex items-center justify-between px-1 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                <span>Mapa de Color y Nitidez</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setSharpenEnabled((s) => !s)}
+                                                    className={`px-1.5 py-0.5 rounded text-[9px] font-semibold border ${
+                                                        sharpenEnabled
+                                                            ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300"
+                                                            : "bg-slate-800 border-slate-700 text-slate-400"
+                                                    }`}
+                                                >
+                                                    Nitidez Cortical: {sharpenEnabled ? "ON" : "OFF"}
+                                                </button>
                                             </div>
                                             <div className="grid grid-cols-3 gap-1">
                                                 <button
                                                     type="button"
                                                     onClick={() => {
-                                                        handleColorMapChange("plain")
+                                                        setActiveColorMap("plain")
                                                         setFiltersMenuOpen(false)
                                                     }}
                                                     className={`flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg border text-[11px] font-medium ${
@@ -1408,7 +1207,7 @@ export function DicomViewerModalImpl({
                                                 <button
                                                     type="button"
                                                     onClick={() => {
-                                                        handleColorMapChange(activeColorMap === "hot" ? "plain" : "hot")
+                                                        setActiveColorMap(activeColorMap === "hot" ? "plain" : "hot")
                                                         setFiltersMenuOpen(false)
                                                     }}
                                                     className={`flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg border text-[11px] font-medium ${
@@ -1423,7 +1222,9 @@ export function DicomViewerModalImpl({
                                                 <button
                                                     type="button"
                                                     onClick={() => {
-                                                        handleColorMapChange(activeColorMap === "invPlain" ? "plain" : "invPlain")
+                                                        setActiveColorMap(
+                                                            activeColorMap === "invPlain" ? "plain" : "invPlain"
+                                                        )
                                                         setFiltersMenuOpen(false)
                                                     }}
                                                     className={`flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg border text-[11px] font-medium ${
@@ -1465,7 +1266,11 @@ export function DicomViewerModalImpl({
                             onClick={toggleFullscreen}
                             title={isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
                         >
-                            {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                            {isFullscreen ? (
+                                <Minimize2 className="h-3.5 w-3.5" />
+                            ) : (
+                                <Maximize2 className="h-3.5 w-3.5" />
+                            )}
                         </Button>
 
                         <Button
@@ -1480,42 +1285,8 @@ export function DicomViewerModalImpl({
                     </div>
                 </div>
 
-                {/* 3. Área Principal: Multivista Dental (5 Paneles estilo GALILEOS) o Vista Detallada */}
+                {/* 2. Área Principal de las 5 Vistas Clínicas estilo Sirona GALILEOS */}
                 <div className="flex-1 relative flex items-center justify-center bg-black overflow-hidden select-none touch-none">
-                    {/* Estilos globales requeridos por las capas DWV */}
-                    <style jsx global>{`
-                        #dwv-view-axial, #dwv-view-tangential, #dwv-view-cross {
-                            touch-action: none !important;
-                            user-select: none !important;
-                            -webkit-user-select: none !important;
-                        }
-                        #dwv-view-axial .layerGroup, #dwv-view-tangential .layerGroup, #dwv-view-cross .layerGroup {
-                            position: relative !important;
-                            width: 100% !important;
-                            height: 100% !important;
-                            display: flex !important;
-                            justify-content: center !important;
-                            align-items: center !important;
-                            touch-action: none !important;
-                        }
-                        #dwv-view-axial .layer, #dwv-view-tangential .layer, #dwv-view-cross .layer {
-                            position: absolute !important;
-                            top: 0 !important;
-                            left: 0 !important;
-                            width: 100% !important;
-                            height: 100% !important;
-                            display: flex !important;
-                            justify-content: center !important;
-                            align-items: center !important;
-                            touch-action: none !important;
-                        }
-                        #dwv-view-axial canvas, #dwv-view-tangential canvas, #dwv-view-cross canvas {
-                            touch-action: none !important;
-                            display: block !important;
-                            margin: auto !important;
-                        }
-                    `}</style>
-
                     {loading && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 z-40 gap-3.5 p-6 text-center">
                             <div className="relative">
@@ -1526,7 +1297,9 @@ export function DicomViewerModalImpl({
                             </div>
                             <div className="space-y-1">
                                 <p className="text-sm font-semibold text-slate-200">{loadStep}</p>
-                                <p className="text-xs text-slate-400">Generando reconstrucción volumétrica ortogonal y dental</p>
+                                <p className="text-xs text-slate-400">
+                                    Reconstrucción isotrópica real (Panorama CPR, 3D, Tangencial, Transversal y Axial)
+                                </p>
                             </div>
                             <div className="w-64 max-w-[80vw] bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700/50">
                                 <div
@@ -1556,50 +1329,162 @@ export function DicomViewerModalImpl({
                         </div>
                     )}
 
-                    {/* CONTENEDOR PRINCIPAL DE VISTAS (MULTIVISTA O VISTA INDIVIDUAL DETALLADA) */}
-                    <div className="flex-1 w-full h-full min-h-0 flex flex-col p-1.5 gap-1.5 overflow-hidden">
-                        {/* FILA SUPERIOR: Panorama (60%) + 3D (40%) */}
+                    {/* CONTENEDOR DE LOS 5 PANELES SINCRONIZADOS */}
+                    <div className="flex-1 w-full h-full min-h-0 flex flex-col p-1 gap-1 overflow-hidden">
+                        {/* FILA SUPERIOR: Panorama CPR (62%) + 3D Volumétrico (38%) */}
                         <div
-                            className={`min-h-0 gap-1.5 flex flex-col md:flex-row ${
+                            className={`min-h-0 gap-1 flex flex-col md:flex-row ${
                                 viewMode === "multi"
-                                    ? "flex-1"
+                                    ? "flex-[52]"
                                     : viewMode === "panorama" || viewMode === "3d"
                                     ? "flex-1 h-full"
                                     : "hidden"
                             }`}
                         >
-                            {/* Panel 1: Panorama */}
+                            {/* PANEL 1: PANORAMA (Reformateo Curvo Isotrópico Real + Regla Calibrada) */}
                             <div
-                                className={`min-w-0 min-h-0 border border-slate-800 rounded-xl overflow-hidden bg-black shadow-md flex flex-col ${
+                                className={`min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] shadow-md flex flex-col ${
                                     viewMode === "multi"
-                                        ? "flex-[6]"
+                                        ? "flex-[62]"
                                         : viewMode === "panorama"
                                         ? "w-full h-full flex-1"
                                         : "hidden"
                                 }`}
                             >
-                                <DentalPanoramaViewer
-                                    panorama={panoramaData}
-                                    status={reconStatus}
-                                    sliceIndex={sliceIndex}
-                                    totalSlices={totalSlices}
-                                    thicknessMm={panoThickness}
-                                    mode={panoMode}
-                                    onChangeThickness={setPanoThickness}
-                                    onChangeMode={setPanoMode}
-                                    onSelectToothRegion={handleSelectToothRegion}
-                                    onSelectArchPoint={handleSelectArchPoint}
-                                    onSelectSlice={(s) => goToSliceInDiv(s, "dwv-view-axial")}
-                                    isExpanded={viewMode === "panorama"}
-                                    onToggleExpand={() => setViewMode(viewMode === "multi" ? "panorama" : "multi")}
+                                <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-slate-900/95 border-b border-slate-800 z-20 text-[11px] shrink-0 gap-1">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                        <span className="px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 font-bold border border-blue-500/30 text-[10px] shrink-0">
+                                            Panorama
+                                        </span>
+                                        <span className="text-slate-300 font-medium truncate text-[11px]">
+                                            {selectedToothLabel}
+                                        </span>
+                                    </div>
+
+                                    <div className="flex items-center gap-1 flex-wrap">
+                                        {/* Modo Rx vs MIP */}
+                                        <div className="flex items-center bg-slate-950/90 rounded border border-slate-800 p-0.5">
+                                            <button
+                                                type="button"
+                                                onClick={() => setPanoMode("mean")}
+                                                className={`px-1.5 py-0.2 text-[9px] rounded font-medium transition-colors ${
+                                                    panoMode === "mean"
+                                                        ? "bg-blue-600 text-white"
+                                                        : "text-slate-400 hover:text-white"
+                                                }`}
+                                                title="Radiografía Panorámica CPR estándar (integración de rayos)"
+                                            >
+                                                Rx
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setPanoMode("mip")}
+                                                className={`px-1.5 py-0.2 text-[9px] rounded font-medium transition-colors ${
+                                                    panoMode === "mip"
+                                                        ? "bg-blue-600 text-white"
+                                                        : "text-slate-400 hover:text-white"
+                                                }`}
+                                                title="Proyección de Máxima Intensidad (MIP)"
+                                            >
+                                                MIP
+                                            </button>
+                                        </div>
+
+                                        {/* Grosor de capa panorámica */}
+                                        <div className="hidden sm:flex items-center bg-slate-950/90 rounded border border-slate-800 p-0.5">
+                                            {[2, 12, 18, 25].map((mm) => (
+                                                <button
+                                                    key={mm}
+                                                    type="button"
+                                                    onClick={() => setPanoThickness(mm)}
+                                                    className={`px-1.5 py-0.2 text-[9px] rounded font-mono transition-colors ${
+                                                        panoThickness === mm
+                                                            ? "bg-cyan-600 text-white"
+                                                            : "text-slate-400 hover:text-white"
+                                                    }`}
+                                                    title={`Grosor de corte panorámico: ${mm} mm`}
+                                                >
+                                                    {mm}mm
+                                                </button>
+                                            ))}
+                                        </div>
+
+                                        {/* Saltos rápidos por sector dental */}
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-5 px-1.5 text-[10px] text-slate-400 hover:text-white"
+                                            onClick={() => archModel && setArchS(archModel.length * 0.16)}
+                                        >
+                                            Molares Der.
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-5 px-1.5 text-[10px] text-slate-400 hover:text-white"
+                                            onClick={() => archModel && setArchS(archModel.length * 0.5)}
+                                        >
+                                            Incisivos
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-5 px-1.5 text-[10px] text-slate-400 hover:text-white"
+                                            onClick={() => archModel && setArchS(archModel.length * 0.84)}
+                                        >
+                                            Molares Izq.
+                                        </Button>
+
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-5 w-5 p-0 text-slate-400 hover:text-white"
+                                            onClick={() =>
+                                                setViewMode(viewMode === "multi" ? "panorama" : "multi")
+                                            }
+                                            title={
+                                                viewMode === "panorama"
+                                                    ? "Restaurar 5 Vistas"
+                                                    : "Ampliar Panorama"
+                                            }
+                                        >
+                                            {viewMode === "panorama" ? (
+                                                <Minimize2 className="h-3 w-3" />
+                                            ) : (
+                                                <Maximize2 className="h-3 w-3" />
+                                            )}
+                                        </Button>
+                                    </div>
+                                </div>
+
+                                <MprViewport
+                                    viewId="panorama"
+                                    image={panoramaImage}
+                                    slope={clinicalVol?.slope ?? 1}
+                                    intercept={clinicalVol?.intercept ?? 0}
+                                    windowLevel={panoWl}
+                                    colorMap={activeColorMap}
+                                    sharpen={sharpenEnabled}
+                                    activeTool={activeTool}
+                                    measurements={measurementsByView.panorama}
+                                    onChangeMeasurements={(next) => updateViewMeasurements("panorama", next)}
+                                    onAdjustWindowLevel={handleAdjustPanoWl}
+                                    onWheelStep={(steps) => stepFocusedPlane(steps, "cross")}
+                                    onNavigateMm={handleNavigatePanorama}
+                                    renderOverlay={renderPanoramaOverlay}
+                                    scaleBarCm={1}
+                                    bottomLeftBadge="R"
+                                    emptyText={reconStatus || "Reconstruyendo Panorámica CPR..."}
+                                    resetTrigger={resetTrigger}
+                                    externalZoomStep={externalZoomStep}
                                 />
                             </div>
 
-                            {/* Panel 2: 3D Interactivo */}
+                            {/* PANEL 2: 3D VOLUMÉTRICO INTERACTIVO */}
                             <div
-                                className={`min-w-0 min-h-0 border border-slate-800 rounded-xl overflow-hidden bg-black shadow-md flex flex-col ${
+                                className={`min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-black shadow-md flex flex-col ${
                                     viewMode === "multi"
-                                        ? "flex-[4]"
+                                        ? "flex-[38]"
                                         : viewMode === "3d"
                                         ? "w-full h-full flex-1"
                                         : "hidden"
@@ -1609,27 +1494,34 @@ export function DicomViewerModalImpl({
                                     volume={renderVolume}
                                     status={reconStatus}
                                     focus={volumeFocus}
-                                    sliceIndex={sliceIndex}
+                                    sliceIndex={currentSliceIndex}
                                     totalSlices={totalSlices}
                                     isExpanded={viewMode === "3d"}
-                                    onToggleExpand={() => setViewMode(viewMode === "multi" ? "3d" : "multi")}
+                                    onToggleExpand={() =>
+                                        setViewMode(viewMode === "multi" ? "3d" : "multi")
+                                    }
                                 />
                             </div>
                         </div>
 
-                        {/* FILA INFERIOR: Tangencial + Transversal + Axial */}
+                        {/* FILA INFERIOR: Tangencial + Sección Transversal + Axial (desde arriba) */}
                         <div
-                            className={`min-h-0 gap-1.5 flex flex-col md:flex-row ${
+                            className={`min-h-0 gap-1 flex flex-col md:flex-row ${
                                 viewMode === "multi"
-                                    ? "flex-1"
+                                    ? "flex-[48]"
                                     : viewMode === "tangential" || viewMode === "cross" || viewMode === "axial"
                                     ? "flex-1 h-full"
                                     : "hidden"
                             }`}
                         >
-                            {/* Panel 3: Tangencial (Coronal) */}
+                            {/* PANEL 3: TANGENCIAL (Plano oblicuo tangente al arco dental en s = archS) */}
                             <div
-                                className={`min-w-0 min-h-0 border border-slate-800 rounded-xl overflow-hidden bg-black shadow-md flex flex-col relative ${
+                                onPointerDown={() => setFocusedPlane("tangential")}
+                                className={`min-w-0 min-h-0 border rounded-lg overflow-hidden bg-[#03060c] shadow-md flex flex-col relative ${
+                                    focusedPlane === "tangential" && viewMode === "multi"
+                                        ? "border-emerald-500/70"
+                                        : "border-slate-800"
+                                } ${
                                     viewMode === "multi"
                                         ? "flex-1"
                                         : viewMode === "tangential"
@@ -1637,59 +1529,101 @@ export function DicomViewerModalImpl({
                                         : "hidden"
                                 }`}
                             >
-                                <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/95 border-b border-slate-800 z-10 text-[11px] shrink-0">
-                                    <div className="flex items-center gap-2">
-                                        <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 text-xs">
-                                            {viewMode === "tangential" ? "TANGENCIAL DETALLADO" : "TANGENCIAL"}
+                                <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/95 border-b border-slate-800 z-10 text-[11px] shrink-0">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                        <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 text-[10px]">
+                                            Tangencial
                                         </span>
-                                        <span className="text-slate-300 font-medium truncate">
-                                            {viewMode === "tangential"
-                                                ? `Corte ${slicesInfo.tangential.current + 1} de ${slicesInfo.tangential.total || 512} (Plano Coronal Dental)`
-                                                : "Corte Coronal / Raíces"}
+                                        <span className="text-slate-300 font-medium truncate text-[10px]">
+                                            {archD >= 0 ? `+${archD.toFixed(1)} mm (Vest.)` : `${archD.toFixed(1)} mm (Oral)`}
                                         </span>
                                     </div>
-                                    <div className="flex items-center gap-1.5">
-                                        <span className="text-[10px] font-mono text-slate-400">
-                                            {slicesInfo.tangential.current + 1} / {slicesInfo.tangential.total || 512}
-                                        </span>
+                                    <div className="flex items-center gap-1">
                                         <Button
                                             size="sm"
                                             variant="ghost"
-                                            className="h-6 px-1.5 text-xs text-slate-300 hover:text-white gap-1"
-                                            onClick={() => setViewMode(viewMode === "multi" ? "tangential" : "multi")}
-                                            title={viewMode === "tangential" ? "Restaurar 5 Vistas" : "Ver Tangencial en pantalla completa"}
+                                            className="h-5 px-1.5 text-[10px] text-slate-300 hover:text-white gap-1"
+                                            onClick={() =>
+                                                setViewMode(viewMode === "multi" ? "tangential" : "multi")
+                                            }
+                                            title={
+                                                viewMode === "tangential"
+                                                    ? "Restaurar 5 Vistas"
+                                                    : "Ampliar Corte Tangencial"
+                                            }
                                         >
                                             {viewMode === "tangential" ? (
                                                 <>
-                                                    <Minimize2 className="h-3.5 w-3.5" />
-                                                    <span className="hidden sm:inline">Restaurar 5 Vistas</span>
+                                                    <Minimize2 className="h-3 w-3" />
+                                                    <span className="hidden sm:inline">5 Vistas</span>
                                                 </>
                                             ) : (
-                                                <Maximize2 className="h-3.5 w-3.5" />
+                                                <Maximize2 className="h-3 w-3" />
                                             )}
                                         </Button>
                                     </div>
                                 </div>
-                                <div
-                                    onWheel={(e) => handleViewWheel("dwv-view-tangential", e)}
-                                    onPointerDown={(e) => handleViewPointerDown("dwv-view-tangential", e)}
-                                    onPointerMove={(e) => handleViewPointerMove("dwv-view-tangential", e)}
-                                    onPointerUp={handleViewPointerUp}
-                                    className="flex-1 w-full h-full relative cursor-crosshair touch-none"
-                                >
-                                    <div id="dwv-view-tangential" ref={tangentialRef} className="w-full h-full relative" />
-                                    <div className="absolute top-2 left-2 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-1.5 py-0.5 text-[9px] font-mono text-emerald-400">
-                                        Superior · Inferior (Ápices y Coronas)
-                                    </div>
-                                    <div className="absolute bottom-1.5 right-2 pointer-events-none z-10 text-[9px] font-mono text-slate-400">
-                                        1 cm
+
+                                <div className="flex-1 min-h-0 flex flex-row relative">
+                                    <MprViewport
+                                        viewId="tangential"
+                                        image={tangentialImg}
+                                        slope={clinicalVol?.slope ?? 1}
+                                        intercept={clinicalVol?.intercept ?? 0}
+                                        windowLevel={sliceWl}
+                                        colorMap={activeColorMap}
+                                        sharpen={sharpenEnabled}
+                                        activeTool={activeTool}
+                                        measurements={measurementsByView.tangential}
+                                        onChangeMeasurements={(next) =>
+                                            updateViewMeasurements("tangential", next)
+                                        }
+                                        onAdjustWindowLevel={handleAdjustSliceWl}
+                                        onWheelStep={(steps) => stepFocusedPlane(steps, "tangential")}
+                                        onNavigateMm={handleNavigateTangential}
+                                        renderOverlay={renderTangentialOverlay}
+                                        scaleBarCm={1}
+                                        resetTrigger={resetTrigger}
+                                        externalZoomStep={externalZoomStep}
+                                    />
+
+                                    {/* Barra lateral derecha de desplazamiento tangencial estilo Sirona GALILEOS */}
+                                    <div
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        className="w-5 bg-slate-900/90 border-l border-slate-800/80 flex flex-col items-center justify-between py-1.5 select-none shrink-0"
+                                        title="Desplazamiento buco-lingual del corte tangencial (-12 mm a +12 mm)"
+                                    >
+                                        <span className="text-[8px] font-mono text-slate-400">90°</span>
+                                        <input
+                                            type="range"
+                                            min={-MAX_ARCH_OFFSET_D_MM}
+                                            max={MAX_ARCH_OFFSET_D_MM}
+                                            step={0.25}
+                                            value={archD}
+                                            onChange={(e) => setArchD(parseFloat(e.target.value))}
+                                            className="h-24 w-3 accent-cyan-400 cursor-pointer"
+                                            style={{ writingMode: "vertical-lr", direction: "rtl" }}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setArchD(0)}
+                                            className="text-[8px] font-mono text-cyan-400 hover:underline"
+                                            title="Centrar en el arco (0 mm)"
+                                        >
+                                            0
+                                        </button>
                                     </div>
                                 </div>
                             </div>
 
-                            {/* Panel 4: Sección Transversal (Sagital) */}
+                            {/* PANEL 4: SECCIÓN TRANSVERSAL (Plano perpendicular al arco: oral <-> labial/bucal) */}
                             <div
-                                className={`min-w-0 min-h-0 border border-slate-800 rounded-xl overflow-hidden bg-black shadow-md flex flex-col relative ${
+                                onPointerDown={() => setFocusedPlane("cross")}
+                                className={`min-w-0 min-h-0 border rounded-lg overflow-hidden bg-[#03060c] shadow-md flex flex-col relative ${
+                                    focusedPlane === "cross" && viewMode === "multi"
+                                        ? "border-purple-500/70"
+                                        : "border-slate-800"
+                                } ${
                                     viewMode === "multi"
                                         ? "flex-1"
                                         : viewMode === "cross"
@@ -1697,59 +1631,96 @@ export function DicomViewerModalImpl({
                                         : "hidden"
                                 }`}
                             >
-                                <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/95 border-b border-slate-800 z-10 text-[11px] shrink-0">
-                                    <div className="flex items-center gap-2">
-                                        <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30 text-xs">
-                                            {viewMode === "cross" ? "SECCIÓN TRANSVERSAL DETALLADA" : "TRANSVERSAL"}
+                                <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/95 border-b border-slate-800 z-10 text-[11px] shrink-0">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                        <span className="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30 text-[10px]">
+                                            Sección transversal
                                         </span>
-                                        <span className="text-slate-300 font-medium truncate">
-                                            {viewMode === "cross"
-                                                ? `Corte ${slicesInfo.cross.current + 1} de ${slicesInfo.cross.total || 512} (Buco-Lingual / Altura Ósea)`
-                                                : "Buco-Lingual / Reborde"}
+                                        <span className="text-slate-300 font-medium truncate text-[10px]">
+                                            {archS.toFixed(1)} / {(archModel?.length || 100).toFixed(0)} mm
                                         </span>
                                     </div>
-                                    <div className="flex items-center gap-1.5">
-                                        <span className="text-[10px] font-mono text-slate-400">
-                                            {slicesInfo.cross.current + 1} / {slicesInfo.cross.total || 512}
-                                        </span>
+                                    <div className="flex items-center gap-1">
                                         <Button
                                             size="sm"
                                             variant="ghost"
-                                            className="h-6 px-1.5 text-xs text-slate-300 hover:text-white gap-1"
-                                            onClick={() => setViewMode(viewMode === "multi" ? "cross" : "multi")}
-                                            title={viewMode === "cross" ? "Restaurar 5 Vistas" : "Ver Transversal en pantalla completa"}
+                                            className="h-5 px-1.5 text-[10px] text-slate-300 hover:text-white gap-1"
+                                            onClick={() =>
+                                                setViewMode(viewMode === "multi" ? "cross" : "multi")
+                                            }
+                                            title={
+                                                viewMode === "cross"
+                                                    ? "Restaurar 5 Vistas"
+                                                    : "Ampliar Sección Transversal"
+                                            }
                                         >
                                             {viewMode === "cross" ? (
                                                 <>
-                                                    <Minimize2 className="h-3.5 w-3.5" />
-                                                    <span className="hidden sm:inline">Restaurar 5 Vistas</span>
+                                                    <Minimize2 className="h-3 w-3" />
+                                                    <span className="hidden sm:inline">5 Vistas</span>
                                                 </>
                                             ) : (
-                                                <Maximize2 className="h-3.5 w-3.5" />
+                                                <Maximize2 className="h-3 w-3" />
                                             )}
                                         </Button>
                                     </div>
                                 </div>
-                                <div
-                                    onWheel={(e) => handleViewWheel("dwv-view-cross", e)}
-                                    onPointerDown={(e) => handleViewPointerDown("dwv-view-cross", e)}
-                                    onPointerMove={(e) => handleViewPointerMove("dwv-view-cross", e)}
-                                    onPointerUp={handleViewPointerUp}
-                                    className="flex-1 w-full h-full relative cursor-crosshair touch-none"
-                                >
-                                    <div id="dwv-view-cross" ref={crossRef} className="w-full h-full relative" />
-                                    <div className="absolute top-2 left-2 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-1.5 py-0.5 text-[9px] font-mono text-purple-400">
-                                        oral (palatino/lingual) · labial/bucal
-                                    </div>
-                                    <div className="absolute bottom-1.5 right-2 pointer-events-none z-10 text-[9px] font-mono text-slate-400">
-                                        1 cm
+
+                                <div className="flex-1 min-h-0 flex flex-row relative">
+                                    <MprViewport
+                                        viewId="cross"
+                                        image={crossImg}
+                                        slope={clinicalVol?.slope ?? 1}
+                                        intercept={clinicalVol?.intercept ?? 0}
+                                        windowLevel={sliceWl}
+                                        colorMap={activeColorMap}
+                                        sharpen={sharpenEnabled}
+                                        activeTool={activeTool}
+                                        measurements={measurementsByView.cross}
+                                        onChangeMeasurements={(next) =>
+                                            updateViewMeasurements("cross", next)
+                                        }
+                                        onAdjustWindowLevel={handleAdjustSliceWl}
+                                        onWheelStep={(steps) => stepFocusedPlane(steps, "cross")}
+                                        onNavigateMm={handleNavigateCross}
+                                        renderOverlay={renderCrossOverlay}
+                                        scaleBarCm={1}
+                                        leftLabel="oral"
+                                        rightLabel="labial/bucal"
+                                        resetTrigger={resetTrigger}
+                                        externalZoomStep={externalZoomStep}
+                                    />
+
+                                    {/* Barra lateral derecha de recorrido por el arco dental estilo Sirona GALILEOS */}
+                                    <div
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        className="w-5 bg-slate-900/90 border-l border-slate-800/80 flex flex-col items-center justify-between py-1.5 select-none shrink-0"
+                                        title="Recorrer posición a lo largo del arco dental (mm)"
+                                    >
+                                        <span className="text-[8px] font-mono text-slate-400">R</span>
+                                        <input
+                                            type="range"
+                                            min={0}
+                                            max={Math.max(1, archModel?.length || 100)}
+                                            step={0.5}
+                                            value={archS}
+                                            onChange={(e) => setArchS(parseFloat(e.target.value))}
+                                            className="h-24 w-3 accent-cyan-400 cursor-pointer"
+                                            style={{ writingMode: "vertical-lr" }}
+                                        />
+                                        <span className="text-[8px] font-mono text-slate-400">L</span>
                                     </div>
                                 </div>
                             </div>
 
-                            {/* Panel 5: Axial (Horizontal) */}
+                            {/* PANEL 5: AXIAL (Desde arriba + curva del arco + cruz amarilla tangencial/transversal) */}
                             <div
-                                className={`min-w-0 min-h-0 border border-slate-800 rounded-xl overflow-hidden bg-black shadow-md flex flex-col relative ${
+                                onPointerDown={() => setFocusedPlane("axial")}
+                                className={`min-w-0 min-h-0 border rounded-lg overflow-hidden bg-[#03060c] shadow-md flex flex-col relative ${
+                                    focusedPlane === "axial" && viewMode === "multi"
+                                        ? "border-cyan-500/70"
+                                        : "border-slate-800"
+                                } ${
                                     viewMode === "multi"
                                         ? "flex-1"
                                         : viewMode === "axial"
@@ -1757,118 +1728,133 @@ export function DicomViewerModalImpl({
                                         : "hidden"
                                 }`}
                             >
-                                <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900/95 border-b border-slate-800 z-10 text-[11px] shrink-0">
-                                    <div className="flex items-center gap-2">
-                                        <span className="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30 text-xs">
-                                            {viewMode === "axial" ? "CORTE AXIAL DETALLADO" : "AXIAL"}
+                                <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/95 border-b border-slate-800 z-10 text-[11px] shrink-0">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                        <span className="px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30 text-[10px]">
+                                            Axial (desde arriba)
                                         </span>
-                                        <span className="text-slate-300 font-medium truncate">
-                                            {viewMode === "axial"
-                                                ? `Corte ${sliceIndex + 1} de ${totalSlices} (Arco Dental Horizontal)`
-                                                : "Desde arriba / Arco"}
+                                        <span className="text-slate-300 font-medium truncate text-[10px]">
+                                            Corte {currentSliceIndex + 1} / {totalSlices} ({axialH.toFixed(1)} mm)
                                         </span>
                                     </div>
-                                    <div className="flex items-center gap-1.5">
-                                        <span className="text-[10px] font-mono text-slate-400">
-                                            {sliceIndex + 1} / {totalSlices}
-                                        </span>
+                                    <div className="flex items-center gap-1">
                                         <Button
                                             size="sm"
                                             variant="ghost"
-                                            className="h-6 px-1.5 text-xs text-slate-300 hover:text-white gap-1"
-                                            onClick={() => setViewMode(viewMode === "multi" ? "axial" : "multi")}
-                                            title={viewMode === "axial" ? "Restaurar 5 Vistas" : "Ver Axial en pantalla completa"}
+                                            className="h-5 px-1.5 text-[10px] text-slate-300 hover:text-white gap-1"
+                                            onClick={() =>
+                                                setViewMode(viewMode === "multi" ? "axial" : "multi")
+                                            }
+                                            title={
+                                                viewMode === "axial"
+                                                    ? "Restaurar 5 Vistas"
+                                                    : "Ampliar Corte Axial"
+                                            }
                                         >
                                             {viewMode === "axial" ? (
                                                 <>
-                                                    <Minimize2 className="h-3.5 w-3.5" />
-                                                    <span className="hidden sm:inline">Restaurar 5 Vistas</span>
+                                                    <Minimize2 className="h-3 w-3" />
+                                                    <span className="hidden sm:inline">5 Vistas</span>
                                                 </>
                                             ) : (
-                                                <Maximize2 className="h-3.5 w-3.5" />
+                                                <Maximize2 className="h-3 w-3" />
                                             )}
                                         </Button>
                                     </div>
                                 </div>
-                                <div
-                                    onWheel={(e) => handleViewWheel("dwv-view-axial", e)}
-                                    onPointerDown={(e) => handleViewPointerDown("dwv-view-axial", e)}
-                                    onPointerMove={(e) => handleViewPointerMove("dwv-view-axial", e)}
-                                    onPointerUp={handleViewPointerUp}
-                                    className="flex-1 w-full h-full relative cursor-crosshair touch-none"
-                                >
-                                    <div id="dwv-view-axial" ref={axialRef} className="w-full h-full relative" />
-                                    <div className="absolute top-2 right-2 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-1.5 py-0.5 text-[9px] font-mono text-cyan-400">
-                                        A (Anterior)
-                                    </div>
-                                    <div className="absolute bottom-2 right-2 pointer-events-none z-10 bg-slate-950/70 border border-slate-800 rounded px-1.5 py-0.5 text-[9px] font-mono text-cyan-400">
-                                        P (Posterior)
-                                    </div>
-                                    <div className="absolute bottom-1.5 left-2 pointer-events-none z-10 text-[9px] font-mono text-slate-400">
-                                        5 cm
-                                    </div>
-                                </div>
+
+                                <MprViewport
+                                    viewId="axial"
+                                    image={axialImg}
+                                    slope={clinicalVol?.slope ?? 1}
+                                    intercept={clinicalVol?.intercept ?? 0}
+                                    windowLevel={sliceWl}
+                                    colorMap={activeColorMap}
+                                    sharpen={sharpenEnabled}
+                                    activeTool={activeTool}
+                                    measurements={measurementsByView.axial}
+                                    onChangeMeasurements={(next) => updateViewMeasurements("axial", next)}
+                                    onAdjustWindowLevel={handleAdjustSliceWl}
+                                    onWheelStep={(steps) => stepFocusedPlane(steps, "axial")}
+                                    onNavigateMm={handleNavigateAxial}
+                                    renderOverlay={renderAxialOverlay}
+                                    scaleBarCm={5}
+                                    bottomLeftBadge="R"
+                                    resetTrigger={resetTrigger}
+                                    externalZoomStep={externalZoomStep}
+                                />
                             </div>
                         </div>
                     </div>
                 </div>
 
-                {/* 4. Barra Inferior Compacta con Reproductor de Cine, Scrubber de Precisión y Saltos Anatómicos */}
-                {totalSlices > 1 && (() => {
-                    const activeDivId =
-                        viewMode === "tangential"
-                            ? "dwv-view-tangential"
-                            : viewMode === "cross"
-                            ? "dwv-view-cross"
-                            : focusedViewId || "dwv-view-axial"
+                {/* 3. Barra Inferior Compacta con Reproductor de Cine, Scrubber de Precisión y Saltos Anatómicos */}
+                {clinicalVol && archModel && (() => {
+                    const plane = activePlaneAfterViewMode
 
                     const activePlaneName =
-                        activeDivId === "dwv-view-tangential"
+                        plane === "tangential"
                             ? "TANGENCIAL"
-                            : activeDivId === "dwv-view-cross"
+                            : plane === "cross"
                             ? "TRANSVERSAL"
                             : "AXIAL"
 
                     const activePlaneBadgeClass =
-                        activeDivId === "dwv-view-tangential"
+                        plane === "tangential"
                             ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
-                            : activeDivId === "dwv-view-cross"
+                            : plane === "cross"
                             ? "bg-purple-500/20 text-purple-300 border-purple-500/30"
                             : "bg-cyan-500/20 text-cyan-300 border-cyan-500/30"
 
-                    const currentActiveSlice =
-                        activeDivId === "dwv-view-tangential"
-                            ? slicesInfo.tangential.current
-                            : activeDivId === "dwv-view-cross"
-                            ? slicesInfo.cross.current
-                            : sliceIndex
+                    const sliderMin = plane === "tangential" ? -MAX_ARCH_OFFSET_D_MM : 0
+                    const sliderMax =
+                        plane === "tangential"
+                            ? MAX_ARCH_OFFSET_D_MM
+                            : plane === "cross"
+                            ? Math.max(1, archModel.length)
+                            : Math.max(1, clinicalVol.heightMm)
+                    const sliderStep = plane === "tangential" ? 0.25 : plane === "cross" ? 0.5 : Math.max(0.2, clinicalVol.sz)
+                    const sliderVal =
+                        plane === "tangential" ? archD : plane === "cross" ? archS : axialH
 
-                    const currentActiveTotal =
-                        activeDivId === "dwv-view-tangential"
-                            ? slicesInfo.tangential.total || 512
-                            : activeDivId === "dwv-view-cross"
-                            ? slicesInfo.cross.total || 512
-                            : totalSlices || 698
+                    const handleSliderChange = (val: number) => {
+                        if (plane === "tangential") setArchD(val)
+                        else if (plane === "cross") setArchS(val)
+                        else setAxialH(val)
+                    }
+
+                    const statusReadout =
+                        plane === "axial"
+                            ? `Corte ${currentSliceIndex + 1} / ${totalSlices}`
+                            : plane === "cross"
+                            ? `Arco ${archS.toFixed(1)} / ${archModel.length.toFixed(0)} mm`
+                            : `Offset ${archD >= 0 ? "+" : ""}${archD.toFixed(1)} mm`
 
                     return (
                         <div className="px-2.5 sm:px-4 py-1.5 bg-slate-900/95 border-t border-slate-800/90 flex flex-wrap items-center justify-between gap-2 shrink-0">
-                            {/* Grupo Izquierdo: Plano Activo + Controles de Cine Loop */}
+                            {/* Grupo Izquierdo: Selector de Plano Activo + Controles de Cine Loop */}
                             <div className="flex items-center gap-1.5 shrink-0">
-                                <span
-                                    className={`hidden md:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider border ${activePlaneBadgeClass}`}
-                                    title="Plano tomográfico controlado por la barra inferior"
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        setFocusedPlane((p) =>
+                                            p === "axial" ? "cross" : p === "cross" ? "tangential" : "axial"
+                                        )
+                                    }
+                                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider border cursor-pointer ${activePlaneBadgeClass}`}
+                                    title="Haga clic para alternar qué plano controla esta barra inferior (Axial / Transversal / Tangencial)"
                                 >
                                     {activePlaneName}
-                                </span>
+                                </button>
 
                                 <div className="flex items-center gap-0.5 bg-slate-950/90 p-0.5 rounded-lg border border-slate-800">
                                     <Button
                                         size="sm"
                                         variant="ghost"
                                         className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                        onClick={() => goToSliceInDiv(currentActiveSlice - 10, activeDivId)}
-                                        disabled={loading || currentActiveSlice <= 0}
-                                        title="Retroceder 10 cortes (RePág)"
+                                        onClick={() => stepFocusedPlane(-8, plane)}
+                                        disabled={loading}
+                                        title="Retroceder rápido (RePág)"
                                     >
                                         <ChevronsLeft className="h-3.5 w-3.5" />
                                     </Button>
@@ -1877,9 +1863,9 @@ export function DicomViewerModalImpl({
                                         size="sm"
                                         variant="ghost"
                                         className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                        onClick={() => goToSliceInDiv(currentActiveSlice - 1, activeDivId)}
-                                        disabled={loading || currentActiveSlice <= 0}
-                                        title="Corte anterior (Flecha izquierda/arriba)"
+                                        onClick={() => stepFocusedPlane(-1, plane)}
+                                        disabled={loading}
+                                        title="Paso anterior (Flecha izquierda/arriba)"
                                     >
                                         <ChevronLeft className="h-3.5 w-3.5" />
                                     </Button>
@@ -1894,9 +1880,17 @@ export function DicomViewerModalImpl({
                                         }`}
                                         onClick={() => setIsPlaying(!isPlaying)}
                                         disabled={loading}
-                                        title={isPlaying ? "Pausar animación (Espacio)" : "Reproducir cortes continuamente (Espacio)"}
+                                        title={
+                                            isPlaying
+                                                ? "Pausar recorrido (Espacio)"
+                                                : "Reproducir recorrido continuo (Espacio)"
+                                        }
                                     >
-                                        {isPlaying ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3 fill-current" />}
+                                        {isPlaying ? (
+                                            <Pause className="h-3 w-3" />
+                                        ) : (
+                                            <Play className="h-3 w-3 fill-current" />
+                                        )}
                                         <span>{isPlaying ? "Pausa" : "Reproducir"}</span>
                                     </Button>
 
@@ -1904,9 +1898,9 @@ export function DicomViewerModalImpl({
                                         size="sm"
                                         variant="ghost"
                                         className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                        onClick={() => goToSliceInDiv(currentActiveSlice + 1, activeDivId)}
-                                        disabled={loading || currentActiveSlice >= currentActiveTotal - 1}
-                                        title="Corte siguiente (Flecha derecha/abajo)"
+                                        onClick={() => stepFocusedPlane(1, plane)}
+                                        disabled={loading}
+                                        title="Paso siguiente (Flecha derecha/abajo)"
                                     >
                                         <ChevronRight className="h-3.5 w-3.5" />
                                     </Button>
@@ -1915,9 +1909,9 @@ export function DicomViewerModalImpl({
                                         size="sm"
                                         variant="ghost"
                                         className="h-6 w-6 p-0 text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                        onClick={() => goToSliceInDiv(currentActiveSlice + 10, activeDivId)}
-                                        disabled={loading || currentActiveSlice >= currentActiveTotal - 1}
-                                        title="Avanzar 10 cortes (AvPág)"
+                                        onClick={() => stepFocusedPlane(8, plane)}
+                                        disabled={loading}
+                                        title="Avanzar rápido (AvPág)"
                                     >
                                         <ChevronsRight className="h-3.5 w-3.5" />
                                     </Button>
@@ -1926,17 +1920,16 @@ export function DicomViewerModalImpl({
 
                             {/* Grupo Central: Barra Deslizante de Precisión */}
                             <div className="flex-1 min-w-[160px] flex items-center gap-2.5 px-1">
-                                <span className="text-[11px] text-slate-500 font-mono shrink-0">1</span>
                                 <Slider
-                                    value={[currentActiveSlice]}
-                                    min={0}
-                                    max={Math.max(0, currentActiveTotal - 1)}
-                                    step={1}
-                                    onValueChange={(val) => goToSliceInDiv(val[0], activeDivId)}
+                                    value={[sliderVal]}
+                                    min={sliderMin}
+                                    max={sliderMax}
+                                    step={sliderStep}
+                                    onValueChange={(val) => handleSliderChange(val[0])}
                                     className="flex-1 py-1 cursor-pointer"
                                 />
                                 <span className="px-2 py-0.5 rounded-md bg-slate-950/90 border border-slate-800 text-[11px] font-semibold text-blue-400 font-mono shrink-0 text-center">
-                                    {currentActiveSlice + 1} / {currentActiveTotal}
+                                    {statusReadout}
                                 </span>
                             </div>
 
@@ -1946,9 +1939,9 @@ export function DicomViewerModalImpl({
                                     size="sm"
                                     variant="ghost"
                                     className="h-6 px-2 text-[11px] text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                    onClick={() => goToSliceInDiv(Math.floor(currentActiveTotal * 0.38), activeDivId)}
+                                    onClick={() => setAxialH(clinicalVol.heightMm * 0.65)}
                                     disabled={loading}
-                                    title="Saltar a la zona anatómica superior (Maxilar Superior / Senos)"
+                                    title="Ir a nivel anatómico superior (Maxilar Superior / Ápices superiores)"
                                 >
                                     Maxilar Sup.
                                 </Button>
@@ -1959,9 +1952,12 @@ export function DicomViewerModalImpl({
                                     size="sm"
                                     variant="ghost"
                                     className="h-6 px-2 text-[11px] bg-blue-950/50 text-blue-300 hover:bg-blue-900/60 hover:text-white font-medium rounded-md"
-                                    onClick={() => goToSliceInDiv(Math.floor(currentActiveTotal * 0.50), activeDivId)}
+                                    onClick={() => {
+                                        setAxialH(clinicalVol.heightMm * 0.48)
+                                        setArchD(0)
+                                    }}
                                     disabled={loading}
-                                    title="Saltar al plano oclusal / dental central (Dientes)"
+                                    title="Ir al plano oclusal / coronas dentales"
                                 >
                                     Dientes
                                 </Button>
@@ -1972,9 +1968,9 @@ export function DicomViewerModalImpl({
                                     size="sm"
                                     variant="ghost"
                                     className="h-6 px-2 text-[11px] text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                    onClick={() => goToSliceInDiv(Math.floor(currentActiveTotal * 0.62), activeDivId)}
+                                    onClick={() => setAxialH(clinicalVol.heightMm * 0.32)}
                                     disabled={loading}
-                                    title="Saltar a la zona anatómica inferior (Mandíbula)"
+                                    title="Ir a nivel anatómico inferior (Mandíbula)"
                                 >
                                     Mandíbula
                                 </Button>

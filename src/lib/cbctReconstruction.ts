@@ -21,6 +21,8 @@ export interface CbctVolume {
     pAir: number
     pLow: number
     pHigh: number
+    slope?: number
+    intercept?: number
 }
 
 export interface RenderVolume {
@@ -117,7 +119,7 @@ export function extractCbctVolume(app: any): CbctVolume | null {
         const sy = sp.get(1) || sx
         const sz = sp.get(2) || sx
         const raw = image.getBuffer()
-        if (!raw || nz < 16 || raw.length < nx * ny * nz) return null
+        if (!raw || nz < 1 || raw.length < nx * ny * nz) return null
 
         let zUp = true
         const origins = typeof geom.getOrigins === "function" ? geom.getOrigins() : null
@@ -125,8 +127,22 @@ export function extractCbctVolume(app: any): CbctVolume | null {
             zUp = origins[origins.length - 1].getZ() >= origins[0].getZ()
         }
 
+        let slope = 1
+        let intercept = 0
+        try {
+            const rsi = typeof image.getRescaleSlopeAndIntercept === "function"
+                ? image.getRescaleSlopeAndIntercept()
+                : null
+            if (rsi) {
+                const s = typeof rsi.getSlope === "function" ? rsi.getSlope() : 1
+                const ic = typeof rsi.getIntercept === "function" ? rsi.getIntercept() : 0
+                if (typeof s === "number" && Number.isFinite(s) && s !== 0) slope = s
+                if (typeof ic === "number" && Number.isFinite(ic)) intercept = ic
+            }
+        } catch {}
+
         const [pAir, pLow, pHigh] = sampleQuantiles(raw, [0.01, 0.05, 0.9995])
-        return { raw, nx, ny, nz, sx, sy, sz, zUp, pAir, pLow, pHigh: Math.max(pHigh, pLow + 1) }
+        return { raw, nx, ny, nz, sx, sy, sz, zUp, pAir, pLow, pHigh: Math.max(pHigh, pLow + 1), slope, intercept }
     } catch (err) {
         console.warn("No se pudo extraer el volumen CBCT:", err)
         return null
