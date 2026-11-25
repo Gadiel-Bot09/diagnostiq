@@ -161,7 +161,7 @@ export default function PatientDashboard() {
 
     const [loadingKey, setLoadingKey] = useState<string | null>(null)
     const [preview, setPreview] = useState<{ url: string; name: string; subtitle?: string } | null>(null)
-    const [dicomPreview, setDicomPreview] = useState<{ url: string; downloadUrl: string; name: string; subtitle?: string } | null>(null)
+    const [dicomPreview, setDicomPreview] = useState<{ fileId: string; url: string; downloadUrl: string; name: string; subtitle?: string } | null>(null)
 
     const { data: orders = [], isLoading } = useQuery({
         queryKey: ["patient-orders"],
@@ -365,6 +365,7 @@ export default function PatientDashboard() {
                     downloadUrl = await fetchUrl(exam.file.id, false)
                 } catch {}
                 setDicomPreview({
+                    fileId: exam.file.id,
                     url,
                     downloadUrl,
                     name: `${exam.name} · #${order.order_number}`,
@@ -967,6 +968,7 @@ export default function PatientDashboard() {
                 zipUrl={dicomPreview?.url || null}
                 downloadUrl={dicomPreview?.downloadUrl}
                 subtitle={dicomPreview?.subtitle}
+                resultFileId={dicomPreview?.fileId}
             />
         </div>
     )

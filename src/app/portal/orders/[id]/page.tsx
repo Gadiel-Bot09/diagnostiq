@@ -35,7 +35,7 @@ export default function OrderDetailsPage() {
     const { toast } = useToast()
     const [isDownloading, setIsDownloading] = useState(false)
     const [previewFile, setPreviewFile] = useState<{ url: string; name: string; subtitle?: string } | null>(null)
-    const [dicomModal, setDicomModal] = useState<{ url: string; downloadUrl: string; name: string; subtitle?: string } | null>(null)
+    const [dicomModal, setDicomModal] = useState<{ fileId: string; url: string; downloadUrl: string; name: string; subtitle?: string } | null>(null)
     const [previewingId, setPreviewingId] = useState<string | null>(null)
     const supabase = createClient()
 
@@ -95,6 +95,7 @@ export default function OrderDetailsPage() {
                 } catch {}
 
                 setDicomModal({
+                    fileId: file.id,
                     url: data.url,
                     downloadUrl: downloadUrl,
                     name: `${examTitle || file.file_name} · #${order.order_number}`,
@@ -428,6 +429,7 @@ export default function OrderDetailsPage() {
                 zipUrl={dicomModal?.url || null}
                 downloadUrl={dicomModal?.downloadUrl}
                 subtitle={dicomModal?.subtitle}
+                resultFileId={dicomModal?.fileId}
             />
         </div>
     )

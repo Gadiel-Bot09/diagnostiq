@@ -53,7 +53,7 @@ export default function DoctorPage() {
     const [hasSearched, setHasSearched] = useState(false)
     const [downloadingId, setDownloadingId] = useState<string | null>(null)
     const [previewFile, setPreviewFile] = useState<{ url: string, name: string, type: string } | null>(null)
-    const [dicomModal, setDicomModal] = useState<{ url: string; downloadUrl: string; name: string } | null>(null)
+    const [dicomModal, setDicomModal] = useState<{ fileId: string; url: string; downloadUrl: string; name: string } | null>(null)
     const [previewingId, setPreviewingId] = useState<string | null>(null)
 
     // ── Search ──
@@ -118,7 +118,7 @@ export default function DoctorPage() {
                     const dlData = await dlRes.json()
                     if (dlData.url) downloadUrl = dlData.url
                 } catch {}
-                setDicomModal({ url: data.url, downloadUrl, name: fileName })
+                setDicomModal({ fileId, url: data.url, downloadUrl, name: fileName })
             } else {
                 setPreviewFile({ url: data.url, name: fileName, type: mimeType })
             }
@@ -357,6 +357,7 @@ export default function DoctorPage() {
                 title={dicomModal?.name || "Tomografía DICOM 3D"}
                 zipUrl={dicomModal?.url || null}
                 downloadUrl={dicomModal?.downloadUrl}
+                resultFileId={dicomModal?.fileId}
             />
 
             {/* Preview Modal */}

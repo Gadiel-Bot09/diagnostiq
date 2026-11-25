@@ -53,6 +53,12 @@ import {
 } from "./MprViewport"
 import { StudyCutsGallery } from "./StudyCutsGallery"
 import { InVivoMprWorkspace, InVivoArchSerialWorkspace } from "./InVivoWorkspaces"
+import { SavedCutsMenu } from "./SavedCutsMenu"
+import type {
+    CbctClinicalScene,
+    PersistedWorkspace,
+    SavedClinicalCut,
+} from "@/lib/cbct/clinicalScene"
 import {
     buildRenderVolume,
     detectDentalArch,
@@ -106,6 +112,8 @@ export interface DicomViewerModalProps {
     zipUrl: string | null
     downloadUrl?: string
     subtitle?: string
+    /** ID del archivo en `result_files` para cargar y persistir cortes preparados, arco, nervio y mediciones */
+    resultFileId?: string | null
 }
 
 export type ViewMode =
@@ -140,10 +148,23 @@ export function DicomViewerModalImpl({
     title,
     zipUrl,
     downloadUrl,
+    resultFileId,
 }: DicomViewerModalProps) {
     const hiddenLoaderRef = useRef<HTMLDivElement>(null)
     const dwvAppRef = useRef<any>(null)
     const objectUrlsRef = useRef<string[]>([])
+    const pendingSceneRef = useRef<CbctClinicalScene | null>(null)
+    const sceneAppliedRef = useRef<boolean>(false)
+
+    // Estado de persistencia clínica (Fase 4: Cortes específicos preparados + Escena CBCT en Supabase)
+    const [savedCuts, setSavedCuts] = useState<SavedClinicalCut[]>([])
+    const [canEditScene, setCanEditScene] = useState<boolean>(false)
+    const [sceneMeta, setSceneMeta] = useState<{ updatedByName?: string; updatedAt?: string } | null>(null)
+    const [isSavingScene, setIsSavingScene] = useState<boolean>(false)
+    const [saveFeedback, setSaveFeedback] = useState<"idle" | "saved" | "error">("idle")
+    const [saveErrorMsg, setSaveErrorMsg] = useState<string | null>(null)
+    const [hasUnsavedChanges, setHasUnsavedChanges] = useState<boolean>(false)
+    const [activeCutId, setActiveCutId] = useState<string | null>(null)
 
     // Estado de carga del estudio
     const [loading, setLoading] = useState(true)
@@ -245,6 +266,7 @@ export function DicomViewerModalImpl({
 
     const updateViewMeasurements = useCallback((viewKey: string, next: ClinicalMeasurement[]) => {
         setMeasurementsByView((prev) => ({ ...prev, [viewKey]: next }))
+        setHasUnsavedChanges(true)
     }, [])
 
     const handleDeleteSingleMeasurement = useCallback((viewKey: string, id: string) => {
@@ -252,6 +274,7 @@ export function DicomViewerModalImpl({
             ...prev,
             [viewKey]: (prev[viewKey] || []).filter((item) => item.id !== id),
         }))
+        setHasUnsavedChanges(true)
     }, [])
 
     const handleClearAllMeasurements = useCallback(() => {
@@ -263,6 +286,7 @@ export function DicomViewerModalImpl({
             coronal: [],
             sagittal: [],
         })
+        setHasUnsavedChanges(true)
     }, [])
 
     const handleJumpToMeasurement = useCallback(
@@ -294,7 +318,267 @@ export function DicomViewerModalImpl({
 
     const handleAddNervePoint3D = useCallback((pt: Vec3) => {
         setNervePoints3D((prev) => [...prev, pt])
+        setHasUnsavedChanges(true)
     }, [])
+
+    // Aplicar una escena clínica guardada sobre el volumen recién cargado
+    const applyClinicalScene = useCallback((scene: CbctClinicalScene, cVol: ClinicalVolume) => {
+        if (scene.archCtrlPts && scene.archCtrlPts.length >= 3) {
+            const clampedArch = scene.archCtrlPts.map((pt) => ({
+                x: Math.max(2, Math.min(cVol.widthMm - 2, pt.x)),
+                y: Math.max(2, Math.min(cVol.depthMm - 2, pt.y)),
+            }))
+            setArchCtrlPts(clampedArch)
+        }
+        if (scene.activeCoords) {
+            setArchS(Math.max(0, scene.activeCoords.archS))
+            setArchD(
+                Math.max(-MAX_ARCH_OFFSET_D_MM, Math.min(MAX_ARCH_OFFSET_D_MM, scene.activeCoords.archD))
+            )
+            setAxialH(Math.max(0, Math.min(cVol.heightMm, scene.activeCoords.axialH)))
+            setSagittalX(Math.max(0, Math.min(cVol.widthMm, scene.activeCoords.sagittalX)))
+            setCoronalY(Math.max(0, Math.min(cVol.depthMm, scene.activeCoords.coronalY)))
+        }
+        if (scene.sliceSettings) {
+            setPanoThickness(scene.sliceSettings.panoThickness || 18)
+            setPanoMode(scene.sliceSettings.panoMode || "mean")
+            setMprSlabMm(scene.sliceSettings.mprSlabMm ?? 1.6)
+            setInvivoSlabMode(scene.sliceSettings.invivoSlabMode || "mean")
+            setTangentialMode(scene.sliceSettings.tangentialMode || "flat")
+            setTangentialTiltDeg(scene.sliceSettings.tangentialTiltDeg || 0)
+            setCrossTiltDeg(scene.sliceSettings.crossTiltDeg || 0)
+            setSerialSpacingMm(scene.sliceSettings.serialSpacingMm || 1.5)
+        }
+        if (scene.windowLevel?.sliceWl?.width > 0) {
+            setSliceWl(scene.windowLevel.sliceWl)
+            setActiveWlPreset(scene.windowLevel.activeWlPreset || "auto")
+        }
+        if (scene.windowLevel?.panoWl?.width > 0) {
+            setPanoWl(scene.windowLevel.panoWl)
+        }
+        if (Array.isArray(scene.nervePoints3D)) {
+            setNervePoints3D(scene.nervePoints3D)
+        }
+        if (scene.measurementsByView && typeof scene.measurementsByView === "object") {
+            setMeasurementsByView({
+                panorama: scene.measurementsByView.panorama || [],
+                tangential: scene.measurementsByView.tangential || [],
+                cross: scene.measurementsByView.cross || [],
+                axial: scene.measurementsByView.axial || [],
+                coronal: scene.measurementsByView.coronal || [],
+                sagittal: scene.measurementsByView.sagittal || [],
+            })
+        }
+        if (Array.isArray(scene.savedCuts)) {
+            setSavedCuts(scene.savedCuts)
+        }
+        if (scene.defaultWorkspace) {
+            setViewMode(scene.defaultWorkspace)
+        }
+        setSceneMeta({
+            updatedByName: scene.updatedByName,
+            updatedAt: scene.updatedAt,
+        })
+        setHasUnsavedChanges(false)
+        sceneAppliedRef.current = true
+    }, [])
+
+    // Cargar escena clínica guardada desde Supabase (en paralelo a la decodificación DICOM)
+    useEffect(() => {
+        if (!open || !resultFileId) {
+            setSavedCuts([])
+            setCanEditScene(false)
+            setSceneMeta(null)
+            pendingSceneRef.current = null
+            sceneAppliedRef.current = false
+            setHasUnsavedChanges(false)
+            setActiveCutId(null)
+            return
+        }
+
+        let cancelled = false
+        pendingSceneRef.current = null
+        sceneAppliedRef.current = false
+        setSaveFeedback("idle")
+        setSaveErrorMsg(null)
+
+        ;(async () => {
+            try {
+                const res = await fetch(`/api/results/scene?fileId=${encodeURIComponent(resultFileId)}`)
+                if (!res.ok || cancelled) return
+                const data = await res.json()
+                if (cancelled) return
+                setCanEditScene(Boolean(data.canEdit))
+                if (data.scene) {
+                    pendingSceneRef.current = data.scene as CbctClinicalScene
+                    setSavedCuts(data.scene.savedCuts || [])
+                    setSceneMeta({
+                        updatedByName: data.scene.updatedByName,
+                        updatedAt: data.scene.updatedAt,
+                    })
+                }
+            } catch (e) {
+                console.warn("[DicomViewer] No se pudo consultar escena guardada:", e)
+            }
+        })()
+
+        return () => {
+            cancelled = true
+        }
+    }, [open, resultFileId])
+
+    // Aplicar escena pendiente tan pronto como clinicalVol esté listo
+    useEffect(() => {
+        if (!clinicalVol || sceneAppliedRef.current || !pendingSceneRef.current) return
+        applyClinicalScene(pendingSceneRef.current, clinicalVol)
+    }, [clinicalVol, applyClinicalScene])
+
+    const handleAddCurrentCut = useCallback(
+        (name: string, note: string) => {
+            const ws: PersistedWorkspace = viewMode === "study_cuts" ? "multi" : viewMode
+            const newCut: SavedClinicalCut = {
+                id: `cut_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                name,
+                note: note || undefined,
+                workspace: ws,
+                archS,
+                archD,
+                axialH,
+                sagittalX,
+                coronalY,
+                tangentialMode,
+                tangentialTiltDeg,
+                crossTiltDeg,
+                serialSpacingMm,
+                createdAt: new Date().toISOString(),
+            }
+            setSavedCuts((prev) => [...prev, newCut])
+            setActiveCutId(newCut.id)
+            setHasUnsavedChanges(true)
+        },
+        [
+            viewMode,
+            archS,
+            archD,
+            axialH,
+            sagittalX,
+            coronalY,
+            tangentialMode,
+            tangentialTiltDeg,
+            crossTiltDeg,
+            serialSpacingMm,
+        ]
+    )
+
+    const handleApplySavedCut = useCallback(
+        (cut: SavedClinicalCut) => {
+            setViewMode(cut.workspace)
+            setArchS(cut.archS)
+            setArchD(cut.archD)
+            setAxialH(cut.axialH)
+            setSagittalX(cut.sagittalX)
+            setCoronalY(cut.coronalY)
+            setTangentialMode(cut.tangentialMode || "flat")
+            setTangentialTiltDeg(cut.tangentialTiltDeg || 0)
+            setCrossTiltDeg(cut.crossTiltDeg || 0)
+            setSerialSpacingMm(cut.serialSpacingMm || 1.5)
+            setActiveCutId(cut.id)
+        },
+        []
+    )
+
+    const handleDeleteSavedCut = useCallback((id: string) => {
+        setSavedCuts((prev) => prev.filter((c) => c.id !== id))
+        setActiveCutId((curr) => (curr === id ? null : curr))
+        setHasUnsavedChanges(true)
+    }, [])
+
+    const handleSaveClinicalScene = useCallback(async () => {
+        if (!resultFileId || !canEditScene || !clinicalVol) return
+        setIsSavingScene(true)
+        setSaveFeedback("idle")
+        setSaveErrorMsg(null)
+
+        try {
+            const defaultWs: PersistedWorkspace = viewMode === "study_cuts" ? "multi" : viewMode
+            const payload: CbctClinicalScene = {
+                version: 1,
+                updatedAt: new Date().toISOString(),
+                defaultWorkspace: defaultWs,
+                archCtrlPts,
+                activeCoords: { archS, archD, axialH, sagittalX, coronalY },
+                sliceSettings: {
+                    panoThickness,
+                    panoMode,
+                    mprSlabMm,
+                    invivoSlabMode,
+                    tangentialMode,
+                    tangentialTiltDeg,
+                    crossTiltDeg,
+                    serialSpacingMm,
+                },
+                windowLevel: {
+                    sliceWl,
+                    panoWl,
+                    activeWlPreset,
+                },
+                nervePoints3D,
+                measurementsByView,
+                savedCuts,
+            }
+
+            const res = await fetch("/api/results/scene", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ fileId: resultFileId, scene: payload }),
+            })
+            const data = await res.json()
+            if (!res.ok) {
+                throw new Error(data.error || "No se pudo guardar la escena clínica")
+            }
+
+            setHasUnsavedChanges(false)
+            setSaveFeedback("saved")
+            if (data.scene) {
+                setSceneMeta({
+                    updatedByName: data.scene.updatedByName,
+                    updatedAt: data.scene.updatedAt,
+                })
+            }
+            setTimeout(() => setSaveFeedback("idle"), 2800)
+        } catch (err: any) {
+            setSaveFeedback("error")
+            setSaveErrorMsg(err.message || "Error al guardar escena")
+            setTimeout(() => setSaveFeedback("idle"), 4000)
+        } finally {
+            setIsSavingScene(false)
+        }
+    }, [
+        resultFileId,
+        canEditScene,
+        clinicalVol,
+        viewMode,
+        archCtrlPts,
+        archS,
+        archD,
+        axialH,
+        sagittalX,
+        coronalY,
+        panoThickness,
+        panoMode,
+        mprSlabMm,
+        invivoSlabMode,
+        tangentialMode,
+        tangentialTiltDeg,
+        crossTiltDeg,
+        serialSpacingMm,
+        sliceWl,
+        panoWl,
+        activeWlPreset,
+        nervePoints3D,
+        measurementsByView,
+        savedCuts,
+    ])
 
     // Activar una serie volumétrica 3D concreta (soporta estudios con múltiples volúmenes CBCT)
     const activateVolumetricSeries = useCallback(
@@ -758,6 +1042,7 @@ export function DicomViewerModalImpl({
                         : pt
                 )
             )
+            setHasUnsavedChanges(true)
         },
         [clinicalVol]
     )
@@ -1819,8 +2104,26 @@ export function DicomViewerModalImpl({
                         </div>
                     </div>
 
-                    {/* Grupo C: Descarga, Pantalla Completa y Cerrar */}
+                    {/* Grupo C: Cortes Preparados + Guardar Escena + Descarga + Pantalla Completa + Cerrar */}
                     <div className="flex items-center gap-1 shrink-0">
+                        {resultFileId && clinicalVol && (canEditScene || savedCuts.length > 0) && (
+                            <SavedCutsMenu
+                                savedCuts={savedCuts}
+                                canEdit={canEditScene}
+                                isSaving={isSavingScene}
+                                saveFeedback={saveFeedback}
+                                saveErrorMsg={saveErrorMsg}
+                                hasUnsavedChanges={hasUnsavedChanges}
+                                suggestedCutName={`${selectedToothLabel.split("(")[0].trim()} · ${archS.toFixed(1)} mm`}
+                                lastSavedBy={sceneMeta?.updatedByName}
+                                lastSavedAt={sceneMeta?.updatedAt}
+                                onAddCurrentCut={handleAddCurrentCut}
+                                onApplyCut={handleApplySavedCut}
+                                onDeleteCut={handleDeleteSavedCut}
+                                onSaveScene={handleSaveClinicalScene}
+                            />
+                        )}
+
                         {downloadUrl && (
                             <Button
                                 size="sm"
@@ -1859,6 +2162,30 @@ export function DicomViewerModalImpl({
                         </Button>
                     </div>
                 </div>
+
+                {/* Franja compacta de acceso rápido a Cortes Específicos Preparados (solo visible si el estudio tiene cortes guardados) */}
+                {!loading && !errorMsg && savedCuts.length > 0 && (
+                    <div className="px-3 py-1 bg-sky-950/35 border-b border-sky-900/60 flex items-center gap-1.5 overflow-x-auto shrink-0">
+                        <span className="text-[10px] font-semibold text-sky-300 shrink-0 flex items-center gap-1">
+                            Cortes preparados{sceneMeta?.updatedByName ? ` (${sceneMeta.updatedByName})` : ""}:
+                        </span>
+                        {savedCuts.map((cut, idx) => (
+                            <button
+                                key={cut.id}
+                                type="button"
+                                onClick={() => handleApplySavedCut(cut)}
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-medium border transition-colors shrink-0 ${
+                                    activeCutId === cut.id
+                                        ? "bg-sky-600 border-sky-400 text-white font-semibold"
+                                        : "bg-slate-900/90 border-slate-700 text-slate-200 hover:border-sky-500/60 hover:text-white"
+                                }`}
+                                title={cut.note ? `${cut.name} — ${cut.note}` : cut.name}
+                            >
+                                {idx + 1}. {cut.name}
+                            </button>
+                        ))}
+                    </div>
+                )}
 
                 {/* 2. Área Principal de Espacios de Trabajo Clínicos */}
                 <div className="flex-1 relative flex items-center justify-center bg-black overflow-hidden select-none touch-none">

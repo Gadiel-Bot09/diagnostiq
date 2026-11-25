@@ -77,7 +77,7 @@ export default function AdminOrderDetailPage() {
     const [isDownloading, setIsDownloading] = useState(false)
     const [previewFile, setPreviewFile] = useState<{ url: string; name: string; subtitle?: string } | null>(null)
     const [previewingId, setPreviewingId] = useState<string | null>(null)
-    const [dicomModal, setDicomModal] = useState<{ url: string; downloadUrl: string; name: string; subtitle?: string } | null>(null)
+    const [dicomModal, setDicomModal] = useState<{ fileId: string; url: string; downloadUrl: string; name: string; subtitle?: string } | null>(null)
 
     const { data: order, isLoading } = useQuery({
         queryKey: ["admin-order-detail", id],
@@ -206,6 +206,7 @@ export default function AdminOrderDetailPage() {
                 } catch {}
                 const subtitle = `v${file.version} · Tomografía 3D (DICOM)${file.size_bytes ? ` · ${(file.size_bytes / (1024 * 1024)).toFixed(1)} MB` : ""}${uploaderName ? ` · Cargado por: ${uploaderName}` : ""}`
                 setDicomModal({
+                    fileId: file.id,
                     url: previewUrl,
                     downloadUrl,
                     name: file.file_name,
@@ -686,6 +687,7 @@ export default function AdminOrderDetailPage() {
                 zipUrl={dicomModal?.url || null}
                 downloadUrl={dicomModal?.downloadUrl}
                 subtitle={dicomModal?.subtitle}
+                resultFileId={dicomModal?.fileId}
             />
         </AdminLayout>
     )
