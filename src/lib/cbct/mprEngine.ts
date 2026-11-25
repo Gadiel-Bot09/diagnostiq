@@ -36,12 +36,17 @@ export interface WindowLevel {
 
 export type Quantile = (p: number) => number
 
+export type SlabMode = "mean" | "mip" | "minip"
+
 export interface ClinicalVolume extends BaseVolumeInput {
     isx: number
     isy: number
     isz: number
     slope: number
     intercept: number
+    /** true si el buffer requiere reflejo horizontal/vertical para cumplir orientación radiológica LPS estándar */
+    flipX: boolean
+    flipY: boolean
     /** Extensión física (mm) entre centros de vóxeles extremos */
     widthMm: number
     depthMm: number
@@ -64,7 +69,7 @@ export interface PlaneSpec {
     rows: number
     spacing: number
     slabMm?: number
-    slabMode?: "mean" | "mip"
+    slabMode?: SlabMode
 }
 
 export interface ViewImage {
@@ -72,6 +77,8 @@ export interface ViewImage {
     cols: number
     rows: number
     spacing: number
+    /** Especificación del plano 3D cuando la imagen corresponde a un plano recto certificado */
+    planeSpec?: PlaneSpec
 }
 
 export interface ArchPoint {
@@ -122,15 +129,16 @@ function makeQuantileFromSamples(samples: Float32Array, slope: number, intercept
 export function createClinicalVolume(
     base: BaseVolumeInput,
     rescale: { slope: number; intercept: number } = { slope: 1, intercept: 0 },
-    dicomWindow: WindowLevel | null = null
+    dicomWindow: WindowLevel | null = null,
+    options: { preserveExactSz?: boolean; flipX?: boolean; flipY?: boolean } = {}
 ): ClinicalVolume {
     const { raw, nx, ny, nz } = base
     let sx = base.sx > 0 && Number.isFinite(base.sx) ? base.sx : 0.25
     let sy = base.sy > 0 && Number.isFinite(base.sy) ? base.sy : sx
     let sz = base.sz > 0 && Number.isFinite(base.sz) ? base.sz : sx
 
-    // Garantizar isotropía real en CBCT dental cuando el metadato Z venga sin calibrar (ej. sz = 1.0 frente a sx = 0.20)
-    if (nz >= 20 && Math.abs(sx - sy) <= sx * 0.15) {
+    // Solo normalizar heurísticamente si el llamador no ha realizado auditoría metrológica DICOM previa
+    if (!options.preserveExactSz && nz >= 20 && Math.abs(sx - sy) <= sx * 0.15) {
         if (sz > sx * 1.45 || sz < sx * 0.55) {
             sz = sx
         }
@@ -176,6 +184,8 @@ export function createClinicalVolume(
         isz: 1 / sz,
         slope,
         intercept,
+        flipX: Boolean(options.flipX),
+        flipY: Boolean(options.flipY),
         widthMm: (nx - 1) * sx,
         depthMm: (ny - 1) * sy,
         heightMm: (nz - 1) * sz,
@@ -200,10 +210,10 @@ export function sliceIndexFromH(vol: ClinicalVolume, h: number): number {
     return Math.max(0, Math.min(vol.nz - 1, Math.round(zFromH(vol, h) * vol.isz)))
 }
 
-/** Interpolación trilineal en coordenadas mundo (mm). Devuelve NaN fuera del volumen. */
+/** Interpolación trilineal en coordenadas mundo LPS (mm). Devuelve NaN fuera del volumen. */
 export function sampleRaw(vol: ClinicalVolume, x: number, y: number, z: number): number {
-    const fx = x * vol.isx
-    const fy = y * vol.isy
+    const fx = (vol.flipX ? vol.widthMm - x : x) * vol.isx
+    const fy = (vol.flipY ? vol.depthMm - y : y) * vol.isy
     const fz = z * vol.isz
     const nx = vol.nx
     const ny = vol.ny
@@ -267,12 +277,28 @@ export function worldToPlane(spec: PlaneSpec, p: Vec3): [number, number] {
     ]
 }
 
-/** Remuestreo de un plano arbitrario (con grosor opcional) desde los vóxeles originales */
+/** Proyección de un punto 3D mundo (mm) sobre un plano: devuelve posición 2D en mm y distancia perpendicular al plano */
+export function projectWorldPointToPlane(
+    spec: PlaneSpec,
+    p: Vec3
+): { xMm: number; yMm: number; distMm: number } {
+    const dx = p[0] - spec.origin[0]
+    const dy = p[1] - spec.origin[1]
+    const dz = p[2] - spec.origin[2]
+    const N = normalize(cross(spec.u, spec.v))
+    return {
+        xMm: dx * spec.u[0] + dy * spec.u[1] + dz * spec.u[2],
+        yMm: dx * spec.v[0] + dy * spec.v[1] + dz * spec.v[2],
+        distMm: Math.abs(dx * N[0] + dy * N[1] + dz * N[2]),
+    }
+}
+
+/** Remuestreo de un plano arbitrario (con grosor opcional Mean / MIP / MinIP) desde los vóxeles originales */
 export function renderPlane(vol: ClinicalVolume, spec: PlaneSpec): ViewImage {
     const { origin, u, v, cols, rows, spacing } = spec
     const out = new Float32Array(cols * rows)
     const slab = spec.slabMm && spec.slabMm > vol.iso * 0.75 ? spec.slabMm : 0
-    const mip = spec.slabMode === "mip"
+    const mode = spec.slabMode ?? "mean"
     let offsets: number[] = [0]
     let N: Vec3 = [0, 0, 0]
     if (slab > 0) {
@@ -302,6 +328,7 @@ export function renderPlane(vol: ClinicalVolume, spec: PlaneSpec): ViewImage {
                 let acc = 0
                 let cnt = 0
                 let mx = -Infinity
+                let mn = Infinity
                 for (let k = 0; k < offsets.length; k++) {
                     const o = offsets[k]
                     const val = sampleRaw(vol, px + N[0] * o, py + N[1] * o, pz + N[2] * o)
@@ -309,17 +336,23 @@ export function renderPlane(vol: ClinicalVolume, spec: PlaneSpec): ViewImage {
                         acc += val
                         cnt++
                         if (val > mx) mx = val
+                        if (val < mn) mn = val
                     }
                 }
-                out[row + c] = cnt ? (mip ? mx : acc / cnt) : NaN
+                out[row + c] = cnt ? (mode === "mip" ? mx : mode === "minip" ? mn : acc / cnt) : NaN
             }
         }
     }
-    return { data: out, cols, rows, spacing }
+    return { data: out, cols, rows, spacing, planeSpec: spec }
 }
 
 /** Corte axial (horizontal) a la altura h. Anterior arriba, derecha del paciente a la izquierda (DICOM estándar). */
-export function axialPlane(vol: ClinicalVolume, h: number, slabMm = 0.8): PlaneSpec {
+export function axialPlane(
+    vol: ClinicalVolume,
+    h: number,
+    slabMm = 0.8,
+    slabMode: SlabMode = "mean"
+): PlaneSpec {
     const sp = Math.max(0.08, Math.min(vol.sx, vol.sy))
     return {
         origin: [0, 0, zFromH(vol, h)],
@@ -329,7 +362,51 @@ export function axialPlane(vol: ClinicalVolume, h: number, slabMm = 0.8): PlaneS
         rows: Math.floor(vol.depthMm / sp) + 1,
         spacing: sp,
         slabMm,
-        slabMode: "mean",
+        slabMode,
+    }
+}
+
+/** Corte coronal ortogonal (InVivoViewer): Derecha (R) a la izquierda, Izquierda (L) a la derecha, Superior arriba. */
+export function coronalPlane(
+    vol: ClinicalVolume,
+    yMm: number,
+    slabMm = 1.0,
+    slabMode: SlabMode = "mean"
+): PlaneSpec {
+    const sp = vol.iso
+    const up = upVector(vol)
+    const yClamped = Math.max(0, Math.min(vol.depthMm, yMm))
+    return {
+        origin: [0, yClamped, zFromH(vol, vol.heightMm)],
+        u: [1, 0, 0],
+        v: [-up[0], -up[1], -up[2]],
+        cols: Math.floor(vol.widthMm / sp) + 1,
+        rows: Math.floor(vol.heightMm / sp) + 1,
+        spacing: sp,
+        slabMm,
+        slabMode,
+    }
+}
+
+/** Corte sagital ortogonal (InVivoViewer): Anterior (A) a la izquierda, Posterior (P) a la derecha, Superior arriba. */
+export function sagittalPlane(
+    vol: ClinicalVolume,
+    xMm: number,
+    slabMm = 1.0,
+    slabMode: SlabMode = "mean"
+): PlaneSpec {
+    const sp = vol.iso
+    const up = upVector(vol)
+    const xClamped = Math.max(0, Math.min(vol.widthMm, xMm))
+    return {
+        origin: [xClamped, 0, zFromH(vol, vol.heightMm)],
+        u: [0, 1, 0],
+        v: [-up[0], -up[1], -up[2]],
+        cols: Math.floor(vol.depthMm / sp) + 1,
+        rows: Math.floor(vol.heightMm / sp) + 1,
+        spacing: sp,
+        slabMm,
+        slabMode,
     }
 }
 
@@ -337,7 +414,11 @@ function upVector(vol: ClinicalVolume): Vec3 {
     return [0, 0, vol.zUp ? 1 : -1]
 }
 
-/** Sección transversal (buco-lingual): oral a la izquierda, vestibular (labial/bucal) a la derecha, enmarcada en [winHBottom, winHTop] */
+/**
+ * Sección transversal (buco-lingual): oral a la izquierda, vestibular (labial/bucal) a la derecha,
+ * enmarcada en [winHBottom, winHTop], con ángulo de inclinación opcional mesio-distal (tiltDeg)
+ * para alinear raíces o implantes inclinados.
+ */
 export function crossPlane(
     vol: ClinicalVolume,
     arch: ArchModel,
@@ -345,19 +426,38 @@ export function crossPlane(
     halfWidthMm: number,
     slabMm = 1.5,
     winHBottom = 0,
-    winHTop = vol.heightMm
+    winHTop = vol.heightMm,
+    tiltDeg = 0
 ): PlaneSpec {
     const f = archFrame(arch, s)
     const sp = vol.iso
     const hBot = Math.max(0, Math.min(vol.heightMm, winHBottom))
     const hTop = Math.max(hBot + sp * 4, Math.min(vol.heightMm, winHTop))
+    const hCenter = (hBot + hTop) * 0.5
+    const halfH = (hTop - hBot) * 0.5
     const cols = Math.floor((2 * halfWidthMm) / sp) + 1
     const rows = Math.floor((hTop - hBot) / sp) + 1
-    const zTop = zFromH(vol, hTop)
+    const up = upVector(vol)
+
+    // Inclinación del eje vertical en el plano tangencial (alrededor de la normal vestibular)
+    const rad = (tiltDeg * Math.PI) / 180
+    const cosT = Math.cos(rad)
+    const sinT = Math.sin(rad)
+    const vDown: Vec3 = [
+        -up[0] * cosT + f.tx * sinT,
+        -up[1] * cosT + f.ty * sinT,
+        -up[2] * cosT,
+    ]
+    const zCenter = zFromH(vol, hCenter)
+    const origin: Vec3 = [
+        f.x - f.nx * halfWidthMm - vDown[0] * halfH,
+        f.y - f.ny * halfWidthMm - vDown[1] * halfH,
+        zCenter - vDown[2] * halfH,
+    ]
     return {
-        origin: [f.x - f.nx * halfWidthMm, f.y - f.ny * halfWidthMm, zTop],
+        origin,
         u: [f.nx, f.ny, 0],
-        v: [-upVector(vol)[0], -upVector(vol)[1], -upVector(vol)[2]],
+        v: vDown,
         cols,
         rows,
         spacing: sp,
@@ -366,7 +466,11 @@ export function crossPlane(
     }
 }
 
-/** Corte tangencial plano: tangente al arco en tanC, desplazado d mm hacia vestibular, enmarcado en [winHBottom, winHTop] */
+/**
+ * Corte tangencial PLANO certificado 3D (coplanar): tangente al arco en tanC, desplazado d mm hacia vestibular,
+ * con inclinación buco-lingual opcional (tiltDeg, para seguir el eje largo de incisivos/raíces inclinadas).
+ * Garantiza distancias euclidianas 3D 100% exactas al medir.
+ */
 export function tangentialPlane(
     vol: ClinicalVolume,
     arch: ArchModel,
@@ -375,22 +479,40 @@ export function tangentialPlane(
     halfWidthMm: number,
     slabMm = 2.0,
     winHBottom = 0,
-    winHTop = vol.heightMm
+    winHTop = vol.heightMm,
+    tiltDeg = 0
 ): PlaneSpec {
     const f = archFrame(arch, tanC)
     const sp = vol.iso
     const hBot = Math.max(0, Math.min(vol.heightMm, winHBottom))
     const hTop = Math.max(hBot + sp * 4, Math.min(vol.heightMm, winHTop))
+    const hCenter = (hBot + hTop) * 0.5
+    const halfH = (hTop - hBot) * 0.5
     const cols = Math.floor((2 * halfWidthMm) / sp) + 1
     const rows = Math.floor((hTop - hBot) / sp) + 1
     const cx = f.x + f.nx * d
     const cy = f.y + f.ny * d
-    const zTop = zFromH(vol, hTop)
     const up = upVector(vol)
+
+    // Inclinación del plano tangencial en sentido buco-lingual (alrededor de la tangente del arco)
+    const rad = (tiltDeg * Math.PI) / 180
+    const cosT = Math.cos(rad)
+    const sinT = Math.sin(rad)
+    const vDown: Vec3 = [
+        -up[0] * cosT + f.nx * sinT,
+        -up[1] * cosT + f.ny * sinT,
+        -up[2] * cosT,
+    ]
+    const zCenter = zFromH(vol, hCenter)
+    const origin: Vec3 = [
+        cx - f.tx * halfWidthMm - vDown[0] * halfH,
+        cy - f.ty * halfWidthMm - vDown[1] * halfH,
+        zCenter - vDown[2] * halfH,
+    ]
     return {
-        origin: [cx - f.tx * halfWidthMm, cy - f.ty * halfWidthMm, zTop],
+        origin,
         u: [f.tx, f.ty, 0],
-        v: [-up[0], -up[1], -up[2]],
+        v: vDown,
         cols,
         rows,
         spacing: sp,
@@ -728,8 +850,10 @@ export async function renderPanorama(
         const f = archFrame(arch, c * sp)
         for (let k = 0; k < m; k++) {
             const off = m === 1 ? 0 : -thick / 2 + (thick * (k + 0.5)) / m
-            const fx = (f.x + f.nx * off) * isx
-            const fy = (f.y + f.ny * off) * isy
+            const wxMm = f.x + f.nx * off
+            const wyMm = f.y + f.ny * off
+            const fx = (vol.flipX ? vol.widthMm - wxMm : wxMm) * isx
+            const fy = (vol.flipY ? vol.depthMm - wyMm : wyMm) * isy
             const o = c * m + k
             if (!(fx >= 0 && fy >= 0 && fx <= nx - 1 && fy <= ny - 1)) continue
             let x0 = fx | 0
