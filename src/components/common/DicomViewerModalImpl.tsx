@@ -235,7 +235,10 @@ export function DicomViewerModalImpl({
             setGpuVolumeUploaded(false)
             return
         }
-        const renderer = new WebGLMprRenderer()
+        const renderer = new WebGLMprRenderer(() => {
+            setGpuReady(false)
+            setGpuVolumeUploaded(false)
+        })
         gpuRendererRef.current = renderer
         setGpuReady(renderer.isReady)
         return () => {

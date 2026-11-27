@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import {
     planeMmToWorld,
     projectWorldPointToPlane,
+    renderPlane,
     sampleRaw,
     type ArchPoint,
     type ClinicalVolume,
@@ -237,7 +238,7 @@ export function MprViewport({
     const imgRows = activeSpec ? activeSpec.rows : image?.rows ?? 0
     const imgSpacing = activeSpec ? activeSpec.spacing : image?.spacing ?? 0.25
     const hasRenderableSource = Boolean(
-        (gpuRenderer?.isReady && clinicalVol && planeSpec) || (image && image.cols >= 2 && image.rows >= 2)
+        (clinicalVol && planeSpec) || (image && image.cols >= 2 && image.rows >= 2)
     )
 
     const [hoverState, setHoverState] = useState<{
@@ -430,7 +431,7 @@ export function MprViewport({
         const canvas = imgCanvasRef.current
         if (!canvas) return
 
-        // Intentar primero aceleración GPU WebGL2 (60 FPS, 0 bucles JS)
+        // Intentar primero aceleración GPU WebGL2 (60 FPS, 2 pasadas, 0 bucles JS)
         if (gpuRenderer?.isReady && clinicalVol && planeSpec) {
             const ok = gpuRenderer.renderPlaneToCanvas(
                 clinicalVol,
@@ -447,10 +448,16 @@ export function MprViewport({
             }
         }
 
-        // Respaldo CPU Float32 de 16 bits
-        if (!image || image.cols < 2 || image.rows < 2) return
+        // Respaldo infalible CPU Float32 de 16 bits (si GPU no está disponible o falla en tiempo real)
+        const cpuImage =
+            image && image.cols >= 2 && image.rows >= 2
+                ? image
+                : clinicalVol && planeSpec
+                ? renderPlane(clinicalVol, planeSpec)
+                : null
+        if (!cpuImage || cpuImage.cols < 2 || cpuImage.rows < 2) return
 
-        const { cols, rows, data } = image
+        const { cols, rows, data } = cpuImage
         if (canvas.width !== cols) canvas.width = cols
         if (canvas.height !== rows) canvas.height = rows
 
