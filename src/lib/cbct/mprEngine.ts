@@ -38,6 +38,17 @@ export type Quantile = (p: number) => number
 
 export type SlabMode = "mean" | "mip" | "minip"
 
+export interface ReorientationEuler {
+    /** Inclinación antero-posterior del plano oclusal en grados (eje X) */
+    pitchDeg: number
+    /** Nivelación lateral izquierda-derecha del plano oclusal en grados (eje Y) */
+    rollDeg: number
+    /** Rotación axial de la línea media facial en grados (eje Z) */
+    yawDeg: number
+}
+
+export const ZERO_REORIENTATION: ReorientationEuler = { pitchDeg: 0, rollDeg: 0, yawDeg: 0 }
+
 export interface ClinicalVolume extends BaseVolumeInput {
     isx: number
     isy: number
@@ -47,6 +58,11 @@ export interface ClinicalVolume extends BaseVolumeInput {
     /** true si el buffer requiere reflejo horizontal/vertical para cumplir orientación radiológica LPS estándar */
     flipX: boolean
     flipY: boolean
+    /** Reorientación 3D del plano oclusal alrededor del centro del volumen */
+    reorient: ReorientationEuler
+    hasReorient: boolean
+    /** Matriz 3x3 inversa de reorientación (fila mayor) que mapea espacio reorientado -> espacio vóxel */
+    rotInv: Float64Array
     /** Extensión física (mm) entre centros de vóxeles extremos */
     widthMm: number
     depthMm: number
@@ -126,6 +142,49 @@ function makeQuantileFromSamples(samples: Float32Array, slope: number, intercept
     }
 }
 
+/** Construye la matriz 3x3 inversa de reorientación (R^T) para ángulos Pitch (X), Roll (Y) y Yaw (Z) */
+export function buildReorientationInverseMatrix(r: ReorientationEuler): Float64Array {
+    const px = (r.pitchDeg * Math.PI) / 180
+    const ry = (r.rollDeg * Math.PI) / 180
+    const yz = (r.yawDeg * Math.PI) / 180
+    const cx = Math.cos(px)
+    const sx = Math.sin(px)
+    const cy = Math.cos(ry)
+    const sy = Math.sin(ry)
+    const cz = Math.cos(yz)
+    const sz = Math.sin(yz)
+
+    // R = Rz * Ry * Rx
+    const r00 = cz * cy
+    const r01 = cz * sy * sx - sz * cx
+    const r02 = cz * sy * cx + sz * sx
+    const r10 = sz * cy
+    const r11 = sz * sy * sx + cz * cx
+    const r12 = sz * sy * cx - cz * sx
+    const r20 = -sy
+    const r21 = cy * sx
+    const r22 = cy * cx
+
+    // Inversa = transpuesta R^T
+    return Float64Array.from([r00, r10, r20, r01, r11, r21, r02, r12, r22])
+}
+
+/** Devuelve una vista ligera del volumen con la reorientación 3D aplicada (sin copiar vóxeles) */
+export function withReorientation(vol: ClinicalVolume, reorient: ReorientationEuler): ClinicalVolume {
+    const hasReorient =
+        Math.abs(reorient.pitchDeg) > 1e-3 ||
+        Math.abs(reorient.rollDeg) > 1e-3 ||
+        Math.abs(reorient.yawDeg) > 1e-3
+    return {
+        ...vol,
+        reorient: { ...reorient },
+        hasReorient,
+        rotInv: hasReorient
+            ? buildReorientationInverseMatrix(reorient)
+            : Float64Array.from([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+    }
+}
+
 export function createClinicalVolume(
     base: BaseVolumeInput,
     rescale: { slope: number; intercept: number } = { slope: 1, intercept: 0 },
@@ -186,6 +245,9 @@ export function createClinicalVolume(
         intercept,
         flipX: Boolean(options.flipX),
         flipY: Boolean(options.flipY),
+        reorient: { ...ZERO_REORIENTATION },
+        hasReorient: false,
+        rotInv: Float64Array.from([1, 0, 0, 0, 1, 0, 0, 0, 1]),
         widthMm: (nx - 1) * sx,
         depthMm: (ny - 1) * sy,
         heightMm: (nz - 1) * sz,
@@ -210,11 +272,26 @@ export function sliceIndexFromH(vol: ClinicalVolume, h: number): number {
     return Math.max(0, Math.min(vol.nz - 1, Math.round(zFromH(vol, h) * vol.isz)))
 }
 
-/** Interpolación trilineal en coordenadas mundo LPS (mm). Devuelve NaN fuera del volumen. */
+/** Interpolación trilineal en coordenadas mundo LPS (mm) con soporte de reorientación 3D. Devuelve NaN fuera del volumen. */
 export function sampleRaw(vol: ClinicalVolume, x: number, y: number, z: number): number {
-    const fx = (vol.flipX ? vol.widthMm - x : x) * vol.isx
-    const fy = (vol.flipY ? vol.depthMm - y : y) * vol.isy
-    const fz = z * vol.isz
+    let sxMm = x
+    let syMm = y
+    let szMm = z
+    if (vol.hasReorient) {
+        const cx = vol.widthMm * 0.5
+        const cy = vol.depthMm * 0.5
+        const cz = vol.heightMm * 0.5
+        const dx = x - cx
+        const dy = y - cy
+        const dz = z - cz
+        const m = vol.rotInv
+        sxMm = cx + m[0] * dx + m[1] * dy + m[2] * dz
+        syMm = cy + m[3] * dx + m[4] * dy + m[5] * dz
+        szMm = cz + m[6] * dx + m[7] * dy + m[8] * dz
+    }
+    const fx = (vol.flipX ? vol.widthMm - sxMm : sxMm) * vol.isx
+    const fy = (vol.flipY ? vol.depthMm - syMm : syMm) * vol.isy
+    const fz = szMm * vol.isz
     const nx = vol.nx
     const ny = vol.ny
     const nz = vol.nz
@@ -274,6 +351,15 @@ export function worldToPlane(spec: PlaneSpec, p: Vec3): [number, number] {
     return [
         (dx * spec.u[0] + dy * spec.u[1] + dz * spec.u[2]) / spec.spacing,
         (dx * spec.v[0] + dy * spec.v[1] + dz * spec.v[2]) / spec.spacing,
+    ]
+}
+
+/** Convierte coordenadas locales en mm (xMm, yMm) de un plano recto a coordenadas 3D absolutas del volumen (mm) */
+export function planeMmToWorld(spec: PlaneSpec, xMm: number, yMm: number): Vec3 {
+    return [
+        spec.origin[0] + spec.u[0] * xMm + spec.v[0] * yMm,
+        spec.origin[1] + spec.u[1] * xMm + spec.v[1] * yMm,
+        spec.origin[2] + spec.u[2] * xMm + spec.v[2] * yMm,
     ]
 }
 
@@ -869,6 +955,47 @@ export async function renderPanorama(
 
     const out = new Float32Array(cols * rows)
     const mip = opts.mode === "mip"
+
+    // Si el usuario aplicó reorientación 3D del plano oclusal (Pitch/Roll/Yaw), usar sampleRaw 3D exacto
+    if (vol.hasReorient) {
+        const pxArr = new Float32Array(cols * m)
+        const pyArr = new Float32Array(cols * m)
+        for (let c = 0; c < cols; c++) {
+            const f = archFrame(arch, c * sp)
+            for (let k = 0; k < m; k++) {
+                const off = m === 1 ? 0 : -thick / 2 + (thick * (k + 0.5)) / m
+                const o = c * m + k
+                pxArr[o] = f.x + f.nx * off
+                pyArr[o] = f.y + f.ny * off
+            }
+        }
+        for (let r = 0; r < rows; r++) {
+            const z = zFromH(vol, hTop - r * sp)
+            const row = r * cols
+            for (let c = 0; c < cols; c++) {
+                let acc = 0
+                let cnt = 0
+                let mx = -Infinity
+                const o0 = c * m
+                for (let k = 0; k < m; k++) {
+                    const o = o0 + k
+                    const val = sampleRaw(vol, pxArr[o], pyArr[o], z)
+                    if (val === val) {
+                        acc += val
+                        cnt++
+                        if (val > mx) mx = val
+                    }
+                }
+                out[row + c] = cnt ? (mip ? mx : acc / cnt) : NaN
+            }
+            if (r % 16 === 15) {
+                await yieldToUI()
+                if (isCancelled()) return null
+            }
+        }
+        return { data: out, cols, rows, spacing: sp, hTop, length: L, thicknessMm: thick, mode: opts.mode }
+    }
+
     for (let r = 0; r < rows; r++) {
         const z = zFromH(vol, hTop - r * sp)
         let fz = z * isz

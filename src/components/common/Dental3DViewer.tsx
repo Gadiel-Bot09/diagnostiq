@@ -20,6 +20,14 @@ export interface VolumeFocus {
     hTopNorm?: number
 }
 
+export interface Implant3DNorm {
+    id: string
+    p0: [number, number, number]
+    p1: [number, number, number]
+    radiusNorm: number
+    isDanger: boolean
+}
+
 export interface Dental3DViewerProps {
     volume: RenderVolume | null
     status?: string
@@ -29,6 +37,8 @@ export interface Dental3DViewerProps {
     focus?: VolumeFocus | null
     /** Puntos 3D normalizados [0..1, 0..1, 0..1] del canal mandibular trazado */
     nervePointsNorm?: [number, number, number][]
+    /** Implantes virtuales normalizados [0..1] para visualización 3D */
+    implantsNorm?: Implant3DNorm[]
     isExpanded?: boolean
     onToggleExpand?: () => void
 }
@@ -178,6 +188,7 @@ export function Dental3DViewer({
     totalSlices,
     focus,
     nervePointsNorm,
+    implantsNorm,
     isExpanded,
     onToggleExpand,
 }: Dental3DViewerProps) {
@@ -191,6 +202,7 @@ export function Dental3DViewer({
     const slicePlaneRef = useRef<THREE.Object3D | null>(null)
     const focusBoxRef = useRef<THREE.LineSegments | null>(null)
     const nerveLineRef = useRef<THREE.Line | null>(null)
+    const implantsGroupRef = useRef<THREE.Group | null>(null)
     const needsRenderRef = useRef(true)
     const interactingTimerRef = useRef<any>(null)
     const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
@@ -232,7 +244,12 @@ export function Dental3DViewer({
 
         let renderer: THREE.WebGLRenderer
         try {
-            renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: "high-performance" })
+            renderer = new THREE.WebGLRenderer({
+                antialias: false,
+                alpha: false,
+                preserveDrawingBuffer: true,
+                powerPreference: "high-performance",
+            })
             if (!renderer.capabilities.isWebGL2) throw new Error("WebGL2 no disponible")
         } catch {
             setGlError("Su navegador no soporta WebGL2, necesario para el renderizado volumétrico 3D.")
@@ -388,6 +405,12 @@ export function Dental3DViewer({
         frame.add(nerveLine)
         nerveLineRef.current = nerveLine
 
+        // Grupo 3D de implantes virtuales calibrados
+        const implantsGroup = new THREE.Group()
+        implantsGroup.renderOrder = 6
+        frame.add(implantsGroup)
+        implantsGroupRef.current = implantsGroup
+
         group.add(frame)
         requestRender()
 
@@ -403,6 +426,7 @@ export function Dental3DViewer({
             slicePlaneRef.current = null
             focusBoxRef.current = null
             nerveLineRef.current = null
+            implantsGroupRef.current = null
             requestRender()
         }
     }, [volume])
@@ -493,6 +517,41 @@ export function Dental3DViewer({
         line.visible = true
         requestRender()
     }, [nervePointsNorm])
+
+    // 7. Implantes dentales virtuales en 3D
+    useEffect(() => {
+        const grp = implantsGroupRef.current
+        if (!grp) return
+        while (grp.children.length > 0) {
+            const ch = grp.children[0] as THREE.Mesh
+            ch.geometry?.dispose?.()
+            ;(ch.material as THREE.Material)?.dispose?.()
+            grp.remove(ch)
+        }
+        if (implantsNorm && implantsNorm.length > 0) {
+            const upAxis = new THREE.Vector3(0, 1, 0)
+            for (const imp of implantsNorm) {
+                const v0 = new THREE.Vector3(imp.p0[0] - 0.5, imp.p0[1] - 0.5, imp.p0[2] - 0.5)
+                const v1 = new THREE.Vector3(imp.p1[0] - 0.5, imp.p1[1] - 0.5, imp.p1[2] - 0.5)
+                const dir = new THREE.Vector3().subVectors(v1, v0)
+                const len = Math.max(0.01, dir.length())
+                const mid = new THREE.Vector3().addVectors(v0, v1).multiplyScalar(0.5)
+                const geom = new THREE.CylinderGeometry(imp.radiusNorm, imp.radiusNorm * 0.78, len, 16)
+                const mat = new THREE.MeshBasicMaterial({
+                    color: imp.isDanger ? 0xef4444 : 0x38bdf8,
+                    transparent: true,
+                    opacity: 0.78,
+                    depthTest: false,
+                })
+                const mesh = new THREE.Mesh(geom, mat)
+                mesh.position.copy(mid)
+                mesh.quaternion.setFromUnitVectors(upAxis, dir.clone().normalize())
+                mesh.renderOrder = 6
+                grp.add(mesh)
+            }
+        }
+        requestRender()
+    }, [implantsNorm])
 
     // Interacción táctil y ratón
     const handlePointerDown = (e: React.PointerEvent) => {

@@ -8,7 +8,7 @@ import {
     type ClinicalMeasurement,
     type ViewportOverlayContext,
 } from "./MprViewport"
-import { Dental3DViewer, type VolumeFocus } from "./Dental3DViewer"
+import { Dental3DViewer, type Implant3DNorm } from "./Dental3DViewer"
 import {
     coronalPlane,
     sagittalPlane,
@@ -16,21 +16,28 @@ import {
     renderPlane,
     archFrame,
     zFromH,
+    planeMmToWorld,
     projectWorldPointToPlane,
     type ClinicalVolume,
     type ArchModel,
     type PanoramaImage,
+    type PlaneSpec,
     type WindowLevel,
     type SlabMode,
     type Vec3,
     type ViewImage,
 } from "@/lib/cbct/mprEngine"
+import type { WebGLMprRenderer } from "@/lib/cbct/webglMprRenderer"
 import type { RenderVolume } from "@/lib/cbctReconstruction"
+import type { VirtualImplant } from "@/lib/cbct/clinicalScene"
+import { drawImplantsOnPanorama, drawImplantsOnPlane } from "@/lib/cbct/implantOverlay"
 
 export interface InVivoMprWorkspaceProps {
     clinicalVol: ClinicalVolume
+    gpuRenderer: WebGLMprRenderer | null
     renderVolume: RenderVolume | null
     reconStatus: string
+    axialSpec: PlaneSpec | null
     axialImg: ViewImage | null
     axialH: number
     setAxialH: React.Dispatch<React.SetStateAction<number>>
@@ -52,6 +59,10 @@ export interface InVivoMprWorkspaceProps {
     nervePoints3D: Vec3[]
     nervePointsNorm: [number, number, number][]
     onAddNervePoint3D: (pt: Vec3) => void
+    implants: VirtualImplant[]
+    implantsNorm: Implant3DNorm[]
+    selectedImplantId: string | null
+    onPlaceImplantAt3D: (pt: Vec3) => void
     currentSliceIndex: number
     totalSlices: number
     resetTrigger: number
@@ -59,15 +70,15 @@ export interface InVivoMprWorkspaceProps {
 }
 
 /**
- * Espacio de trabajo "InVivo MPR" (MPR Ortogonal Clásico):
- * 4 paneles sincronizados en tiempo real: Axial + Coronal + Sagital + 3D Volumétrico,
- * con ejes de referencia codificados por color (Axial=Cian, Coronal=Púrpura, Sagital=Esmeralda)
- * y modos de integración radiológica Mean / MIP / MinIP.
+ * Espacio de trabajo "InVivo MPR" (MPR Ortogonal acelerado por GPU WebGL2 16-bit Tricúbico):
+ * 4 paneles sincronizados en tiempo real: Axial + Coronal + Sagital + 3D Volumétrico.
  */
 export function InVivoMprWorkspace({
     clinicalVol,
+    gpuRenderer,
     renderVolume,
     reconStatus,
+    axialSpec,
     axialImg,
     axialH,
     setAxialH,
@@ -89,30 +100,44 @@ export function InVivoMprWorkspace({
     nervePoints3D,
     nervePointsNorm,
     onAddNervePoint3D,
+    implants,
+    implantsNorm,
+    selectedImplantId,
+    onPlaceImplantAt3D,
     currentSliceIndex,
     totalSlices,
     resetTrigger,
     externalZoomStep,
 }: InVivoMprWorkspaceProps) {
-    const coronalImg = useMemo(() => {
-        const spec = coronalPlane(clinicalVol, coronalY, slabMm, slabMode)
-        return renderPlane(clinicalVol, spec)
-    }, [clinicalVol, coronalY, slabMm, slabMode])
+    const useGpu = Boolean(gpuRenderer?.isReady)
 
-    const sagittalImg = useMemo(() => {
-        const spec = sagittalPlane(clinicalVol, sagittalX, slabMm, slabMode)
-        return renderPlane(clinicalVol, spec)
-    }, [clinicalVol, sagittalX, slabMm, slabMode])
+    const coronalSpec = useMemo(
+        () => coronalPlane(clinicalVol, coronalY, slabMm, slabMode),
+        [clinicalVol, coronalY, slabMm, slabMode]
+    )
+    const coronalImg = useMemo(
+        () => (useGpu ? null : renderPlane(clinicalVol, coronalSpec)),
+        [useGpu, clinicalVol, coronalSpec]
+    )
 
-    const drawNerveOnPlane = (
+    const sagittalSpec = useMemo(
+        () => sagittalPlane(clinicalVol, sagittalX, slabMm, slabMode),
+        [clinicalVol, sagittalX, slabMm, slabMode]
+    )
+    const sagittalImg = useMemo(
+        () => (useGpu ? null : renderPlane(clinicalVol, sagittalSpec)),
+        [useGpu, clinicalVol, sagittalSpec]
+    )
+
+    const drawNerveOnSpec = (
         ctx: CanvasRenderingContext2D,
         mmToScreen: (x: number, y: number) => [number, number],
-        img: ViewImage | null
+        spec: PlaneSpec | null
     ) => {
-        if (!img?.planeSpec || nervePoints3D.length === 0) return
+        if (!spec || nervePoints3D.length === 0) return
         ctx.save()
         for (const pt of nervePoints3D) {
-            const proj = projectWorldPointToPlane(img.planeSpec, pt)
+            const proj = projectWorldPointToPlane(spec, pt)
             if (proj.distMm <= Math.max(2.5, slabMm * 1.5)) {
                 const [sx, sy] = mmToScreen(proj.xMm, proj.yMm)
                 ctx.fillStyle = "rgba(249, 115, 22, 0.85)"
@@ -127,13 +152,12 @@ export function InVivoMprWorkspace({
         ctx.restore()
     }
 
-    const renderAxialCrosshair = ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+    const renderAxialCrosshair = ({ ctx, mmToScreen, scalePxPerMm }: ViewportOverlayContext) => {
         const [cx, cy] = mmToScreen(sagittalX, coronalY)
         const [x0, y0] = mmToScreen(0, 0)
         const [x1, y1] = mmToScreen(clinicalVol.widthMm, clinicalVol.depthMm)
 
         ctx.save()
-        // Línea vertical Sagital (Esmeralda)
         ctx.strokeStyle = "rgba(52, 211, 153, 0.8)"
         ctx.lineWidth = 1.2
         ctx.beginPath()
@@ -141,7 +165,6 @@ export function InVivoMprWorkspace({
         ctx.lineTo(cx, y1)
         ctx.stroke()
 
-        // Línea horizontal Coronal (Púrpura)
         ctx.strokeStyle = "rgba(192, 132, 252, 0.85)"
         ctx.beginPath()
         ctx.moveTo(x0, cy)
@@ -149,10 +172,11 @@ export function InVivoMprWorkspace({
         ctx.stroke()
         ctx.restore()
 
-        drawNerveOnPlane(ctx, mmToScreen, axialImg)
+        drawNerveOnSpec(ctx, mmToScreen, axialSpec)
+        drawImplantsOnPlane(ctx, mmToScreen, scalePxPerMm, axialSpec, implants, nervePoints3D, selectedImplantId)
     }
 
-    const renderCoronalCrosshair = ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+    const renderCoronalCrosshair = ({ ctx, mmToScreen, scalePxPerMm }: ViewportOverlayContext) => {
         const yAxialMm = clinicalVol.heightMm - axialH
         const [cx, cy] = mmToScreen(sagittalX, yAxialMm)
         const [x0, y0] = mmToScreen(0, 0)
@@ -173,10 +197,11 @@ export function InVivoMprWorkspace({
         ctx.stroke()
         ctx.restore()
 
-        drawNerveOnPlane(ctx, mmToScreen, coronalImg)
+        drawNerveOnSpec(ctx, mmToScreen, coronalSpec)
+        drawImplantsOnPlane(ctx, mmToScreen, scalePxPerMm, coronalSpec, implants, nervePoints3D, selectedImplantId)
     }
 
-    const renderSagittalCrosshair = ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+    const renderSagittalCrosshair = ({ ctx, mmToScreen, scalePxPerMm }: ViewportOverlayContext) => {
         const yAxialMm = clinicalVol.heightMm - axialH
         const [cx, cy] = mmToScreen(coronalY, yAxialMm)
         const [x0, y0] = mmToScreen(0, 0)
@@ -197,13 +222,17 @@ export function InVivoMprWorkspace({
         ctx.stroke()
         ctx.restore()
 
-        drawNerveOnPlane(ctx, mmToScreen, sagittalImg)
+        drawNerveOnSpec(ctx, mmToScreen, sagittalSpec)
+        drawImplantsOnPlane(ctx, mmToScreen, scalePxPerMm, sagittalSpec, implants, nervePoints3D, selectedImplantId)
     }
 
     return (
         <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2 grid-rows-4 md:grid-rows-2 gap-1 p-1 bg-black">
             {/* PANEL 1: AXIAL */}
-            <div className="min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] flex flex-col">
+            <div
+                data-cbct-capture-label={`Axial (Z: ${axialH.toFixed(1)} mm)`}
+                className="min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] flex flex-col"
+            >
                 <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/95 border-b border-slate-800 text-[11px] shrink-0">
                     <div className="flex items-center gap-1.5">
                         <span className="px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30 text-[10px]">
@@ -231,6 +260,9 @@ export function InVivoMprWorkspace({
                 <MprViewport
                     viewId="invivo_axial"
                     image={axialImg}
+                    clinicalVol={clinicalVol}
+                    planeSpec={axialSpec}
+                    gpuRenderer={gpuRenderer}
                     slope={clinicalVol.slope}
                     intercept={clinicalVol.intercept}
                     windowLevel={sliceWl}
@@ -251,6 +283,7 @@ export function InVivoMprWorkspace({
                         setCoronalY(Math.max(0, Math.min(clinicalVol.depthMm, yMm)))
                     }}
                     onAddNervePointMm={(xMm, yMm) => onAddNervePoint3D([xMm, yMm, zFromH(clinicalVol, axialH)])}
+                    onPlaceImplantMm={(xMm, yMm) => onPlaceImplantAt3D([xMm, yMm, zFromH(clinicalVol, axialH)])}
                     renderOverlay={renderAxialCrosshair}
                     scaleBarCm={5}
                     leftLabel="R"
@@ -263,7 +296,10 @@ export function InVivoMprWorkspace({
             </div>
 
             {/* PANEL 2: CORONAL */}
-            <div className="min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] flex flex-col">
+            <div
+                data-cbct-capture-label={`Coronal (Y: ${coronalY.toFixed(1)} mm)`}
+                className="min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] flex flex-col"
+            >
                 <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/95 border-b border-slate-800 text-[11px] shrink-0">
                     <div className="flex items-center gap-1.5">
                         <span className="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30 text-[10px]">
@@ -277,6 +313,9 @@ export function InVivoMprWorkspace({
                 <MprViewport
                     viewId="invivo_coronal"
                     image={coronalImg}
+                    clinicalVol={clinicalVol}
+                    planeSpec={coronalSpec}
+                    gpuRenderer={gpuRenderer}
                     slope={clinicalVol.slope}
                     intercept={clinicalVol.intercept}
                     windowLevel={sliceWl}
@@ -296,9 +335,8 @@ export function InVivoMprWorkspace({
                         setSagittalX(Math.max(0, Math.min(clinicalVol.widthMm, xMm)))
                         setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, clinicalVol.heightMm - yMm)))
                     }}
-                    onAddNervePointMm={(xMm, yMm) =>
-                        onAddNervePoint3D([xMm, coronalY, zFromH(clinicalVol, clinicalVol.heightMm - yMm)])
-                    }
+                    onAddNervePointMm={(xMm, yMm) => onAddNervePoint3D(planeMmToWorld(coronalSpec, xMm, yMm))}
+                    onPlaceImplantMm={(xMm, yMm) => onPlaceImplantAt3D(planeMmToWorld(coronalSpec, xMm, yMm))}
                     renderOverlay={renderCoronalCrosshair}
                     scaleBarCm={5}
                     leftLabel="R"
@@ -311,7 +349,10 @@ export function InVivoMprWorkspace({
             </div>
 
             {/* PANEL 3: SAGITAL */}
-            <div className="min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] flex flex-col">
+            <div
+                data-cbct-capture-label={`Sagital (X: ${sagittalX.toFixed(1)} mm)`}
+                className="min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] flex flex-col"
+            >
                 <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/95 border-b border-slate-800 text-[11px] shrink-0">
                     <div className="flex items-center gap-1.5">
                         <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 text-[10px]">
@@ -325,6 +366,9 @@ export function InVivoMprWorkspace({
                 <MprViewport
                     viewId="invivo_sagittal"
                     image={sagittalImg}
+                    clinicalVol={clinicalVol}
+                    planeSpec={sagittalSpec}
+                    gpuRenderer={gpuRenderer}
                     slope={clinicalVol.slope}
                     intercept={clinicalVol.intercept}
                     windowLevel={sliceWl}
@@ -344,9 +388,8 @@ export function InVivoMprWorkspace({
                         setCoronalY(Math.max(0, Math.min(clinicalVol.depthMm, xMm)))
                         setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, clinicalVol.heightMm - yMm)))
                     }}
-                    onAddNervePointMm={(xMm, yMm) =>
-                        onAddNervePoint3D([sagittalX, xMm, zFromH(clinicalVol, clinicalVol.heightMm - yMm)])
-                    }
+                    onAddNervePointMm={(xMm, yMm) => onAddNervePoint3D(planeMmToWorld(sagittalSpec, xMm, yMm))}
+                    onPlaceImplantMm={(xMm, yMm) => onPlaceImplantAt3D(planeMmToWorld(sagittalSpec, xMm, yMm))}
                     renderOverlay={renderSagittalCrosshair}
                     scaleBarCm={5}
                     leftLabel="A"
@@ -359,13 +402,17 @@ export function InVivoMprWorkspace({
             </div>
 
             {/* PANEL 4: 3D VOLUMÉTRICO */}
-            <div className="min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-black flex flex-col">
+            <div
+                data-cbct-capture-label="3D Volumétrico"
+                className="min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-black flex flex-col"
+            >
                 <Dental3DViewer
                     volume={renderVolume}
                     status={reconStatus}
                     sliceIndex={currentSliceIndex}
                     totalSlices={totalSlices}
                     nervePointsNorm={nervePointsNorm}
+                    implantsNorm={implantsNorm}
                 />
             </div>
         </div>
@@ -373,13 +420,15 @@ export function InVivoMprWorkspace({
 }
 
 // ---------------------------------------------------------------------------------------------
-// Modo InVivo — Cortes Seriados Transaxiales ("Arch Section" 6 cortes consecutivos simultáneos)
+// Modo InVivo — Cortes Seriados Transaxiales (6 cortes simultáneos acelerados por GPU WebGL2)
 // ---------------------------------------------------------------------------------------------
 
 export interface InVivoArchSerialWorkspaceProps {
     clinicalVol: ClinicalVolume
+    gpuRenderer: WebGLMprRenderer | null
     archModel: ArchModel
     panoramaImage: PanoramaImage | null
+    axialSpec: PlaneSpec | null
     axialImg: ViewImage | null
     archS: number
     setArchS: React.Dispatch<React.SetStateAction<number>>
@@ -403,17 +452,22 @@ export interface InVivoArchSerialWorkspaceProps {
     onMoveArchControlPoint: (idx: number, xMm: number, yMm: number) => void
     nervePoints3D: Vec3[]
     onAddNervePoint3D: (pt: Vec3) => void
+    implants: VirtualImplant[]
+    selectedImplantId: string | null
+    onPlaceImplantAt3D: (pt: Vec3, sOverride?: number) => void
     renderAxialOverlay: (rc: ViewportOverlayContext) => void
     resetTrigger: number
     externalZoomStep: number
 }
 
-const SERIAL_OFFSETS_INDICES = [-2, -1, 0, 1, 2, 3] // 6 cortes consecutivos numerados 1..6
+const SERIAL_OFFSETS_INDICES = [-2, -1, 0, 1, 2, 3]
 
 export function InVivoArchSerialWorkspace({
     clinicalVol,
+    gpuRenderer,
     archModel,
     panoramaImage,
+    axialSpec,
     axialImg,
     archS,
     setArchS,
@@ -437,11 +491,15 @@ export function InVivoArchSerialWorkspace({
     onMoveArchControlPoint,
     nervePoints3D,
     onAddNervePoint3D,
+    implants,
+    selectedImplantId,
+    onPlaceImplantAt3D,
     renderAxialOverlay,
     resetTrigger,
     externalZoomStep,
 }: InVivoArchSerialWorkspaceProps) {
-    // Calcular los 6 cortes transversales consecutivos alrededor de archS
+    const useGpu = Boolean(gpuRenderer?.isReady)
+
     const serialSlices = useMemo(() => {
         return SERIAL_OFFSETS_INDICES.map((offsetIdx, i) => {
             const sMm = Math.max(0, Math.min(archModel.length, archS + offsetIdx * serialSpacingMm))
@@ -454,7 +512,7 @@ export function InVivoArchSerialWorkspace({
                 sliceWindowBounds.hBot,
                 sliceWindowBounds.hTop
             )
-            const img = renderPlane(clinicalVol, spec)
+            const img = useGpu ? null : renderPlane(clinicalVol, spec)
             return {
                 num: i + 1,
                 isCenter: offsetIdx === 0,
@@ -463,10 +521,9 @@ export function InVivoArchSerialWorkspace({
                 img,
             }
         })
-    }, [clinicalVol, archModel, archS, serialSpacingMm, mprSlabMm, crossHalfWidthMm, sliceWindowBounds])
+    }, [useGpu, clinicalVol, archModel, archS, serialSpacingMm, mprSlabMm, crossHalfWidthMm, sliceWindowBounds])
 
-    // Overlay en Panorámica con las 6 líneas numeradas 1..6
-    const renderSerialPanoramaOverlay = ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+    const renderSerialPanoramaOverlay = ({ ctx, mmToScreen, scalePxPerMm }: ViewportOverlayContext) => {
         if (!panoramaImage) return
         const hTop = panoramaImage.hTop
         const yAxialMm = Math.max(0, Math.min(hTop, hTop - axialH))
@@ -477,7 +534,6 @@ export function InVivoArchSerialWorkspace({
         const [imgRightX] = mmToScreen(archModel.length, yAxialMm)
 
         ctx.save()
-        // Línea axial
         ctx.strokeStyle = "rgba(34, 211, 238, 0.55)"
         ctx.lineWidth = 1
         ctx.beginPath()
@@ -485,7 +541,6 @@ export function InVivoArchSerialWorkspace({
         ctx.lineTo(imgRightX, cy)
         ctx.stroke()
 
-        // Las 6 líneas numeradas de cortes transversales
         for (const sl of serialSlices) {
             const [sx, topY] = mmToScreen(sl.sMm, yWinTopMm)
             const [, botY] = mmToScreen(sl.sMm, yWinBotMm)
@@ -502,17 +557,32 @@ export function InVivoArchSerialWorkspace({
             ctx.fillText(String(sl.num), sx, Math.max(12, topY - 4))
         }
         ctx.restore()
+
+        drawImplantsOnPanorama(
+            ctx,
+            mmToScreen,
+            scalePxPerMm,
+            archModel,
+            clinicalVol,
+            hTop,
+            implants,
+            nervePoints3D,
+            selectedImplantId
+        )
     }
 
     return (
         <div className="flex-1 min-h-0 flex flex-col gap-1 p-1 bg-black">
             {/* FILA SUPERIOR: Panorama con líneas numeradas 1..6 + Axial */}
             <div className="flex-[44] min-h-0 flex flex-col md:flex-row gap-1">
-                <div className="flex-[65] min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] flex flex-col">
+                <div
+                    data-cbct-capture-label="Panorama Seriados 6×"
+                    className="flex-[65] min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] flex flex-col"
+                >
                     <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-slate-900/95 border-b border-slate-800 text-[11px] shrink-0 gap-1">
                         <div className="flex items-center gap-1.5">
                             <span className="px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-bold border border-indigo-500/30 text-[10px]">
-                                Cortes Seriados (InVivo)
+                                Cortes Seriados (InVivo GPU)
                             </span>
                             <span className="text-slate-300 text-[10px] font-mono">
                                 Centro: {archS.toFixed(1)} mm · 6 cortes
@@ -567,7 +637,10 @@ export function InVivoArchSerialWorkspace({
                     />
                 </div>
 
-                <div className="flex-[35] min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] flex flex-col">
+                <div
+                    data-cbct-capture-label="Axial · Curva del Arco"
+                    className="flex-[35] min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] flex flex-col"
+                >
                     <div className="flex items-center justify-between px-2.5 py-1 bg-slate-900/95 border-b border-slate-800 text-[11px] shrink-0">
                         <span className="px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30 text-[10px]">
                             Axial · Curva del Arco
@@ -577,6 +650,9 @@ export function InVivoArchSerialWorkspace({
                     <MprViewport
                         viewId="serial_axial"
                         image={axialImg}
+                        clinicalVol={clinicalVol}
+                        planeSpec={axialSpec}
+                        gpuRenderer={gpuRenderer}
                         slope={clinicalVol.slope}
                         intercept={clinicalVol.intercept}
                         windowLevel={sliceWl}
@@ -594,6 +670,7 @@ export function InVivoArchSerialWorkspace({
                         onWheelStep={(steps) =>
                             setAxialH((h) => Math.max(0, Math.min(clinicalVol.heightMm, h + steps * Math.max(0.25, clinicalVol.sz))))
                         }
+                        onPlaceImplantMm={(xMm, yMm) => onPlaceImplantAt3D([xMm, yMm, zFromH(clinicalVol, axialH)])}
                         renderOverlay={renderAxialOverlay}
                         scaleBarCm={5}
                         bottomLeftBadge="R"
@@ -608,6 +685,7 @@ export function InVivoArchSerialWorkspace({
                 {serialSlices.map((sl) => (
                     <div
                         key={sl.num}
+                        data-cbct-capture-label={`Corte #${sl.num} (${sl.sMm.toFixed(1)} mm)`}
                         className={`min-w-0 min-h-0 rounded-lg overflow-hidden bg-[#03060c] flex flex-col border ${
                             sl.isCenter ? "border-amber-400/80 shadow-[0_0_8px_rgba(250,204,21,0.2)]" : "border-slate-800"
                         }`}
@@ -621,6 +699,9 @@ export function InVivoArchSerialWorkspace({
                         <MprViewport
                             viewId={`serial_cross_${sl.num}`}
                             image={sl.img}
+                            clinicalVol={clinicalVol}
+                            planeSpec={sl.spec}
+                            gpuRenderer={gpuRenderer}
                             slope={clinicalVol.slope}
                             intercept={clinicalVol.intercept}
                             windowLevel={sliceWl}
@@ -643,12 +724,12 @@ export function InVivoArchSerialWorkspace({
                                 setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, sliceWindowBounds.hTop - yMm)))
                             }}
                             onAddNervePointMm={(xMm, yMm) => {
-                                const f = archFrame(archModel, sl.sMm)
-                                const d = xMm - crossHalfWidthMm
-                                const h = sliceWindowBounds.hTop - yMm
-                                onAddNervePoint3D([f.x + f.nx * d, f.y + f.ny * d, zFromH(clinicalVol, h)])
+                                onAddNervePoint3D(planeMmToWorld(sl.spec, xMm, yMm))
                             }}
-                            renderOverlay={({ ctx, mmToScreen }) => {
+                            onPlaceImplantMm={(xMm, yMm) => {
+                                onPlaceImplantAt3D(planeMmToWorld(sl.spec, xMm, yMm), sl.sMm)
+                            }}
+                            renderOverlay={({ ctx, mmToScreen, scalePxPerMm }) => {
                                 const yAx = Math.max(0, Math.min(sliceWindowBounds.height, sliceWindowBounds.hTop - axialH))
                                 const [x0, cy] = mmToScreen(0, yAx)
                                 const [x1] = mmToScreen(crossHalfWidthMm * 2, yAx)
@@ -659,7 +740,6 @@ export function InVivoArchSerialWorkspace({
                                 ctx.lineTo(x1, cy)
                                 ctx.stroke()
 
-                                // Proyectar canal del nervio dentario en cada corte transversal seriado
                                 if (nervePoints3D.length > 0) {
                                     ctx.save()
                                     for (const pt of nervePoints3D) {
@@ -677,6 +757,16 @@ export function InVivoArchSerialWorkspace({
                                     }
                                     ctx.restore()
                                 }
+
+                                drawImplantsOnPlane(
+                                    ctx,
+                                    mmToScreen,
+                                    scalePxPerMm,
+                                    sl.spec,
+                                    implants,
+                                    nervePoints3D,
+                                    selectedImplantId
+                                )
                             }}
                             resetTrigger={resetTrigger}
                             externalZoomStep={externalZoomStep}

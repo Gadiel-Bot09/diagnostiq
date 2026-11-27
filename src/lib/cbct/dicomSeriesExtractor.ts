@@ -50,6 +50,8 @@ export interface CalibrationAudit {
     photometricInterpretation: string
     sliceCount: number
     matrixDims: [number, number, number]
+    /** Si la serie original fue adquirida en Coronal/Sagital y se permutó automáticamente a Axial LPS */
+    reaxisedFrom?: string
 }
 
 export interface VolumetricSeries {
@@ -95,9 +97,77 @@ export interface ExtractedStudyBundle {
 function getMetaTagValue(meta: Record<string, any> | undefined, tagKey: string): any {
     if (!meta) return undefined
     const el = meta[tagKey]
-    if (!el) return undefined
-    if (el.value !== undefined) return el.value
-    return el
+    if (el) {
+        return el.value !== undefined ? el.value : el
+    }
+    return undefined
+}
+
+/**
+ * Busca una etiqueta DICOM en la raíz o dentro de secuencias Enhanced Multi-Frame:
+ * SharedFunctionalGroupsSequence (5200,9229) y PerFrameFunctionalGroupsSequence (5200,9230)
+ * (incluyendo PixelMeasuresSequence 0028,9110 y PlaneOrientationSequence 0020,9116).
+ */
+function findNestedTagValue(
+    obj: Record<string, any> | undefined,
+    tagKey: string,
+    depth = 0
+): any {
+    if (!obj || typeof obj !== "object" || depth > 4) return undefined
+    const direct = getMetaTagValue(obj, tagKey)
+    if (direct !== undefined) return direct
+
+    const seqKeys = ["52009229", "52009230", "00289110", "00209116", "00209113"]
+    for (const sk of seqKeys) {
+        const seqVal = getMetaTagValue(obj, sk)
+        if (!seqVal) continue
+        const items = Array.isArray(seqVal) ? seqVal : [seqVal]
+        for (let i = 0; i < Math.min(items.length, 2); i++) {
+            const item = items[i]
+            if (item && typeof item === "object") {
+                const found = findNestedTagValue(item, tagKey, depth + 1)
+                if (found !== undefined) return found
+            }
+        }
+    }
+    return undefined
+}
+
+function getMetaNumbersDeep(meta: Record<string, any> | undefined, tagKey: string): number[] {
+    const val = findNestedTagValue(meta, tagKey)
+    if (val === undefined || val === null) return []
+    const rawArr = Array.isArray(val) ? val : [val]
+    const out: number[] = []
+    for (const item of rawArr) {
+        if (typeof item === "number" && Number.isFinite(item)) {
+            out.push(item)
+        } else if (typeof item === "string") {
+            for (const part of item.split(/[\\,;\s]+/)) {
+                const n = parseFloat(part)
+                if (Number.isFinite(n)) out.push(n)
+            }
+        }
+    }
+    return out
+}
+
+function getMetaFirstNumberDeep(meta: Record<string, any> | undefined, tagKey: string): number | null {
+    const nums = getMetaNumbersDeep(meta, tagKey)
+    return nums.length > 0 ? nums[0] : null
+}
+
+/** Extrae todas las coordenadas ImagePositionPatient de PerFrameFunctionalGroupsSequence (5200,9230) en DICOM Multi-Frame */
+function extractPerFramePositions(meta: Record<string, any> | undefined): [number, number, number][] {
+    const pfg = getMetaTagValue(meta, "52009230")
+    if (!Array.isArray(pfg) || pfg.length < 2) return []
+    const pts: [number, number, number][] = []
+    for (const frameItem of pfg) {
+        const ipp = getMetaNumbersDeep(frameItem, "00200032")
+        if (ipp.length >= 3) {
+            pts.push([ipp[0], ipp[1], ipp[2]])
+        }
+    }
+    return pts
 }
 
 function getMetaString(meta: Record<string, any> | undefined, tagKey: string): string {
@@ -170,8 +240,8 @@ function parseOrientationCosines(
     verified: boolean
     orientationName: string
 } {
-    // 1. Intentar leer ImageOrientationPatient (0020,0037) directamente de los metadatos DICOM
-    const iop = getMetaNumbers(meta, "00200037")
+    // 1. Intentar leer ImageOrientationPatient (0020,0037) desde raíz o secuencias Enhanced Multi-Frame
+    const iop = getMetaNumbersDeep(meta, "00200037")
     if (iop.length >= 6) {
         const rLen = Math.hypot(iop[0], iop[1], iop[2])
         const cLen = Math.hypot(iop[3], iop[4], iop[5])
@@ -235,23 +305,42 @@ function parseOrientationCosines(
 
 function analyzeOriginsSpacing(
     geom: any,
-    normal: [number, number, number]
+    normal: [number, number, number],
+    meta?: Record<string, any>
 ): {
     medianStep: number | null
     hasGaps: boolean
     gapCount: number
     maxGapMm: number
     zUpFromOrigins: boolean | null
+    normalSignFromOrigins: 1 | -1
     looksLikeUncalibratedIndex: boolean
 } {
     const origins = typeof geom?.getOrigins === "function" ? geom.getOrigins() : null
-    if (!origins || origins.length < 2) {
+    const rawPoints: [number, number, number][] = []
+
+    if (origins && origins.length >= 2) {
+        for (let i = 0; i < origins.length; i++) {
+            const p = origins[i]
+            rawPoints.push([
+                typeof p.getX === "function" ? p.getX() : 0,
+                typeof p.getY === "function" ? p.getY() : 0,
+                typeof p.getZ === "function" ? p.getZ() : 0,
+            ])
+        }
+    } else {
+        // Fallback para DICOM Enhanced Multi-Frame (PerFrameFunctionalGroupsSequence 5200,9230)
+        rawPoints.push(...extractPerFramePositions(meta))
+    }
+
+    if (rawPoints.length < 2) {
         return {
             medianStep: null,
             hasGaps: false,
             gapCount: 0,
             maxGapMm: 0,
             zUpFromOrigins: null,
+            normalSignFromOrigins: 1,
             looksLikeUncalibratedIndex: false,
         }
     }
@@ -259,11 +348,8 @@ function analyzeOriginsSpacing(
     const projs: number[] = []
     let allZeroXY = true
     let allIntegerZ = true
-    for (let i = 0; i < origins.length; i++) {
-        const p = origins[i]
-        const x = typeof p.getX === "function" ? p.getX() : 0
-        const y = typeof p.getY === "function" ? p.getY() : 0
-        const z = typeof p.getZ === "function" ? p.getZ() : 0
+    for (let i = 0; i < rawPoints.length; i++) {
+        const [x, y, z] = rawPoints[i]
         if (Math.abs(x) > 1e-4 || Math.abs(y) > 1e-4) allZeroXY = false
         if (Math.abs(z - Math.round(z)) > 1e-4) allIntegerZ = false
         projs.push(x * normal[0] + y * normal[1] + z * normal[2])
@@ -282,6 +368,7 @@ function analyzeOriginsSpacing(
             gapCount: 0,
             maxGapMm: 0,
             zUpFromOrigins: null,
+            normalSignFromOrigins: 1,
             looksLikeUncalibratedIndex: true,
         }
     }
@@ -301,10 +388,12 @@ function analyzeOriginsSpacing(
     // Detectar si DWV o el tomógrafo rellenaron IPP con índice secuencial ficticio (0, 0, 0), (0, 0, 1), (0, 0, 2)...
     const looksLikeUncalibratedIndex = allZeroXY && allIntegerZ && Math.abs(medianStep - 1.0) < 1e-4
 
-    // Determinar si al crecer el índice de corte en el buffer se avanza hacia Superior (+Z LPS)
-    const firstZ = origins[0].getZ()
-    const lastZ = origins[origins.length - 1].getZ()
-    const zUpFromOrigins = Math.abs(lastZ - firstZ) > 1e-4 ? lastZ > firstZ : null
+    // Determinar dirección de progresión de cortes a lo largo de la normal y en +Z LPS
+    const firstP = rawPoints[0]
+    const lastP = rawPoints[rawPoints.length - 1]
+    const deltaProj = projs[projs.length - 1] - projs[0]
+    const normalSignFromOrigins: 1 | -1 = deltaProj >= 0 ? 1 : -1
+    const zUpFromOrigins = Math.abs(lastP[2] - firstP[2]) > 1e-4 ? lastP[2] > firstP[2] : null
 
     return {
         medianStep,
@@ -312,7 +401,98 @@ function analyzeOriginsSpacing(
         gapCount,
         maxGapMm,
         zUpFromOrigins,
+        normalSignFromOrigins,
         looksLikeUncalibratedIndex,
+    }
+}
+
+/**
+ * Permuta automáticamente un volumen adquirido originalmente en Coronal o Sagital
+ * a una matriz Axial LPS canónica (eje 0 = R->L, eje 1 = A->P, eje 2 = I->S).
+ */
+function reaxisNonAxialToCanonicalAxial(
+    raw: ArrayLike<number>,
+    dims: [number, number, number],
+    spacings: [number, number, number],
+    rowDir: [number, number, number],
+    colDir: [number, number, number],
+    sliceDir: [number, number, number]
+): {
+    raw: Int16Array | Uint16Array | Float32Array
+    nx: number
+    ny: number
+    nz: number
+    sx: number
+    sy: number
+    sz: number
+} | null {
+    const axes = [rowDir, colDir, sliceDir]
+    const pickAxis = (lpsIdx: 0 | 1 | 2, exclude: Set<number>): { axis: number; sign: 1 | -1 } => {
+        let bestAxis = 0
+        let bestAbs = -1
+        let bestSign: 1 | -1 = 1
+        for (let a = 0; a < 3; a++) {
+            if (exclude.has(a)) continue
+            const v = axes[a][lpsIdx]
+            if (Math.abs(v) > bestAbs) {
+                bestAbs = Math.abs(v)
+                bestAxis = a
+                bestSign = v >= 0 ? 1 : -1
+            }
+        }
+        return { axis: bestAxis, sign: bestSign }
+    }
+
+    const used = new Set<number>()
+    const xMap = pickAxis(0, used) // +X LPS = Izquierda (L)
+    used.add(xMap.axis)
+    const yMap = pickAxis(1, used) // +Y LPS = Posterior (P)
+    used.add(yMap.axis)
+    const zMap = pickAxis(2, used) // +Z LPS = Superior (S)
+
+    // Si ya es axial (x=0, y=1, z=2), no hace falta permutar memoria
+    if (xMap.axis === 0 && yMap.axis === 1 && zMap.axis === 2) return null
+
+    const newNx = dims[xMap.axis]
+    const newNy = dims[yMap.axis]
+    const newNz = dims[zMap.axis]
+    const total = newNx * newNy * newNz
+
+    // Preservar tipo numérico sin pérdida de precisión
+    const out =
+        raw instanceof Int16Array
+            ? new Int16Array(total)
+            : raw instanceof Uint16Array
+            ? new Uint16Array(total)
+            : new Float32Array(total)
+
+    const [oldNx, oldNy] = dims
+    const oldNxy = oldNx * oldNy
+    const newNxy = newNx * newNy
+    const srcCoord = [0, 0, 0]
+
+    for (let z = 0; z < newNz; z++) {
+        srcCoord[zMap.axis] = zMap.sign > 0 ? z : newNz - 1 - z
+        const dstZ = z * newNxy
+        for (let y = 0; y < newNy; y++) {
+            srcCoord[yMap.axis] = yMap.sign > 0 ? y : newNy - 1 - y
+            const dstZY = dstZ + y * newNx
+            for (let x = 0; x < newNx; x++) {
+                srcCoord[xMap.axis] = xMap.sign > 0 ? x : newNx - 1 - x
+                const srcIdx = srcCoord[2] * oldNxy + srcCoord[1] * oldNx + srcCoord[0]
+                out[dstZY + x] = raw[srcIdx]
+            }
+        }
+    }
+
+    return {
+        raw: out,
+        nx: newNx,
+        ny: newNy,
+        nz: newNz,
+        sx: spacings[xMap.axis],
+        sy: spacings[yMap.axis],
+        sz: spacings[zMap.axis],
     }
 }
 
@@ -471,10 +651,10 @@ export function extractAllStudySeries(app: any): ExtractedStudyBundle {
             const studyDate = getMetaString(meta, "00080020")
             const photometricInterpretation = getMetaString(meta, "00280004") || "MONOCHROME2"
 
-            // Leer PixelSpacing (0028,0030) -> [rowSpacing (sy), colSpacing (sx)] en estándar DICOM
+            // Leer PixelSpacing (0028,0030) desde raíz o Enhanced Multi-Frame (PixelMeasuresSequence 0028,9110)
             const spGeom = geom.getSpacing()
-            const psTag = getMetaNumbers(meta, "00280030")
-            const ipsTag = getMetaNumbers(meta, "00181164")
+            const psTag = getMetaNumbersDeep(meta, "00280030")
+            const ipsTag = getMetaNumbersDeep(meta, "00181164")
 
             let sx = spGeom.get(0) || 0
             let sy = spGeom.get(1) || 0
@@ -483,7 +663,10 @@ export function extractAllStudySeries(app: any): ExtractedStudyBundle {
             if (psTag.length >= 2 && psTag[0] > 0 && psTag[1] > 0) {
                 sy = psTag[0]
                 sx = psTag[1]
-                pixelSpacingSource = "PixelSpacing (0028,0030)"
+                pixelSpacingSource =
+                    getMetaNumbers(meta, "00280030").length >= 2
+                        ? "PixelSpacing (0028,0030)"
+                        : "Enhanced Multi-Frame PixelMeasures (0028,9110)"
             } else if (ipsTag.length >= 2 && ipsTag[0] > 0 && ipsTag[1] > 0) {
                 sy = ipsTag[0]
                 sx = ipsTag[1]
@@ -529,9 +712,9 @@ export function extractAllStudySeries(app: any): ExtractedStudyBundle {
 
             // Serie Volumétrica 3D CBCT (monocroma, nz >= 16)
             const ori = parseOrientationCosines(geom, meta)
-            const originsInfo = analyzeOriginsSpacing(geom, ori.normal)
-            const sbsTag = getMetaFirstNumber(meta, "00180088") // SpacingBetweenSlices
-            const stTag = getMetaFirstNumber(meta, "00180050") // SliceThickness
+            const originsInfo = analyzeOriginsSpacing(geom, ori.normal, meta)
+            const sbsTag = getMetaFirstNumberDeep(meta, "00180088") // SpacingBetweenSlices (raíz o Multi-Frame)
+            const stTag = getMetaFirstNumberDeep(meta, "00180050") // SliceThickness (raíz o Multi-Frame)
             const geomSz = spGeom.get(2) || 0
 
             // Determinar sz con jerarquía metrológica estricta (sin heurísticas silenciosas)
@@ -570,20 +753,52 @@ export function extractAllStudySeries(app: any): ExtractedStudyBundle {
                 calibrationStatus = "estimated_isotropic"
             }
 
-            // Orientación anatómica LPS real:
-            // En DICOM LPS, +X = Izquierda del paciente (L), +Y = Posterior (P), +Z = Superior (S).
-            // Para mostrar estándar radiológico (R a la izquierda de la pantalla, Anterior arriba, Superior arriba):
-            // - flipX = true si el vector de columnas apunta hacia Derecha (row[0] < -0.5)
-            // - flipY = true si el vector de filas apunta hacia Anterior (col[1] < -0.5)
-            // - zUp = true si al avanzar el índice de corte Z se va hacia Superior (+Z LPS)
-            const flipX = ori.verified ? ori.row[0] < -0.5 : false
-            const flipY = ori.verified ? ori.col[1] < -0.5 : false
-            const zUp =
+            // Si la serie fue adquirida originalmente en Coronal o Sagital, permutar automáticamente a Axial LPS canónico
+            let finalRaw: ArrayLike<number> = raw
+            let finalNx = nx
+            let finalNy = ny
+            let finalNz = nz
+            let finalSx = sx
+            let finalSy = sy
+            let finalSz = sz
+            let flipX = ori.verified ? ori.row[0] < -0.5 : false
+            let flipY = ori.verified ? ori.col[1] < -0.5 : false
+            let zUp =
                 originsInfo.zUpFromOrigins !== null
                     ? originsInfo.zUpFromOrigins
                     : ori.verified
                     ? ori.normal[2] >= 0
                     : true
+            let reaxisedFrom: string | undefined
+
+            if (ori.verified && (ori.orientationName === "Coronal" || ori.orientationName === "Sagital")) {
+                const sliceDir: [number, number, number] = [
+                    ori.normal[0] * originsInfo.normalSignFromOrigins,
+                    ori.normal[1] * originsInfo.normalSignFromOrigins,
+                    ori.normal[2] * originsInfo.normalSignFromOrigins,
+                ]
+                const permuted = reaxisNonAxialToCanonicalAxial(
+                    raw,
+                    [nx, ny, nz],
+                    [sx, sy, sz],
+                    ori.row,
+                    ori.col,
+                    sliceDir
+                )
+                if (permuted) {
+                    finalRaw = permuted.raw
+                    finalNx = permuted.nx
+                    finalNy = permuted.ny
+                    finalNz = permuted.nz
+                    finalSx = permuted.sx
+                    finalSy = permuted.sy
+                    finalSz = permuted.sz
+                    flipX = false
+                    flipY = false
+                    zUp = true
+                    reaxisedFrom = ori.orientationName
+                }
+            }
 
             let slope = 1
             let intercept = 0
@@ -600,21 +815,21 @@ export function extractAllStudySeries(app: any): ExtractedStudyBundle {
                 }
             } catch {}
 
-            const wcMeta = getMetaFirstNumber(meta, "00281050")
-            const wwMeta = getMetaFirstNumber(meta, "00281051")
+            const wcMeta = getMetaFirstNumberDeep(meta, "00281050")
+            const wwMeta = getMetaFirstNumberDeep(meta, "00281051")
             const dicomWindow =
                 wcMeta !== null && wwMeta !== null && wwMeta > 1 ? { center: wcMeta, width: wwMeta } : null
 
-            const [pAir, pLow, pHigh] = sampleQuantilesQuick(raw, [0.01, 0.32, 0.9995])
+            const [pAir, pLow, pHigh] = sampleQuantilesQuick(finalRaw, [0.01, 0.32, 0.9995])
 
             const volume: CbctVolume = {
-                raw,
-                nx,
-                ny,
-                nz,
-                sx,
-                sy,
-                sz,
+                raw: finalRaw,
+                nx: finalNx,
+                ny: finalNy,
+                nz: finalNz,
+                sx: finalSx,
+                sy: finalSy,
+                sz: finalSz,
                 zUp,
                 pAir,
                 pLow,
@@ -625,10 +840,10 @@ export function extractAllStudySeries(app: any): ExtractedStudyBundle {
 
             const calibrationLabel =
                 calibrationStatus === "certified_geometry"
-                    ? `Calibrado DICOM (${sx.toFixed(2)}×${sy.toFixed(2)}×${sz.toFixed(2)} mm)`
+                    ? `Calibrado DICOM (${finalSx.toFixed(2)}×${finalSy.toFixed(2)}×${finalSz.toFixed(2)} mm)`
                     : calibrationStatus === "certified_header"
-                    ? `Calibrado Cabecera (${sx.toFixed(2)}×${sy.toFixed(2)}×${sz.toFixed(2)} mm)`
-                    : `Calibración Z Estimada (${sx.toFixed(2)}×${sy.toFixed(2)}×${sz.toFixed(2)} mm)`
+                    ? `Calibrado Cabecera (${finalSx.toFixed(2)}×${finalSy.toFixed(2)}×${finalSz.toFixed(2)} mm)`
+                    : `Calibración Z Estimada (${finalSx.toFixed(2)}×${finalSy.toFixed(2)}×${finalSz.toFixed(2)} mm)`
 
             const calibrationDetail =
                 calibrationStatus === "certified_geometry"
@@ -639,7 +854,7 @@ export function extractAllStudySeries(app: any): ExtractedStudyBundle {
 
             volumetricSeries.push({
                 id: String(id),
-                label: `${seriesDescription} (${nx}×${ny}×${nz})`,
+                label: `${seriesDescription} (${finalNx}×${finalNy}×${finalNz})`,
                 seriesDescription,
                 modality,
                 volume,
@@ -648,15 +863,15 @@ export function extractAllStudySeries(app: any): ExtractedStudyBundle {
                     status: calibrationStatus,
                     label: calibrationLabel,
                     detail: calibrationDetail,
-                    sx,
-                    sy,
-                    sz,
+                    sx: finalSx,
+                    sy: finalSy,
+                    sz: finalSz,
                     hasGaps: originsInfo.hasGaps,
                     gapCount: originsInfo.gapCount,
                     maxGapMm: originsInfo.maxGapMm,
                     pixelSpacingSource,
                     zSpacingSource,
-                    orientationName: ori.orientationName,
+                    orientationName: reaxisedFrom ? `${reaxisedFrom} → Axial LPS` : ori.orientationName,
                     lpsVerified: ori.verified,
                     flipX,
                     flipY,
@@ -668,8 +883,9 @@ export function extractAllStudySeries(app: any): ExtractedStudyBundle {
                     studyDate,
                     modality,
                     photometricInterpretation,
-                    sliceCount: nz,
-                    matrixDims: [nx, ny, nz],
+                    sliceCount: finalNz,
+                    matrixDims: [finalNx, finalNy, finalNz],
+                    reaxisedFrom,
                 },
             })
         } catch (err) {

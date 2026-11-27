@@ -1,54 +1,78 @@
 "use client"
 
-import React, { useEffect, useRef, useState, useCallback } from "react"
-import type { ArchPoint, ViewImage, WindowLevel } from "@/lib/cbct/mprEngine"
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react"
+import {
+    planeMmToWorld,
+    projectWorldPointToPlane,
+    sampleRaw,
+    type ArchPoint,
+    type ClinicalVolume,
+    type PlaneSpec,
+    type Vec3,
+    type ViewImage,
+    type WindowLevel,
+} from "@/lib/cbct/mprEngine"
+import type { WebGLMprRenderer } from "@/lib/cbct/webglMprRenderer"
 
-export type ActiveClinicalTool = "navigate" | "pan" | "wl" | "ruler" | "angle" | "polyline" | "nerve" | "editArch"
+export type ActiveClinicalTool =
+    | "navigate"
+    | "pan"
+    | "wl"
+    | "ruler"
+    | "angle"
+    | "polyline"
+    | "nerve"
+    | "editArch"
+    | "implant"
+
 export type ClinicalColorMap = "plain" | "invPlain" | "hot"
 
 interface MeasurementBase {
     id: string
-    /** Coordenada de corte (mm) en el plano donde se trazó la medida (evita fantasmas en otros cortes) */
+    /** Coordenada de corte (mm) en el plano donde se trazó la medida (respaldo para vistas curvas) */
     sliceAnchor?: number
     /** Etiqueta legible del corte para la lista auditable de mediciones */
     sliceLabel?: string
-    /** true si el estudio tiene calibración Z estimada (muestra ~ y color ámbar de precaución) */
+    /** true si el estudio tiene calibración Z estimada o proyección curva */
     isEstimated?: boolean
 }
 
 export interface RulerMeasurement extends MeasurementBase {
     kind: "ruler"
-    /** Coordenadas en milímetros dentro del plano de la imagen (x = col * spacing, y = row * spacing) */
+    /** Coordenadas locales en mm (respaldo para vistas curvas / compatibilidad) */
     x1: number
     y1: number
     x2: number
     y2: number
+    /** Coordenadas 3D absolutas en el volumen LPS (mm) — eliminan cualquier deriva vertical al mover ventanas */
+    p1_3d?: Vec3
+    p2_3d?: Vec3
 }
 
 export interface AngleMeasurement extends MeasurementBase {
     kind: "angle"
-    /** Puntos en milímetros dentro del plano: A -> Vértice (B) -> C */
     x1: number
     y1: number
     vx: number
     vy: number
     x2: number
     y2: number
+    p1_3d?: Vec3
+    v_3d?: Vec3
+    p2_3d?: Vec3
 }
 
 export interface PolylineMeasurement extends MeasurementBase {
     kind: "polyline"
-    /** Secuencia de vértices en mm (ideal para longitud de conductos radiculares curvos) */
     points: { x: number; y: number }[]
+    points_3d?: Vec3[]
 }
 
 export type ClinicalMeasurement = RulerMeasurement | AngleMeasurement | PolylineMeasurement
 
 export interface ViewportOverlayContext {
     ctx: CanvasRenderingContext2D
-    /** Convierte (xMm, yMm) de la imagen a píxeles CSS del canvas superpuesto */
     mmToScreen: (xMm: number, yMm: number) => [number, number]
-    /** Convierte píxeles CSS del canvas superpuesto a (xMm, yMm) de la imagen */
     screenToMm: (sx: number, sy: number) => [number, number]
     widthCss: number
     heightCss: number
@@ -57,7 +81,12 @@ export interface ViewportOverlayContext {
 
 export interface MprViewportProps {
     viewId: string
-    image: ViewImage | null
+    /** Imagen CPU (usada para Panorama CPR, Tangencial curvo o fallback si no hay WebGL2) */
+    image?: ViewImage | null
+    /** Ruta GPU WebGL2 16-bit Tricúbica (60 FPS): si se pasan clinicalVol + planeSpec + gpuRenderer, renderiza en GPU */
+    clinicalVol?: ClinicalVolume | null
+    planeSpec?: PlaneSpec | null
+    gpuRenderer?: WebGLMprRenderer | null
     slope?: number
     intercept?: number
     windowLevel: WindowLevel
@@ -66,55 +95,66 @@ export interface MprViewportProps {
     activeTool: ActiveClinicalTool
     measurements: ClinicalMeasurement[]
     onChangeMeasurements: (next: ClinicalMeasurement[]) => void
-    /** Coordenada actual del corte (mm) para anclar y filtrar mediciones al corte real */
     currentSliceCoord?: number
-    /** Tolerancia (mm) de visibilidad de medidas alrededor del corte actual (por defecto 1.6 mm) */
     sliceAnchorToleranceMm?: number
-    /** Etiqueta descriptiva del corte actual para guardar junto con nuevas medidas */
     currentSliceLabel?: string
-    /** true si la calibración física del eje vertical es estimada */
     isEstimatedCalibration?: boolean
-    /** true si la vista es una proyección curva (Panorama CPR / Tangencial curvo) */
     isCurvedProjection?: boolean
     onAdjustWindowLevel?: (deltaWidth: number, deltaCenter: number) => void
     onWheelStep?: (deltaSteps: number) => void
-    /** Callback al hacer clic o arrastrar con la herramienta "navigate" en coordenadas (xMm, yMm) */
     onNavigateMm?: (xMm: number, yMm: number, isDragging: boolean) => void
-    /** Callback al agregar un punto del canal del nervio dentario en (xMm, yMm) */
     onAddNervePointMm?: (xMm: number, yMm: number) => void
-    /** Puntos de control del arco dental (solo para vista Axial editable) */
+    onPlaceImplantMm?: (xMm: number, yMm: number) => void
     archControlPoints?: ArchPoint[]
     onMoveArchControlPoint?: (index: number, xMm: number, yMm: number) => void
-    /** Dibuja superposiciones clínicas específicas de la vista (ej. Ventana de cortes, cruz amarilla, arco axial) */
     renderOverlay?: (rc: ViewportOverlayContext) => void
-    /** Etiqueta de escala física ("1 cm" o "5 cm") */
     scaleBarCm?: 1 | 5
-    /** Etiquetas anatómicas opcionales */
     leftLabel?: string
     rightLabel?: string
     topLabel?: string
     bottomLabel?: string
     bottomLeftBadge?: string
     emptyText?: string
-    /** Modo compacto para celdas de grilla seriada InVivo */
     compact?: boolean
-    /** Incrementar para forzar reseteo de zoom/pan */
     resetTrigger?: number
-    /** Incrementar para acercar/alejar desde la barra superior */
     externalZoomStep?: number
 }
 
 export function getMeasurementSummaryValue(m: ClinicalMeasurement): string {
     const prefix = m.isEstimated ? "~" : ""
     if (m.kind === "ruler") {
-        return `${prefix}${Math.hypot(m.x2 - m.x1, m.y2 - m.y1).toFixed(1)} mm`
+        const dist =
+            m.p1_3d && m.p2_3d
+                ? Math.hypot(
+                      m.p2_3d[0] - m.p1_3d[0],
+                      m.p2_3d[1] - m.p1_3d[1],
+                      m.p2_3d[2] - m.p1_3d[2]
+                  )
+                : Math.hypot(m.x2 - m.x1, m.y2 - m.y1)
+        return `${prefix}${dist.toFixed(1)} mm`
     }
     if (m.kind === "polyline") {
         let total = 0
-        for (let i = 1; i < m.points.length; i++) {
-            total += Math.hypot(m.points[i].x - m.points[i - 1].x, m.points[i].y - m.points[i - 1].y)
+        if (m.points_3d && m.points_3d.length >= 2) {
+            for (let i = 1; i < m.points_3d.length; i++) {
+                const a = m.points_3d[i - 1]
+                const b = m.points_3d[i]
+                total += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2])
+            }
+        } else {
+            for (let i = 1; i < m.points.length; i++) {
+                total += Math.hypot(m.points[i].x - m.points[i - 1].x, m.points[i].y - m.points[i - 1].y)
+            }
         }
         return `${prefix}${total.toFixed(1)} mm`
+    }
+    if (m.p1_3d && m.v_3d && m.p2_3d) {
+        const v1 = [m.p1_3d[0] - m.v_3d[0], m.p1_3d[1] - m.v_3d[1], m.p1_3d[2] - m.v_3d[2]]
+        const v2 = [m.p2_3d[0] - m.v_3d[0], m.p2_3d[1] - m.v_3d[1], m.p2_3d[2] - m.v_3d[2]]
+        const l1 = Math.hypot(v1[0], v1[1], v1[2]) || 1
+        const l2 = Math.hypot(v2[0], v2[1], v2[2]) || 1
+        const cosA = Math.max(-1, Math.min(1, (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (l1 * l2)))
+        return `${((Math.acos(cosA) * 180) / Math.PI).toFixed(1)}°`
     }
     const v1x = m.x1 - m.vx
     const v1y = m.y1 - m.vy
@@ -123,19 +163,34 @@ export function getMeasurementSummaryValue(m: ClinicalMeasurement): string {
     const l1 = Math.hypot(v1x, v1y) || 1
     const l2 = Math.hypot(v2x, v2y) || 1
     const cosA = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)))
-    const deg = (Math.acos(cosA) * 180) / Math.PI
-    return `${deg.toFixed(1)}°`
+    return `${((Math.acos(cosA) * 180) / Math.PI).toFixed(1)}°`
+}
+
+interface ProjectedMeasurement {
+    source: ClinicalMeasurement
+    kind: ClinicalMeasurement["kind"]
+    x1?: number
+    y1?: number
+    x2?: number
+    y2?: number
+    vx?: number
+    vy?: number
+    points?: { x: number; y: number }[]
+    distLabelMm?: number
+    angleDeg?: number
 }
 
 /**
- * Visor 2D clínico de alta precisión (nivel Sirona GALILEOS / InVivoViewer):
- * - Realce de nitidez cortical (Unsharp Mask 3x3) sobre datos de 16 bits / Float32 ANTES de cuantizar a 8 bits.
- * - Mediciones ancladas al corte real (sin fantasmas entre piezas), lupa 3x de precisión al medir,
- *   lectura de densidad relativa (HU / GV) bajo el cursor, regla, goniómetro, polilínea (conductos curvos)
- *   y edición interactiva de nodos del arco dental.
+ * Visor 2D clínico de grado médico:
+ * - Aceleración GPU WebGL2 (16-bit R16F + Tricúbico B-Spline + Unsharp Mask Float32 a 60 FPS) con fallback CPU 16-bit.
+ * - Mediciones ancladas en coordenadas 3D absolutas del volumen (0.00 mm de deriva al mover la ventana vertical).
+ * - Lupa 3× de precisión, densidad ósea bajo el puntero, regla, ángulo, polilínea (conducto), nervio, arco e implantes.
  */
 export function MprViewport({
-    image,
+    image = null,
+    clinicalVol = null,
+    planeSpec = null,
+    gpuRenderer = null,
     slope = 1,
     intercept = 0,
     windowLevel,
@@ -153,6 +208,7 @@ export function MprViewport({
     onWheelStep,
     onNavigateMm,
     onAddNervePointMm,
+    onPlaceImplantMm,
     archControlPoints,
     onMoveArchControlPoint,
     renderOverlay,
@@ -174,8 +230,16 @@ export function MprViewport({
     const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 300, h: 220 })
     const [zoom, setZoom] = useState<number>(1)
     const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+    const [renderVersion, setRenderVersion] = useState<number>(0)
 
-    // Cursor para lupa 3x y lectura de densidad ósea bajo el puntero
+    const activeSpec = planeSpec ?? image?.planeSpec ?? null
+    const imgCols = activeSpec ? activeSpec.cols : image?.cols ?? 0
+    const imgRows = activeSpec ? activeSpec.rows : image?.rows ?? 0
+    const imgSpacing = activeSpec ? activeSpec.spacing : image?.spacing ?? 0.25
+    const hasRenderableSource = Boolean(
+        (gpuRenderer?.isReady && clinicalVol && planeSpec) || (image && image.cols >= 2 && image.rows >= 2)
+    )
+
     const [hoverState, setHoverState] = useState<{
         sx: number
         sy: number
@@ -184,7 +248,6 @@ export function MprViewport({
         hu: number | null
     } | null>(null)
 
-    // Estado interactivo de medición (soporta clic-arrastrar y clic-clic)
     const [draftRuler, setDraftRuler] = useState<{
         x1: number
         y1: number
@@ -231,17 +294,95 @@ export function MprViewport({
         lastY: 0,
     })
 
-    // Filtrar mediciones visibles para el corte actual (anclaje por corte real)
-    const visibleMeasurements = React.useMemo(() => {
-        if (currentSliceCoord === undefined) return measurements
-        return measurements.filter(
-            (m) =>
+    // Proyectar mediciones 3D absolutas sobre el plano actual (0.00 mm de deriva vertical al mover sliceWindowBounds)
+    const projectedMeasurements = useMemo<ProjectedMeasurement[]>(() => {
+        const result: ProjectedMeasurement[] = []
+        for (const m of measurements) {
+            if (activeSpec) {
+                if (m.kind === "ruler" && m.p1_3d && m.p2_3d) {
+                    const p1 = projectWorldPointToPlane(activeSpec, m.p1_3d)
+                    const p2 = projectWorldPointToPlane(activeSpec, m.p2_3d)
+                    if (Math.max(p1.distMm, p2.distMm) <= sliceAnchorToleranceMm) {
+                        const dist3d = Math.hypot(
+                            m.p2_3d[0] - m.p1_3d[0],
+                            m.p2_3d[1] - m.p1_3d[1],
+                            m.p2_3d[2] - m.p1_3d[2]
+                        )
+                        result.push({
+                            source: m,
+                            kind: "ruler",
+                            x1: p1.xMm,
+                            y1: p1.yMm,
+                            x2: p2.xMm,
+                            y2: p2.yMm,
+                            distLabelMm: dist3d,
+                        })
+                    }
+                    continue
+                }
+                if (m.kind === "angle" && m.p1_3d && m.v_3d && m.p2_3d) {
+                    const p1 = projectWorldPointToPlane(activeSpec, m.p1_3d)
+                    const pv = projectWorldPointToPlane(activeSpec, m.v_3d)
+                    const p2 = projectWorldPointToPlane(activeSpec, m.p2_3d)
+                    if (Math.max(p1.distMm, pv.distMm, p2.distMm) <= sliceAnchorToleranceMm) {
+                        const v1 = [m.p1_3d[0] - m.v_3d[0], m.p1_3d[1] - m.v_3d[1], m.p1_3d[2] - m.v_3d[2]]
+                        const v2 = [m.p2_3d[0] - m.v_3d[0], m.p2_3d[1] - m.v_3d[1], m.p2_3d[2] - m.v_3d[2]]
+                        const l1 = Math.hypot(v1[0], v1[1], v1[2]) || 1
+                        const l2 = Math.hypot(v2[0], v2[1], v2[2]) || 1
+                        const cosA = Math.max(-1, Math.min(1, (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (l1 * l2)))
+                        result.push({
+                            source: m,
+                            kind: "angle",
+                            x1: p1.xMm,
+                            y1: p1.yMm,
+                            vx: pv.xMm,
+                            vy: pv.yMm,
+                            x2: p2.xMm,
+                            y2: p2.yMm,
+                            angleDeg: (Math.acos(cosA) * 180) / Math.PI,
+                        })
+                    }
+                    continue
+                }
+                if (m.kind === "polyline" && m.points_3d && m.points_3d.length >= 2) {
+                    const projs = m.points_3d.map((pt) => projectWorldPointToPlane(activeSpec, pt))
+                    const maxD = Math.max(...projs.map((p) => p.distMm))
+                    if (maxD <= sliceAnchorToleranceMm) {
+                        let total3d = 0
+                        for (let i = 1; i < m.points_3d.length; i++) {
+                            const a = m.points_3d[i - 1]
+                            const b = m.points_3d[i]
+                            total3d += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2])
+                        }
+                        result.push({
+                            source: m,
+                            kind: "polyline",
+                            points: projs.map((p) => ({ x: p.xMm, y: p.yMm })),
+                            distLabelMm: total3d,
+                        })
+                    }
+                    continue
+                }
+            }
+
+            // Respaldo 2D (para Panorama CPR, Tangencial curvo o mediciones antiguas sin 3D)
+            if (
+                currentSliceCoord === undefined ||
                 m.sliceAnchor === undefined ||
                 Math.abs(m.sliceAnchor - currentSliceCoord) <= sliceAnchorToleranceMm
-        )
-    }, [measurements, currentSliceCoord, sliceAnchorToleranceMm])
+            ) {
+                if (m.kind === "ruler") {
+                    result.push({ source: m, kind: "ruler", x1: m.x1, y1: m.y1, x2: m.x2, y2: m.y2 })
+                } else if (m.kind === "angle") {
+                    result.push({ source: m, kind: "angle", x1: m.x1, y1: m.y1, vx: m.vx, vy: m.vy, x2: m.x2, y2: m.y2 })
+                } else {
+                    result.push({ source: m, kind: "polyline", points: m.points })
+                }
+            }
+        }
+        return result
+    }, [measurements, activeSpec, currentSliceCoord, sliceAnchorToleranceMm])
 
-    // Resetear zoom y pan cuando se solicita desde fuera
     useEffect(() => {
         if (resetTrigger > 0) {
             setZoom(1)
@@ -252,7 +393,6 @@ export function MprViewport({
         }
     }, [resetTrigger])
 
-    // Zoom externo (+ / - desde barra superior)
     const prevZoomStepRef = useRef(externalZoomStep)
     useEffect(() => {
         const diff = externalZoomStep - prevZoomStepRef.current
@@ -262,14 +402,12 @@ export function MprViewport({
         }
     }, [externalZoomStep])
 
-    // Limpiar borradores al cambiar de herramienta
     useEffect(() => {
         setDraftRuler(null)
         setDraftAngle(null)
         setDraftPolyline(null)
     }, [activeTool])
 
-    // Observar tamaño del contenedor
     useEffect(() => {
         const el = containerRef.current
         if (!el) return
@@ -285,10 +423,32 @@ export function MprViewport({
         return () => ro.disconnect()
     }, [])
 
-    // 1. Pintar imagen radiográfica en imgCanvasRef con filtrado Unsharp Mask en 16 bits / Float32 ANTES de cuantizar a 8 bits
+    // 1. Renderizar la imagen DICOM en imgCanvasRef:
+    //    - Ruta rápida GPU WebGL2 (16-bit R16F + Tricúbico B-Spline + Sharpen Float32) cuando hay gpuRenderer + clinicalVol + planeSpec.
+    //    - Ruta CPU Float32 (16-bit Sharpen) para Panorama CPR, Tangencial curvo o fallback automático.
     useEffect(() => {
         const canvas = imgCanvasRef.current
-        if (!canvas || !image || image.cols < 2 || image.rows < 2) return
+        if (!canvas) return
+
+        // Intentar primero aceleración GPU WebGL2 (60 FPS, 0 bucles JS)
+        if (gpuRenderer?.isReady && clinicalVol && planeSpec) {
+            const ok = gpuRenderer.renderPlaneToCanvas(
+                clinicalVol,
+                planeSpec,
+                windowLevel,
+                colorMap,
+                sharpen,
+                canvas,
+                true
+            )
+            if (ok) {
+                setRenderVersion((v) => v + 1)
+                return
+            }
+        }
+
+        // Respaldo CPU Float32 de 16 bits
+        if (!image || image.cols < 2 || image.rows < 2) return
 
         const { cols, rows, data } = image
         if (canvas.width !== cols) canvas.width = cols
@@ -305,7 +465,6 @@ export function MprViewport({
         const wlMin = windowLevel.center - wlWidth * 0.5
         const invWl = 1 / wlWidth
 
-        // 1A. Convertir a valores de modalidad Float32 (preservando todo el rango dinámico de 12-16 bits)
         const modBuf = new Float32Array(n)
         const validMask = new Uint8Array(n)
         for (let i = 0; i < n; i++) {
@@ -319,7 +478,6 @@ export function MprViewport({
             }
         }
 
-        // 1B. Aplicar realce cortical / periodontal (Unsharp Mask 3x3 de 8 vecinos) EN FLOAT32 antes de mapear a 8 bits
         const procBuf = sharpen ? new Float32Array(n) : modBuf
         if (sharpen) {
             const amount = 0.62
@@ -349,7 +507,6 @@ export function MprViewport({
             }
         }
 
-        // 1C. Mapear Float32 -> 0..255 con curva S radiográfica (estilo Sirona GALILEOS / InVivoViewer) y paleta clínica
         for (let i = 0; i < n; i++) {
             const p = i * 4
             if (!validMask[i]) {
@@ -391,13 +548,14 @@ export function MprViewport({
         }
 
         ctx.putImageData(imgData, 0, 0)
-    }, [image, slope, intercept, windowLevel, colorMap, sharpen])
+        setRenderVersion((v) => v + 1)
+    }, [gpuRenderer, clinicalVol, planeSpec, image, slope, intercept, windowLevel, colorMap, sharpen])
 
-    // Geometría de transformación física (mm) <-> pantalla (px CSS)
+    // Geometría física (mm) <-> pantalla (px CSS)
     const getTransformMetrics = useCallback(() => {
         const w = viewportSize.w
         const h = viewportSize.h
-        if (!image || image.cols < 2 || image.rows < 2) {
+        if (!hasRenderableSource || imgCols < 2 || imgRows < 2) {
             return {
                 w,
                 h,
@@ -408,8 +566,8 @@ export function MprViewport({
                 originY: 0,
             }
         }
-        const widthMm = (image.cols - 1) * image.spacing
-        const heightMm = (image.rows - 1) * image.spacing
+        const widthMm = (imgCols - 1) * imgSpacing
+        const heightMm = (imgRows - 1) * imgSpacing
         const padX = compact ? 0.98 : 0.96
         const padY = compact ? 0.96 : 0.94
         const baseScale = Math.min((w * padX) / Math.max(1e-3, widthMm), (h * padY) / Math.max(1e-3, heightMm))
@@ -419,7 +577,7 @@ export function MprViewport({
         const originX = (w - drawW) * 0.5 + pan.x
         const originY = (h - drawH) * 0.5 + pan.y
         return { w, h, widthMm, heightMm, scalePxPerMm, originX, originY, drawW, drawH }
-    }, [viewportSize, image, zoom, pan, compact])
+    }, [viewportSize, hasRenderableSource, imgCols, imgRows, imgSpacing, zoom, pan, compact])
 
     const mmToScreen = useCallback(
         (xMm: number, yMm: number): [number, number] => {
@@ -437,8 +595,15 @@ export function MprViewport({
         [getTransformMetrics]
     )
 
+    // Muestreo instantáneo O(1) de densidad (HU / GV) bajo el puntero
     const sampleDensityAtMm = useCallback(
         (xMm: number, yMm: number): number | null => {
+            if (clinicalVol && activeSpec) {
+                const [wx, wy, wz] = planeMmToWorld(activeSpec, xMm, yMm)
+                const rawVal = sampleRaw(clinicalVol, wx, wy, wz)
+                if (rawVal !== rawVal) return null
+                return Math.round(rawVal * clinicalVol.slope + clinicalVol.intercept)
+            }
             if (!image || image.spacing <= 0) return null
             const c = Math.round(xMm / image.spacing)
             const r = Math.round(yMm / image.spacing)
@@ -447,10 +612,10 @@ export function MprViewport({
             if (rawVal !== rawVal) return null
             return Math.round(rawVal * slope + intercept)
         },
-        [image, slope, intercept]
+        [clinicalVol, activeSpec, image, slope, intercept]
     )
 
-    // 2. Pintar el canvas superpuesto: imagen + overlays + nodos del arco + barra de escala + mediciones + lupa 3x
+    // 2. Canvas superpuesto: imagen + overlays + arco + barra de escala + mediciones 3D + lupa 3×
     useEffect(() => {
         const canvas = overlayCanvasRef.current
         const imgCanvas = imgCanvasRef.current
@@ -474,7 +639,7 @@ export function MprViewport({
         ctx.fillStyle = "#03060c"
         ctx.fillRect(0, 0, w, h)
 
-        if (image && imgCanvas && imgCanvas.width > 1 && imgCanvas.height > 1) {
+        if (hasRenderableSource && imgCanvas && imgCanvas.width > 1 && imgCanvas.height > 1) {
             ctx.imageSmoothingEnabled = true
             ctx.imageSmoothingQuality = "high"
             const drawW = widthMm * scalePxPerMm
@@ -482,7 +647,7 @@ export function MprViewport({
             ctx.drawImage(imgCanvas, originX, originY, drawW, drawH)
         }
 
-        if (image && renderOverlay) {
+        if (hasRenderableSource && renderOverlay) {
             ctx.save()
             renderOverlay({
                 ctx,
@@ -495,8 +660,7 @@ export function MprViewport({
             ctx.restore()
         }
 
-        // Nodos editables de la curva del arco dental (solo en vista Axial cuando activeTool === "editArch")
-        if (image && archControlPoints && archControlPoints.length > 0 && activeTool === "editArch") {
+        if (hasRenderableSource && archControlPoints && archControlPoints.length > 0 && activeTool === "editArch") {
             ctx.save()
             for (let i = 0; i < archControlPoints.length; i++) {
                 const pt = archControlPoints[i]
@@ -512,8 +676,7 @@ export function MprViewport({
             ctx.restore()
         }
 
-        // Barra de escala física real (1 cm o 5 cm)
-        if (image && !compact) {
+        if (hasRenderableSource && !compact) {
             const totalMm = scaleBarCm * 10
             const barPx = totalMm * scalePxPerMm
             if (barPx >= 24 && barPx <= w * 0.8) {
@@ -546,18 +709,18 @@ export function MprViewport({
             }
         }
 
-        // Helper: regla milimétrica
         const drawRuler = (
             x1: number,
             y1: number,
             x2: number,
             y2: number,
             isDraft = false,
-            estimated = isEstimatedCalibration
+            estimated = isEstimatedCalibration,
+            overrideDistMm?: number
         ) => {
             const [sx1, sy1] = mmToScreen(x1, y1)
             const [sx2, sy2] = mmToScreen(x2, y2)
-            const distMm = Math.hypot(x2 - x1, y2 - y1)
+            const distMm = overrideDistMm ?? Math.hypot(x2 - x1, y2 - y1)
             const strokeMain = estimated ? "#f59e0b" : isDraft ? "#38bdf8" : "#22d3ee"
             const textColor = estimated ? "#fde68a" : "#67e8f9"
 
@@ -631,7 +794,6 @@ export function MprViewport({
             ctx.restore()
         }
 
-        // Helper: ángulo clínico
         const drawAngle = (
             x1: number,
             y1: number,
@@ -639,20 +801,24 @@ export function MprViewport({
             vy: number,
             x2: number,
             y2: number,
-            isDraft = false
+            isDraft = false,
+            overrideDeg?: number
         ) => {
             const [sx1, sy1] = mmToScreen(x1, y1)
             const [svx, svy] = mmToScreen(vx, vy)
             const [sx2, sy2] = mmToScreen(x2, y2)
 
-            const v1x = x1 - vx
-            const v1y = y1 - vy
-            const v2x = x2 - vx
-            const v2y = y2 - vy
-            const l1 = Math.hypot(v1x, v1y) || 1
-            const l2 = Math.hypot(v2x, v2y) || 1
-            const cosA = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)))
-            const deg = (Math.acos(cosA) * 180) / Math.PI
+            let deg = overrideDeg
+            if (deg === undefined) {
+                const v1x = x1 - vx
+                const v1y = y1 - vy
+                const v2x = x2 - vx
+                const v2y = y2 - vy
+                const l1 = Math.hypot(v1x, v1y) || 1
+                const l2 = Math.hypot(v2x, v2y) || 1
+                const cosA = Math.max(-1, Math.min(1, (v1x * v2x + v1y * v2y) / (l1 * l2)))
+                deg = (Math.acos(cosA) * 180) / Math.PI
+            }
 
             ctx.save()
             ctx.strokeStyle = "rgba(0, 0, 0, 0.85)"
@@ -708,18 +874,20 @@ export function MprViewport({
             ctx.restore()
         }
 
-        // Helper: polilínea multi-segmento (longitud de conductos radiculares curvos)
         const drawPolyline = (
             pts: { x: number; y: number }[],
             isDraft = false,
-            estimated = isEstimatedCalibration
+            estimated = isEstimatedCalibration,
+            overrideDistMm?: number
         ) => {
             if (pts.length < 2) return
-            let totalMm = 0
-            const screenPts = pts.map((p) => mmToScreen(p.x, p.y))
-            for (let i = 1; i < pts.length; i++) {
-                totalMm += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+            let totalMm = overrideDistMm ?? 0
+            if (overrideDistMm === undefined) {
+                for (let i = 1; i < pts.length; i++) {
+                    totalMm += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+                }
             }
+            const screenPts = pts.map((p) => mmToScreen(p.x, p.y))
 
             ctx.save()
             ctx.strokeStyle = "rgba(0, 0, 0, 0.85)"
@@ -769,14 +937,14 @@ export function MprViewport({
             ctx.restore()
         }
 
-        // Dibujar todas las mediciones visibles en el corte actual
-        for (const m of visibleMeasurements) {
-            if (m.kind === "ruler") {
-                drawRuler(m.x1, m.y1, m.x2, m.y2, false, m.isEstimated)
-            } else if (m.kind === "angle") {
-                drawAngle(m.x1, m.y1, m.vx, m.vy, m.x2, m.y2, false)
-            } else {
-                drawPolyline(m.points, false, m.isEstimated)
+        // Dibujar todas las mediciones proyectadas en el corte actual
+        for (const pm of projectedMeasurements) {
+            if (pm.kind === "ruler") {
+                drawRuler(pm.x1!, pm.y1!, pm.x2!, pm.y2!, false, pm.source.isEstimated, pm.distLabelMm)
+            } else if (pm.kind === "angle") {
+                drawAngle(pm.x1!, pm.y1!, pm.vx!, pm.vy!, pm.x2!, pm.y2!, false, pm.angleDeg)
+            } else if (pm.points) {
+                drawPolyline(pm.points, false, pm.source.isEstimated, pm.distLabelMm)
             }
         }
 
@@ -790,20 +958,21 @@ export function MprViewport({
             drawPolyline([...draftPolyline.points, draftPolyline.cursor], true, isEstimatedCalibration)
         }
 
-        // Lupa de precisión 3x al medir (regla, ángulo, polilínea o trazado de nervio)
+        // Lupa de precisión 3x
         const showLoupe =
             !compact &&
             hoverState &&
-            image &&
+            hasRenderableSource &&
             imgCanvas &&
             (activeTool === "ruler" ||
                 activeTool === "angle" ||
                 activeTool === "polyline" ||
-                activeTool === "nerve") &&
+                activeTool === "nerve" ||
+                activeTool === "implant") &&
             w >= 210 &&
             h >= 180
 
-        if (showLoupe && hoverState && image && imgCanvas) {
+        if (showLoupe && hoverState && imgCanvas) {
             const loupeR = 44
             const offset = 62
             let lx = hoverState.sx + offset
@@ -813,9 +982,9 @@ export function MprViewport({
             lx = Math.max(loupeR + 8, Math.min(w - loupeR - 8, lx))
             ly = Math.max(loupeR + 24, Math.min(h - loupeR - 8, ly))
 
-            const srcCenterX = hoverState.xMm / image.spacing
-            const srcCenterY = hoverState.yMm / image.spacing
-            const srcRadiusPx = Math.max(8, (loupeR / Math.max(0.5, scalePxPerMm * 3)) / image.spacing)
+            const srcCenterX = hoverState.xMm / imgSpacing
+            const srcCenterY = hoverState.yMm / imgSpacing
+            const srcRadiusPx = Math.max(8, (loupeR / Math.max(0.5, scalePxPerMm * 3)) / imgSpacing)
 
             ctx.save()
             ctx.beginPath()
@@ -838,7 +1007,6 @@ export function MprViewport({
                 loupeR * 2
             )
 
-            // Mira de precisión submilimétrica en el centro de la lupa
             ctx.strokeStyle = "rgba(34, 211, 238, 0.85)"
             ctx.lineWidth = 1
             ctx.beginPath()
@@ -861,7 +1029,6 @@ export function MprViewport({
             ctx.arc(lx, ly, loupeR, 0, Math.PI * 2)
             ctx.stroke()
 
-            ctx.fillStyle = "rgba(2, 6, 23, 0.85)"
             ctx.font = "700 9px ui-monospace, monospace"
             ctx.textAlign = "center"
             ctx.fillStyle = "#7dd3fc"
@@ -871,7 +1038,9 @@ export function MprViewport({
 
         ctx.restore()
     }, [
-        image,
+        hasRenderableSource,
+        renderVersion,
+        imgSpacing,
         windowLevel,
         colorMap,
         sharpen,
@@ -881,7 +1050,7 @@ export function MprViewport({
         renderOverlay,
         scaleBarCm,
         compact,
-        visibleMeasurements,
+        projectedMeasurements,
         draftRuler,
         draftAngle,
         draftPolyline,
@@ -893,24 +1062,23 @@ export function MprViewport({
         isCurvedProjection,
     ])
 
-    // Buscar si el usuario hizo clic sobre el extremo de una medición existente visible
     const findHitHandle = (sx: number, sy: number): { id: string; point: "p1" | "p2" | "v" | number } | null => {
         const hitRadius = 10
-        for (let i = visibleMeasurements.length - 1; i >= 0; i--) {
-            const m = visibleMeasurements[i]
-            if (m.kind === "polyline") {
-                for (let k = 0; k < m.points.length; k++) {
-                    const [px, py] = mmToScreen(m.points[k].x, m.points[k].y)
-                    if (Math.hypot(sx - px, sy - py) <= hitRadius) return { id: m.id, point: k }
+        for (let i = projectedMeasurements.length - 1; i >= 0; i--) {
+            const pm = projectedMeasurements[i]
+            if (pm.kind === "polyline" && pm.points) {
+                for (let k = 0; k < pm.points.length; k++) {
+                    const [px, py] = mmToScreen(pm.points[k].x, pm.points[k].y)
+                    if (Math.hypot(sx - px, sy - py) <= hitRadius) return { id: pm.source.id, point: k }
                 }
-            } else {
-                const [x1, y1] = mmToScreen(m.x1, m.y1)
-                if (Math.hypot(sx - x1, sy - y1) <= hitRadius) return { id: m.id, point: "p1" }
-                const [x2, y2] = mmToScreen(m.x2, m.y2)
-                if (Math.hypot(sx - x2, sy - y2) <= hitRadius) return { id: m.id, point: "p2" }
-                if (m.kind === "angle") {
-                    const [vx, vy] = mmToScreen(m.vx, m.vy)
-                    if (Math.hypot(sx - vx, sy - vy) <= hitRadius) return { id: m.id, point: "v" }
+            } else if (pm.x1 !== undefined && pm.y1 !== undefined && pm.x2 !== undefined && pm.y2 !== undefined) {
+                const [x1, y1] = mmToScreen(pm.x1, pm.y1)
+                if (Math.hypot(sx - x1, sy - y1) <= hitRadius) return { id: pm.source.id, point: "p1" }
+                const [x2, y2] = mmToScreen(pm.x2, pm.y2)
+                if (Math.hypot(sx - x2, sy - y2) <= hitRadius) return { id: pm.source.id, point: "p2" }
+                if (pm.kind === "angle" && pm.vx !== undefined && pm.vy !== undefined) {
+                    const [vx, vy] = mmToScreen(pm.vx, pm.vy)
+                    if (Math.hypot(sx - vx, sy - vy) <= hitRadius) return { id: pm.source.id, point: "v" }
                 }
             }
         }
@@ -932,6 +1100,9 @@ export function MprViewport({
         return [e.clientX - rect.left, e.clientY - rect.top]
     }
 
+    const toWorld3D = (xMm: number, yMm: number): Vec3 | undefined =>
+        activeSpec ? planeMmToWorld(activeSpec, xMm, yMm) : undefined
+
     const buildBaseMeta = (): Omit<MeasurementBase, "id"> => ({
         sliceAnchor: currentSliceCoord,
         sliceLabel: currentSliceLabel,
@@ -939,7 +1110,7 @@ export function MprViewport({
     })
 
     const handlePointerDown = (e: React.PointerEvent) => {
-        if (!image) return
+        if (!hasRenderableSource) return
         const [sx, sy] = getLocalCoords(e)
         const [xMm, yMm] = screenToMm(sx, sy)
 
@@ -947,15 +1118,18 @@ export function MprViewport({
             e.currentTarget.setPointerCapture(e.pointerId)
         } catch {}
 
-        // Clic derecho mientras se traza polilínea -> finalizar polilínea
         if (e.button === 2 && activeTool === "polyline" && draftPolyline) {
             if (draftPolyline.points.length >= 2) {
+                const pts3d = activeSpec
+                    ? draftPolyline.points.map((pt) => planeMmToWorld(activeSpec, pt.x, pt.y))
+                    : undefined
                 onChangeMeasurements([
                     ...measurements,
                     {
                         id: `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
                         kind: "polyline",
                         points: draftPolyline.points,
+                        points_3d: pts3d,
                         ...buildBaseMeta(),
                     },
                 ])
@@ -964,13 +1138,11 @@ export function MprViewport({
             return
         }
 
-        // Clic derecho o botón central -> Panorámica / Mover encuadre
         if (e.button === 2 || e.button === 1 || e.shiftKey) {
             dragStateRef.current = { mode: "pan", startX: sx, startY: sy, lastX: sx, lastY: sy }
             return
         }
 
-        // 0. Modo Editar Arco Dental (solo Axial)
         if (activeTool === "editArch") {
             const nodeIdx = findHitArchNode(sx, sy)
             if (nodeIdx !== null) {
@@ -980,13 +1152,16 @@ export function MprViewport({
             }
         }
 
-        // 0B. Modo Trazar Nervio Dentario Inferior
         if (activeTool === "nerve" && onAddNervePointMm) {
             onAddNervePointMm(xMm, yMm)
             return
         }
 
-        // 1. Modo Regla ("ruler")
+        if (activeTool === "implant" && onPlaceImplantMm) {
+            onPlaceImplantMm(xMm, yMm)
+            return
+        }
+
         if (activeTool === "ruler") {
             if (draftRuler && draftRuler.awaitingSecondClick) {
                 const dist = Math.hypot(xMm - draftRuler.x1, yMm - draftRuler.y1)
@@ -1000,6 +1175,8 @@ export function MprViewport({
                             y1: draftRuler.y1,
                             x2: xMm,
                             y2: yMm,
+                            p1_3d: toWorld3D(draftRuler.x1, draftRuler.y1),
+                            p2_3d: toWorld3D(xMm, yMm),
                             ...buildBaseMeta(),
                         },
                     ])
@@ -1029,7 +1206,6 @@ export function MprViewport({
             return
         }
 
-        // 2. Modo Ángulo ("angle")
         if (activeTool === "angle") {
             if (!draftAngle) {
                 const hit = findHitHandle(sx, sy)
@@ -1068,6 +1244,9 @@ export function MprViewport({
                         vy: draftAngle.vy,
                         x2: xMm,
                         y2: yMm,
+                        p1_3d: toWorld3D(draftAngle.x1, draftAngle.y1),
+                        v_3d: toWorld3D(draftAngle.vx, draftAngle.vy),
+                        p2_3d: toWorld3D(xMm, yMm),
                         ...buildBaseMeta(),
                     },
                 ])
@@ -1076,7 +1255,6 @@ export function MprViewport({
             return
         }
 
-        // 2B. Modo Polilínea ("polyline" - longitud de conductos radiculares curvos)
         if (activeTool === "polyline") {
             if (!draftPolyline) {
                 const hit = findHitHandle(sx, sy)
@@ -1093,13 +1271,16 @@ export function MprViewport({
                 const last = draftPolyline.points[draftPolyline.points.length - 1]
                 const distLast = Math.hypot(xMm - last.x, yMm - last.y)
                 if (distLast < 0.35 && draftPolyline.points.length >= 2) {
-                    // Doble clic en el mismo punto -> finalizar polilínea
+                    const pts3d = activeSpec
+                        ? draftPolyline.points.map((pt) => planeMmToWorld(activeSpec, pt.x, pt.y))
+                        : undefined
                     onChangeMeasurements([
                         ...measurements,
                         {
                             id: `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
                             kind: "polyline",
                             points: draftPolyline.points,
+                            points_3d: pts3d,
                             ...buildBaseMeta(),
                         },
                     ])
@@ -1114,7 +1295,6 @@ export function MprViewport({
             return
         }
 
-        // Permitir ajustar extremos de medidas incluso en otras herramientas si hace clic directo sobre el nodo
         const hit = findHitHandle(sx, sy)
         if (hit) {
             setDraggingHandle(hit)
@@ -1122,29 +1302,25 @@ export function MprViewport({
             return
         }
 
-        // 3. Herramienta Mover ("pan")
         if (activeTool === "pan") {
             dragStateRef.current = { mode: "pan", startX: sx, startY: sy, lastX: sx, lastY: sy }
             return
         }
 
-        // 4. Herramienta Contraste ("wl")
         if (activeTool === "wl") {
             dragStateRef.current = { mode: "wl", startX: sx, startY: sy, lastX: sx, lastY: sy }
             return
         }
 
-        // 5. Herramienta Navegar / Explorar Cortes ("navigate")
         dragStateRef.current = { mode: "navigate", startX: sx, startY: sy, lastX: sx, lastY: sy }
         onNavigateMm?.(xMm, yMm, false)
     }
 
     const handlePointerMove = (e: React.PointerEvent) => {
-        if (!image) return
+        if (!hasRenderableSource) return
         const [sx, sy] = getLocalCoords(e)
         const [xMm, yMm] = screenToMm(sx, sy)
 
-        // Actualizar lupa y lectura HU/densidad cuando el cursor está sobre el visor
         if (!compact) {
             setHoverState({ sx, sy, xMm, yMm, hu: sampleDensityAtMm(xMm, yMm) })
         }
@@ -1157,9 +1333,7 @@ export function MprViewport({
         if (draftAngle) {
             setDraftAngle((prev) => {
                 if (!prev) return null
-                if (prev.step === 1) {
-                    return { ...prev, vx: xMm, vy: yMm, x2: xMm, y2: yMm }
-                }
+                if (prev.step === 1) return { ...prev, vx: xMm, vy: yMm, x2: xMm, y2: yMm }
                 return { ...prev, x2: xMm, y2: yMm }
             })
             return
@@ -1184,6 +1358,7 @@ export function MprViewport({
         }
 
         if (st.mode === "handle" && draggingHandle) {
+            const w3 = toWorld3D(xMm, yMm)
             onChangeMeasurements(
                 measurements.map((m) => {
                     if (m.id !== draggingHandle.id) return m
@@ -1191,12 +1366,22 @@ export function MprViewport({
                         const nextPts = m.points.map((pt, idx) =>
                             idx === draggingHandle.point ? { x: xMm, y: yMm } : pt
                         )
-                        return { ...m, points: nextPts }
+                        const nextPts3d =
+                            w3 && m.points_3d
+                                ? m.points_3d.map((pt, idx) => (idx === draggingHandle.point ? w3 : pt))
+                                : m.points_3d
+                        return { ...m, points: nextPts, points_3d: nextPts3d }
                     }
                     if (m.kind !== "polyline") {
-                        if (draggingHandle.point === "p1") return { ...m, x1: xMm, y1: yMm }
-                        if (draggingHandle.point === "p2") return { ...m, x2: xMm, y2: yMm }
-                        if (m.kind === "angle" && draggingHandle.point === "v") return { ...m, vx: xMm, vy: yMm }
+                        if (draggingHandle.point === "p1") {
+                            return { ...m, x1: xMm, y1: yMm, ...(w3 ? { p1_3d: w3 } : {}) }
+                        }
+                        if (draggingHandle.point === "p2") {
+                            return { ...m, x2: xMm, y2: yMm, ...(w3 ? { p2_3d: w3 } : {}) }
+                        }
+                        if (m.kind === "angle" && draggingHandle.point === "v") {
+                            return { ...m, vx: xMm, vy: yMm, ...(w3 ? { v_3d: w3 } : {}) }
+                        }
                     }
                     return m
                 })
@@ -1240,6 +1425,8 @@ export function MprViewport({
                         y1: draftRuler.y1,
                         x2: xMm,
                         y2: yMm,
+                        p1_3d: toWorld3D(draftRuler.x1, draftRuler.y1),
+                        p2_3d: toWorld3D(xMm, yMm),
                         ...buildBaseMeta(),
                     },
                 ])
@@ -1256,12 +1443,16 @@ export function MprViewport({
 
     const handleDoubleClick = () => {
         if (activeTool === "polyline" && draftPolyline && draftPolyline.points.length >= 2) {
+            const pts3d = activeSpec
+                ? draftPolyline.points.map((pt) => planeMmToWorld(activeSpec, pt.x, pt.y))
+                : undefined
             onChangeMeasurements([
                 ...measurements,
                 {
                     id: `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
                     kind: "polyline",
                     points: draftPolyline.points,
+                    points_3d: pts3d,
                     ...buildBaseMeta(),
                 },
             ])
@@ -1286,7 +1477,8 @@ export function MprViewport({
         activeTool === "ruler" ||
         activeTool === "angle" ||
         activeTool === "polyline" ||
-        activeTool === "nerve"
+        activeTool === "nerve" ||
+        activeTool === "implant"
             ? "cursor-crosshair"
             : activeTool === "pan" || activeTool === "editArch"
             ? "cursor-grab active:cursor-grabbing"
@@ -1302,10 +1494,7 @@ export function MprViewport({
             onPointerLeave={() => setHoverState(null)}
             className={`relative flex-1 w-full h-full overflow-hidden bg-[#03060c] select-none touch-none ${cursorClass}`}
         >
-            {/* Canvas oculto que almacena la imagen DICOM procesada con Window/Level */}
             <canvas ref={imgCanvasRef} className="hidden" />
-
-            {/* Canvas interactivo visible a resolución Retina/DPR */}
             <canvas
                 ref={overlayCanvasRef}
                 onPointerDown={handlePointerDown}
@@ -1315,13 +1504,12 @@ export function MprViewport({
                 className="w-full h-full block touch-none"
             />
 
-            {!image && (
+            {!hasRenderableSource && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                     <span className="text-xs text-slate-400 font-medium animate-pulse">{emptyText}</span>
                 </div>
             )}
 
-            {/* Etiquetas de orientación anatómica LPS verificadas */}
             {leftLabel && (
                 <div className="absolute left-1.5 top-1/2 -translate-y-1/2 pointer-events-none z-10">
                     {leftLabel.length <= 2 ? (
@@ -1374,30 +1562,32 @@ export function MprViewport({
                 </div>
             )}
 
-            {/* Lectura en vivo de densidad ósea (GV/HU) bajo el cursor al medir */}
             {!compact &&
                 hoverState &&
                 hoverState.hu !== null &&
-                (activeTool === "ruler" || activeTool === "angle" || activeTool === "polyline") && (
+                (activeTool === "ruler" ||
+                    activeTool === "angle" ||
+                    activeTool === "polyline" ||
+                    activeTool === "implant") && (
                     <div className="absolute bottom-1.5 left-7 pointer-events-none z-10 px-1.5 py-0.5 rounded bg-slate-950/85 border border-slate-700/80 text-[9px] font-mono text-slate-300">
                         Densidad: <span className="text-cyan-300 font-semibold">{hoverState.hu}</span>
                     </div>
                 )}
 
-            {/* Indicador flotante de herramienta activa */}
             {!compact &&
                 (activeTool === "ruler" ||
                     activeTool === "angle" ||
                     activeTool === "polyline" ||
                     activeTool === "nerve" ||
+                    activeTool === "implant" ||
                     (activeTool === "editArch" && archControlPoints)) && (
                     <div className="absolute top-1.5 left-2 pointer-events-none z-10 px-2 py-0.5 rounded bg-cyan-950/85 border border-cyan-500/40 text-[10px] font-medium text-cyan-200 shadow-md">
                         {activeTool === "ruler"
                             ? draftRuler?.awaitingSecondClick
-                                ? "Clic en el punto final para completar la medida (mm)"
+                                ? "Clic en el punto final para completar la medida 3D (mm)"
                                 : isCurvedProjection
-                                ? "Medida aprox. sobre curva (use Transversal o Tangencial Plano para 100% precisión)"
-                                : "Clic y arrastre (o 2 clics) · Lupa 3× activa"
+                                ? "Medida aprox. sobre curva (use Transversal o Tangencial Plano para 100% precisión 3D)"
+                                : "Clic y arrastre (o 2 clics) · Lupa 3× · Anclada en 3D"
                             : activeTool === "angle"
                             ? !draftAngle
                                 ? "Paso 1/3: Clic en el primer extremo del ángulo"
@@ -1406,10 +1596,12 @@ export function MprViewport({
                                 : "Paso 3/3: Clic en el segundo extremo del ángulo"
                             : activeTool === "polyline"
                             ? draftPolyline
-                                ? `${draftPolyline.points.length} ptos · Doble clic o clic der. para terminar conducto`
-                                : "Clic punto a punto para medir longitud curva (conductos)"
+                                ? `${draftPolyline.points.length} ptos · Doble clic o clic der. para terminar`
+                                : "Clic punto a punto para medir longitud curva 3D (conductos)"
                             : activeTool === "nerve"
                             ? "Clic a lo largo del canal mandibular para trazar el Nervio Dentario"
+                            : activeTool === "implant"
+                            ? "Clic en la cresta ósea (Transversal / Tangencial / Axial) para colocar Implante Virtual"
                             : "Arrastre los puntos cian sobre el corte Axial para ajustar la curva del arco dental"}
                     </div>
                 )}

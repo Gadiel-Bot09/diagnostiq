@@ -40,9 +40,10 @@ import {
     Columns3,
     FolderOpen,
     ListChecks,
+    FileDown,
 } from "lucide-react"
 import JSZip from "jszip"
-import { Dental3DViewer, type VolumeFocus } from "./Dental3DViewer"
+import { Dental3DViewer, type VolumeFocus, type Implant3DNorm } from "./Dental3DViewer"
 import {
     MprViewport,
     getMeasurementSummaryValue,
@@ -54,10 +55,14 @@ import {
 import { StudyCutsGallery } from "./StudyCutsGallery"
 import { InVivoMprWorkspace, InVivoArchSerialWorkspace } from "./InVivoWorkspaces"
 import { SavedCutsMenu } from "./SavedCutsMenu"
-import type {
-    CbctClinicalScene,
-    PersistedWorkspace,
-    SavedClinicalCut,
+import { ReorientationPopover, ImplantPlannerPopover } from "./ImplantAndReorientControls"
+import {
+    computeImplantNerveDistanceMm,
+    type ArchJawType,
+    type CbctClinicalScene,
+    type PersistedWorkspace,
+    type SavedClinicalCut,
+    type VirtualImplant,
 } from "@/lib/cbct/clinicalScene"
 import {
     buildRenderVolume,
@@ -73,6 +78,8 @@ import {
 } from "@/lib/cbct/dicomSeriesExtractor"
 import {
     createClinicalVolume,
+    withReorientation,
+    ZERO_REORIENTATION,
     buildArch,
     archFrame,
     projectToArch,
@@ -88,16 +95,23 @@ import {
     sliceIndexFromH,
     zFromH,
     hFromZ,
+    planeMmToWorld,
     projectWorldPointToPlane,
     type ClinicalVolume,
     type ArchModel,
     type ArchPoint,
     type PanoramaImage,
+    type PlaneSpec,
+    type ReorientationEuler,
     type WindowLevel,
     type WlPresetId,
     type SlabMode,
     type Vec3,
 } from "@/lib/cbct/mprEngine"
+import { WebGLMprRenderer } from "@/lib/cbct/webglMprRenderer"
+import { buildStudyCacheKey, getCachedStudyBlob, putCachedStudyBlob } from "@/lib/cbct/studyCache"
+import { drawImplantsOnPanorama, drawImplantsOnPlane } from "@/lib/cbct/implantOverlay"
+import { exportCbctClinicalPdf } from "@/lib/cbct/exportClinicalPdf"
 import {
     detectArchiveFormat,
     isDicomSliceEntry,
@@ -151,10 +165,17 @@ export function DicomViewerModalImpl({
     resultFileId,
 }: DicomViewerModalProps) {
     const hiddenLoaderRef = useRef<HTMLDivElement>(null)
+    const workspaceContainerRef = useRef<HTMLDivElement>(null)
+    const gpuRendererRef = useRef<WebGLMprRenderer | null>(null)
     const dwvAppRef = useRef<any>(null)
     const objectUrlsRef = useRef<string[]>([])
     const pendingSceneRef = useRef<CbctClinicalScene | null>(null)
     const sceneAppliedRef = useRef<boolean>(false)
+
+    // Estado GPU WebGL2 compartido (1 único contexto) y caché local IndexedDB
+    const [gpuReady, setGpuReady] = useState<boolean>(false)
+    const [gpuVolumeUploaded, setGpuVolumeUploaded] = useState<boolean>(false)
+    const [loadedFromCache, setLoadedFromCache] = useState<boolean>(false)
 
     // Estado de persistencia clínica (Fase 4: Cortes específicos preparados + Escena CBCT en Supabase)
     const [savedCuts, setSavedCuts] = useState<SavedClinicalCut[]>([])
@@ -195,12 +216,74 @@ export function DicomViewerModalImpl({
     const [resetTrigger, setResetTrigger] = useState(0)
     const [externalZoomStep, setExternalZoomStep] = useState(0)
 
-    // Volúmenes y modelo matemático del arco dental
-    const [clinicalVol, setClinicalVol] = useState<ClinicalVolume | null>(null)
+    // Volúmenes, Reorientación 3D del plano oclusal (Pitch/Roll/Yaw) y Doble Arco Bimaxilar (Maxilar Sup. / Mandíbula)
+    const [baseClinicalVol, setBaseClinicalVol] = useState<ClinicalVolume | null>(null)
+    const [reorientation, setReorientation] = useState<ReorientationEuler>(ZERO_REORIENTATION)
+    const clinicalVol = useMemo<ClinicalVolume | null>(() => {
+        if (!baseClinicalVol) return null
+        return withReorientation(baseClinicalVol, reorientation)
+    }, [baseClinicalVol, reorientation])
+
+    // Inicializar / liberar el motor GPU WebGL2 compartido (1 único contexto offscreen para todas las vistas)
+    useEffect(() => {
+        if (!open) {
+            if (gpuRendererRef.current) {
+                gpuRendererRef.current.dispose()
+                gpuRendererRef.current = null
+            }
+            setGpuReady(false)
+            setGpuVolumeUploaded(false)
+            return
+        }
+        const renderer = new WebGLMprRenderer()
+        gpuRendererRef.current = renderer
+        setGpuReady(renderer.isReady)
+        return () => {
+            renderer.dispose()
+            if (gpuRendererRef.current === renderer) {
+                gpuRendererRef.current = null
+            }
+            setGpuReady(false)
+            setGpuVolumeUploaded(false)
+        }
+    }, [open])
+
+    // Subir volumen base 16-bit a VRAM corte por corte una sola vez (reorientación Euler no re-sube textura)
+    useEffect(() => {
+        if (!open || !baseClinicalVol || !gpuReady || !gpuRendererRef.current) {
+            setGpuVolumeUploaded(false)
+            return
+        }
+        const ok = gpuRendererRef.current.uploadVolume(baseClinicalVol)
+        setGpuVolumeUploaded(ok)
+    }, [open, baseClinicalVol, gpuReady])
+
+    const activeGpuRenderer = gpuReady && gpuVolumeUploaded ? gpuRendererRef.current : null
+
     const [renderVolume, setRenderVolume] = useState<RenderVolume | null>(null)
-    const [archCtrlPts, setArchCtrlPts] = useState<ArchPoint[]>([])
+    const [activeArchJaw, setActiveArchJaw] = useState<ArchJawType>("lower")
+    const [upperArchCtrlPts, setUpperArchCtrlPts] = useState<ArchPoint[]>([])
+    const [lowerArchCtrlPts, setLowerArchCtrlPts] = useState<ArchPoint[]>([])
     const [initialArchCtrlPts, setInitialArchCtrlPts] = useState<ArchPoint[]>([])
     const [panoramaImage, setPanoramaImage] = useState<PanoramaImage | null>(null)
+
+    const archCtrlPts = activeArchJaw === "upper" ? upperArchCtrlPts : lowerArchCtrlPts
+    const setArchCtrlPts = useCallback(
+        (updater: ArchPoint[] | ((prev: ArchPoint[]) => ArchPoint[])) => {
+            if (activeArchJaw === "upper") {
+                setUpperArchCtrlPts(updater)
+            } else {
+                setLowerArchCtrlPts(updater)
+            }
+        },
+        [activeArchJaw]
+    )
+
+    // Planificador de Implantes Dentales Virtuales 3D
+    const [implants, setImplants] = useState<VirtualImplant[]>([])
+    const [selectedImplantId, setSelectedImplantId] = useState<string | null>(null)
+    const [defaultImplantDiameter, setDefaultImplantDiameter] = useState<number>(4.0)
+    const [defaultImplantLength, setDefaultImplantLength] = useState<number>(10.0)
 
     // Modelo spline del arco derivado en vivo de archCtrlPts (permite edición interactiva en Axial)
     const archModel = useMemo<ArchModel | null>(() => {
@@ -321,14 +404,116 @@ export function DicomViewerModalImpl({
         setHasUnsavedChanges(true)
     }, [])
 
+    const handlePlaceImplantAt3D = useCallback(
+        (pt: Vec3, sOverride?: number) => {
+            if (!clinicalVol) return
+            const sVal =
+                sOverride !== undefined
+                    ? sOverride
+                    : archModel
+                    ? projectToArch(archModel, pt[0], pt[1]).s
+                    : archS
+            // En Maxilar Superior el ápice apunta hacia superior (dh > 0); en Mandíbula hacia inferior (dh < 0)
+            const dz = activeArchJaw === "upper" ? (clinicalVol.zUp ? 1 : -1) : clinicalVol.zUp ? -1 : 1
+            const newId = `imp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+            setImplants((prev) => [
+                ...prev,
+                {
+                    id: newId,
+                    label: `Implante #${prev.length + 1} (${activeArchJaw === "upper" ? "Sup" : "Inf"})`,
+                    platform3D: pt,
+                    axis3D: [0, 0, dz],
+                    diameterMm: defaultImplantDiameter,
+                    lengthMm: defaultImplantLength,
+                    safetyMarginMm: 2.0,
+                    buccoLingualDeg: 0,
+                    mesioDistalDeg: 0,
+                    archS: sVal,
+                },
+            ])
+            setSelectedImplantId(newId)
+            setActiveTool("navigate")
+            setHasUnsavedChanges(true)
+        },
+        [clinicalVol, archModel, archS, activeArchJaw, defaultImplantDiameter, defaultImplantLength]
+    )
+
+    const handleUpdateImplant = useCallback((id: string, patch: Partial<VirtualImplant>) => {
+        setImplants((prev) => prev.map((imp) => (imp.id === id ? { ...imp, ...patch } : imp)))
+        setHasUnsavedChanges(true)
+    }, [])
+
+    const handleDeleteImplant = useCallback((id: string) => {
+        setImplants((prev) => prev.filter((imp) => imp.id !== id))
+        setSelectedImplantId((curr) => (curr === id ? null : curr))
+        setHasUnsavedChanges(true)
+    }, [])
+
+    const handleJumpToImplant = useCallback(
+        (imp: VirtualImplant) => {
+            setArchS(imp.archS)
+            setArchD(0)
+            if (clinicalVol) {
+                setAxialH(Math.max(0, Math.min(clinicalVol.heightMm, hFromZ(clinicalVol, imp.platform3D[2]))))
+                setSagittalX(Math.max(0, Math.min(clinicalVol.widthMm, imp.platform3D[0])))
+                setCoronalY(Math.max(0, Math.min(clinicalVol.depthMm, imp.platform3D[1])))
+            }
+            setFocusedPlane("cross")
+            if (viewMode === "study_cuts") setViewMode("multi")
+        },
+        [clinicalVol, viewMode]
+    )
+
+    const handleSwitchArchJaw = useCallback(
+        (jaw: ArchJawType) => {
+            setActiveArchJaw(jaw)
+            if (baseClinicalVol) {
+                if (jaw === "upper") {
+                    setAxialH(Math.min(baseClinicalVol.heightMm * 0.88, dentalBaseH + 9))
+                } else {
+                    setAxialH(Math.max(baseClinicalVol.heightMm * 0.1, dentalBaseH - 8))
+                }
+            }
+            setHasUnsavedChanges(true)
+        },
+        [baseClinicalVol, dentalBaseH]
+    )
+
+    const handleChangeReorientation = useCallback((next: ReorientationEuler) => {
+        setReorientation(next)
+        setHasUnsavedChanges(true)
+    }, [])
+
     // Aplicar una escena clínica guardada sobre el volumen recién cargado
     const applyClinicalScene = useCallback((scene: CbctClinicalScene, cVol: ClinicalVolume) => {
-        if (scene.archCtrlPts && scene.archCtrlPts.length >= 3) {
-            const clampedArch = scene.archCtrlPts.map((pt) => ({
+        const clampPts = (pts: ArchPoint[]) =>
+            pts.map((pt) => ({
                 x: Math.max(2, Math.min(cVol.widthMm - 2, pt.x)),
                 y: Math.max(2, Math.min(cVol.depthMm - 2, pt.y)),
             }))
-            setArchCtrlPts(clampedArch)
+
+        if (scene.upperArchCtrlPts && scene.upperArchCtrlPts.length >= 3) {
+            setUpperArchCtrlPts(clampPts(scene.upperArchCtrlPts))
+        } else if (scene.archCtrlPts && scene.archCtrlPts.length >= 3) {
+            setUpperArchCtrlPts(clampPts(scene.archCtrlPts))
+        }
+        if (scene.lowerArchCtrlPts && scene.lowerArchCtrlPts.length >= 3) {
+            setLowerArchCtrlPts(clampPts(scene.lowerArchCtrlPts))
+        } else if (scene.archCtrlPts && scene.archCtrlPts.length >= 3) {
+            setLowerArchCtrlPts(clampPts(scene.archCtrlPts))
+        }
+        if (scene.activeArchJaw === "upper" || scene.activeArchJaw === "lower") {
+            setActiveArchJaw(scene.activeArchJaw)
+        }
+        if (scene.reorientation) {
+            setReorientation({
+                pitchDeg: scene.reorientation.pitchDeg || 0,
+                rollDeg: scene.reorientation.rollDeg || 0,
+                yawDeg: scene.reorientation.yawDeg || 0,
+            })
+        }
+        if (Array.isArray(scene.implants)) {
+            setImplants(scene.implants)
         }
         if (scene.activeCoords) {
             setArchS(Math.max(0, scene.activeCoords.archS))
@@ -506,6 +691,10 @@ export function DicomViewerModalImpl({
                 updatedAt: new Date().toISOString(),
                 defaultWorkspace: defaultWs,
                 archCtrlPts,
+                activeArchJaw,
+                upperArchCtrlPts,
+                lowerArchCtrlPts,
+                reorientation,
                 activeCoords: { archS, archD, axialH, sagittalX, coronalY },
                 sliceSettings: {
                     panoThickness,
@@ -523,6 +712,7 @@ export function DicomViewerModalImpl({
                     activeWlPreset,
                 },
                 nervePoints3D,
+                implants,
                 measurementsByView,
                 savedCuts,
             }
@@ -559,6 +749,10 @@ export function DicomViewerModalImpl({
         clinicalVol,
         viewMode,
         archCtrlPts,
+        activeArchJaw,
+        upperArchCtrlPts,
+        lowerArchCtrlPts,
+        reorientation,
         archS,
         archD,
         axialH,
@@ -576,6 +770,7 @@ export function DicomViewerModalImpl({
         panoWl,
         activeWlPreset,
         nervePoints3D,
+        implants,
         measurementsByView,
         savedCuts,
     ])
@@ -605,7 +800,10 @@ export function DicomViewerModalImpl({
             setCalibrationAudit(cal)
             setActiveVolumeId(series.id)
 
-            const rv = await buildRenderVolume(series.volume, 240, checkCancelled)
+            // Mayor resolución 3D en escritorio (288^3) y óptima en pantallas táctiles (224^3)
+            const isMobilePointer =
+                typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches
+            const rv = await buildRenderVolume(series.volume, isMobilePointer ? 224 : 288, checkCancelled)
             if (!rv || checkCancelled()) return
 
             const det = detectDentalArch(rv, series.volume)
@@ -618,9 +816,11 @@ export function DicomViewerModalImpl({
             )
             const initS = builtArch.length * 0.5
 
-            setClinicalVol(cVol)
+            setBaseClinicalVol(cVol)
+            setReorientation(ZERO_REORIENTATION)
             setRenderVolume(rv)
-            setArchCtrlPts(ctrlPts)
+            setUpperArchCtrlPts(ctrlPts)
+            setLowerArchCtrlPts(ctrlPts)
             setInitialArchCtrlPts(ctrlPts)
             setArchS(initS)
             setArchD(0)
@@ -631,13 +831,15 @@ export function DicomViewerModalImpl({
             setTangentialTiltDeg(0)
             setCrossTiltDeg(0)
             setNervePoints3D([])
+            setImplants([])
+            setSelectedImplantId(null)
             setLoading(false)
             setLoadProgress(100)
         },
         []
     )
 
-    // 1. Descarga, descompresión multi-serie (ZIP/RAR/DICOM + Láminas Clínicas) y auditoría metrológica
+    // 1. Descarga (con Caché Local IndexedDB), descompresión multi-serie y auditoría metrológica
     useEffect(() => {
         if (!open || !zipUrl) return
 
@@ -650,9 +852,11 @@ export function DicomViewerModalImpl({
         setActiveWlPreset("auto")
         setActiveColorMap("plain")
         setViewMode("multi")
-        setClinicalVol(null)
+        setBaseClinicalVol(null)
+        setReorientation(ZERO_REORIENTATION)
         setRenderVolume(null)
-        setArchCtrlPts([])
+        setUpperArchCtrlPts([])
+        setLowerArchCtrlPts([])
         setInitialArchCtrlPts([])
         setPanoramaImage(null)
         setVolumetricSeriesList([])
@@ -660,6 +864,9 @@ export function DicomViewerModalImpl({
         setClinicalSheets([])
         setCalibrationAudit(null)
         setNervePoints3D([])
+        setImplants([])
+        setSelectedImplantId(null)
+        setLoadedFromCache(false)
         setMeasurementsByView({
             panorama: [],
             tangential: [],
@@ -669,7 +876,7 @@ export function DicomViewerModalImpl({
             sagittal: [],
         })
         setReconStatus("Analizando vóxeles CBCT y orientación LPS...")
-        setLoadStep("Conectando con almacenamiento seguro...")
+        setLoadStep("Verificando caché local inteligente...")
 
         // Limpiar URLs temporales previas
         for (const u of objectUrlsRef.current) URL.revokeObjectURL(u)
@@ -677,16 +884,28 @@ export function DicomViewerModalImpl({
 
         const loadStudy = async () => {
             try {
-                setLoadStep("Descargando estudio tomográfico...")
-                setLoadProgress(15)
-
-                const response = await fetch(zipUrl)
-                if (!response.ok) {
-                    throw new Error(`Error HTTP al descargar el estudio (${response.status})`)
-                }
-
-                const blob = await response.blob()
+                const cacheKey = buildStudyCacheKey(resultFileId, zipUrl)
+                let blob = await getCachedStudyBlob(cacheKey)
                 if (isCancelled) return
+
+                if (blob) {
+                    setLoadedFromCache(true)
+                    setLoadStep("Estudio recuperado desde caché local (carga instantánea)...")
+                    setLoadProgress(30)
+                } else {
+                    setLoadStep("Descargando estudio tomográfico...")
+                    setLoadProgress(15)
+
+                    const response = await fetch(zipUrl)
+                    if (!response.ok) {
+                        throw new Error(`Error HTTP al descargar el estudio (${response.status})`)
+                    }
+
+                    blob = await response.blob()
+                    if (isCancelled) return
+                    // Guardar en caché IndexedDB en segundo plano (LRU 350 MB / 7 días)
+                    putCachedStudyBlob(cacheKey, blob).catch(() => {})
+                }
 
                 setLoadProgress(32)
                 setLoadStep("Descomprimiendo series DICOM y láminas clínicas...")
@@ -878,7 +1097,7 @@ export function DicomViewerModalImpl({
             objectUrlsRef.current = []
             if (hiddenLoaderRef.current) hiddenLoaderRef.current.innerHTML = ""
         }
-    }, [open, zipUrl, activateVolumetricSeries])
+    }, [open, zipUrl, resultFileId, activateVolumetricSeries])
 
     // 2. Recalcular la Panorámica CPR cuando cambia el volumen, el arco editado, el grosor o el modo (Rx vs MIP)
     useEffect(() => {
@@ -914,21 +1133,28 @@ export function DicomViewerModalImpl({
         return { hBot, hTop, height: Math.max(1, hTop - hBot) }
     }, [clinicalVol, axialH])
 
+    const useGpuMpr = Boolean(activeGpuRenderer)
+
+    const tangentialSpec = useMemo<PlaneSpec | null>(() => {
+        if (!clinicalVol || !archModel || tangentialMode !== "flat") return null
+        return tangentialPlane(
+            clinicalVol,
+            archModel,
+            archS,
+            archD,
+            TANGENTIAL_HALF_WIDTH_MM,
+            Math.max(mprSlabMm, 2.0),
+            sliceWindowBounds.hBot,
+            sliceWindowBounds.hTop,
+            tangentialTiltDeg
+        )
+    }, [clinicalVol, archModel, archS, archD, mprSlabMm, sliceWindowBounds, tangentialMode, tangentialTiltDeg])
+
     const tangentialImg = useMemo(() => {
         if (!clinicalVol || !archModel) return null
         if (tangentialMode === "flat") {
-            const spec = tangentialPlane(
-                clinicalVol,
-                archModel,
-                archS,
-                archD,
-                TANGENTIAL_HALF_WIDTH_MM,
-                Math.max(mprSlabMm, 2.0),
-                sliceWindowBounds.hBot,
-                sliceWindowBounds.hTop,
-                tangentialTiltDeg
-            )
-            return renderPlane(clinicalVol, spec)
+            if (useGpuMpr || !tangentialSpec) return null
+            return renderPlane(clinicalVol, tangentialSpec)
         }
         return renderTangentialSection(
             clinicalVol,
@@ -940,11 +1166,11 @@ export function DicomViewerModalImpl({
             sliceWindowBounds.hBot,
             sliceWindowBounds.hTop
         )
-    }, [clinicalVol, archModel, archS, archD, mprSlabMm, sliceWindowBounds, tangentialMode, tangentialTiltDeg])
+    }, [useGpuMpr, clinicalVol, archModel, archS, archD, mprSlabMm, sliceWindowBounds, tangentialMode, tangentialSpec])
 
-    const crossImg = useMemo(() => {
+    const crossSpec = useMemo<PlaneSpec | null>(() => {
         if (!clinicalVol || !archModel) return null
-        const spec = crossPlane(
+        return crossPlane(
             clinicalVol,
             archModel,
             archS,
@@ -954,16 +1180,24 @@ export function DicomViewerModalImpl({
             sliceWindowBounds.hTop,
             crossTiltDeg
         )
-        return renderPlane(clinicalVol, spec)
     }, [clinicalVol, archModel, archS, mprSlabMm, sliceWindowBounds, crossTiltDeg])
 
-    const axialImg = useMemo(() => {
+    const crossImg = useMemo(() => {
+        if (!clinicalVol || !crossSpec || useGpuMpr) return null
+        return renderPlane(clinicalVol, crossSpec)
+    }, [useGpuMpr, clinicalVol, crossSpec])
+
+    const axialSpec = useMemo<PlaneSpec | null>(() => {
         if (!clinicalVol) return null
-        const spec = axialPlane(clinicalVol, axialH, Math.min(mprSlabMm, 1.0), invivoSlabMode)
-        return renderPlane(clinicalVol, spec)
+        return axialPlane(clinicalVol, axialH, Math.min(mprSlabMm, 1.0), invivoSlabMode)
     }, [clinicalVol, axialH, mprSlabMm, invivoSlabMode])
 
-    // 4. Sincronización de la caja amarilla de enfoque y nervio dentario en el visor 3D
+    const axialImg = useMemo(() => {
+        if (!clinicalVol || !axialSpec || useGpuMpr) return null
+        return renderPlane(clinicalVol, axialSpec)
+    }, [useGpuMpr, clinicalVol, axialSpec])
+
+    // 4. Sincronización de la caja amarilla de enfoque, nervio dentario e implantes virtuales en el visor 3D
     const volumeFocus = useMemo<VolumeFocus | null>(() => {
         if (!clinicalVol || !archModel) return null
         const f = archFrame(archModel, archS)
@@ -993,6 +1227,39 @@ export function DicomViewerModalImpl({
             Math.max(0, Math.min(1, hFromZ(clinicalVol, z) / H)),
         ])
     }, [clinicalVol, nervePoints3D])
+
+    const implantsNorm = useMemo<Implant3DNorm[]>(() => {
+        if (!clinicalVol || implants.length === 0) return []
+        const W = Math.max(1, clinicalVol.widthMm)
+        const D = Math.max(1, clinicalVol.depthMm)
+        const H = Math.max(1, clinicalVol.heightMm)
+        const avgHoriz = (W + D) * 0.5
+        return implants.map((imp) => {
+            const p0 = imp.platform3D
+            const p1: Vec3 = [
+                p0[0] + imp.axis3D[0] * imp.lengthMm,
+                p0[1] + imp.axis3D[1] * imp.lengthMm,
+                p0[2] + imp.axis3D[2] * imp.lengthMm,
+            ]
+            const dist = computeImplantNerveDistanceMm(imp, nervePoints3D)
+            const isDanger = dist !== null && dist < imp.safetyMarginMm
+            return {
+                id: imp.id,
+                p0: [
+                    Math.max(0, Math.min(1, p0[0] / W)),
+                    Math.max(0, Math.min(1, p0[1] / D)),
+                    Math.max(0, Math.min(1, hFromZ(clinicalVol, p0[2]) / H)),
+                ],
+                p1: [
+                    Math.max(0, Math.min(1, p1[0] / W)),
+                    Math.max(0, Math.min(1, p1[1] / D)),
+                    Math.max(0, Math.min(1, hFromZ(clinicalVol, p1[2]) / H)),
+                ],
+                radiusNorm: (imp.diameterMm * 0.5) / avgHoriz,
+                isDanger,
+            }
+        })
+    }, [clinicalVol, implants, nervePoints3D])
 
     const currentSliceIndex = useMemo(() => {
         if (!clinicalVol) return 0
@@ -1044,7 +1311,7 @@ export function DicomViewerModalImpl({
             )
             setHasUnsavedChanges(true)
         },
-        [clinicalVol]
+        [clinicalVol, setArchCtrlPts]
     )
 
     const handleResetView = useCallback(() => {
@@ -1053,6 +1320,7 @@ export function DicomViewerModalImpl({
         handleWlPresetChange("auto")
         setTangentialTiltDeg(0)
         setCrossTiltDeg(0)
+        setReorientation(ZERO_REORIENTATION)
         if (clinicalVol && archModel) {
             setArchS(archModel.length * 0.5)
             setArchD(0)
@@ -1145,9 +1413,9 @@ export function DicomViewerModalImpl({
         return () => clearInterval(interval)
     }, [isPlaying, clinicalVol, archModel, activePlaneAfterViewMode])
 
-    // 7. Superposiciones gráficas estilo Sirona GALILEOS + proyección del canal del nervio dentario
+    // 7. Superposiciones gráficas estilo Sirona GALILEOS + proyección del canal del nervio dentario e implantes virtuales
     const renderPanoramaOverlay = useCallback(
-        ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+        ({ ctx, mmToScreen, scalePxPerMm }: ViewportOverlayContext) => {
             if (!panoramaImage || !archModel || !clinicalVol) return
             const hTop = panoramaImage.hTop
             const yAxialMm = Math.max(0, Math.min(hTop, hTop - axialH))
@@ -1197,6 +1465,19 @@ export function DicomViewerModalImpl({
                 ctx.restore()
             }
 
+            // Proyectar implantes virtuales en la Panorámica
+            drawImplantsOnPanorama(
+                ctx,
+                mmToScreen,
+                scalePxPerMm,
+                archModel,
+                clinicalVol,
+                hTop,
+                implants,
+                nervePoints3D,
+                selectedImplantId
+            )
+
             // Marco celeste de la "Ventana de cortes" estilo Sirona GALILEOS
             const boxW = Math.max(28, rightX - leftX)
             const boxH = Math.max(36, botY - topY)
@@ -1226,11 +1507,11 @@ export function DicomViewerModalImpl({
             ctx.lineTo(rightX, cy)
             ctx.stroke()
         },
-        [panoramaImage, archModel, clinicalVol, archS, axialH, sliceWindowBounds, nervePoints3D]
+        [panoramaImage, archModel, clinicalVol, archS, axialH, sliceWindowBounds, nervePoints3D, implants, selectedImplantId]
     )
 
     const renderTangentialOverlay = useCallback(
-        ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+        ({ ctx, mmToScreen, scalePxPerMm }: ViewportOverlayContext) => {
             if (!clinicalVol) return
             const winHeight = sliceWindowBounds.height
             const yAxialMm = Math.max(0, Math.min(winHeight, sliceWindowBounds.hTop - axialH))
@@ -1247,11 +1528,11 @@ export function DicomViewerModalImpl({
             ctx.lineTo(x1, cy)
             ctx.stroke()
 
-            // Proyectar nervio en el plano tangencial recto
-            if (tangentialImg?.planeSpec && nervePoints3D.length > 0) {
+            const spec = tangentialSpec || tangentialImg?.planeSpec
+            if (spec && nervePoints3D.length > 0) {
                 ctx.save()
                 for (const pt of nervePoints3D) {
-                    const proj = projectWorldPointToPlane(tangentialImg.planeSpec, pt)
+                    const proj = projectWorldPointToPlane(spec, pt)
                     if (proj.distMm <= 4.0) {
                         const [nx, ny] = mmToScreen(proj.xMm, proj.yMm)
                         ctx.fillStyle = "rgba(249, 115, 22, 0.9)"
@@ -1265,12 +1546,14 @@ export function DicomViewerModalImpl({
                 }
                 ctx.restore()
             }
+
+            drawImplantsOnPlane(ctx, mmToScreen, scalePxPerMm, spec, implants, nervePoints3D, selectedImplantId)
         },
-        [clinicalVol, axialH, sliceWindowBounds, tangentialImg, nervePoints3D]
+        [clinicalVol, axialH, sliceWindowBounds, tangentialSpec, tangentialImg, nervePoints3D, implants, selectedImplantId]
     )
 
     const renderCrossOverlay = useCallback(
-        ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+        ({ ctx, mmToScreen, scalePxPerMm }: ViewportOverlayContext) => {
             if (!clinicalVol) return
             const winHeight = sliceWindowBounds.height
             const yAxialMm = Math.max(0, Math.min(winHeight, sliceWindowBounds.hTop - axialH))
@@ -1305,11 +1588,11 @@ export function DicomViewerModalImpl({
                 ctx.restore()
             }
 
-            // Proyectar nervio en la sección transversal (círculo naranja calibrado)
-            if (crossImg?.planeSpec && nervePoints3D.length > 0) {
+            const spec = crossSpec || crossImg?.planeSpec
+            if (spec && nervePoints3D.length > 0) {
                 ctx.save()
                 for (const pt of nervePoints3D) {
-                    const proj = projectWorldPointToPlane(crossImg.planeSpec, pt)
+                    const proj = projectWorldPointToPlane(spec, pt)
                     if (proj.distMm <= 2.5) {
                         const [nx, ny] = mmToScreen(proj.xMm, proj.yMm)
                         ctx.fillStyle = "rgba(249, 115, 22, 0.9)"
@@ -1323,12 +1606,14 @@ export function DicomViewerModalImpl({
                 }
                 ctx.restore()
             }
+
+            drawImplantsOnPlane(ctx, mmToScreen, scalePxPerMm, spec, implants, nervePoints3D, selectedImplantId)
         },
-        [clinicalVol, axialH, archD, sliceWindowBounds, tangentialTiltDeg, crossImg, nervePoints3D]
+        [clinicalVol, axialH, archD, sliceWindowBounds, tangentialTiltDeg, crossSpec, crossImg, nervePoints3D, implants, selectedImplantId]
     )
 
     const renderAxialOverlay = useCallback(
-        ({ ctx, mmToScreen }: ViewportOverlayContext) => {
+        ({ ctx, mmToScreen, scalePxPerMm }: ViewportOverlayContext) => {
             if (!archModel) return
 
             // 1. Curva panorámica del arco dental sobre el corte axial
@@ -1407,8 +1692,10 @@ export function DicomViewerModalImpl({
                 ctx.stroke()
             }
             ctx.restore()
+
+            drawImplantsOnPlane(ctx, mmToScreen, scalePxPerMm, axialSpec, implants, nervePoints3D, selectedImplantId)
         },
-        [archModel, archS, archD, activeTool, nervePoints3D]
+        [archModel, archS, archD, activeTool, nervePoints3D, axialSpec, implants, selectedImplantId]
     )
 
     // 8. Handlers de navegación interactiva
@@ -1658,6 +1945,22 @@ export function DicomViewerModalImpl({
                                                 <span className="text-slate-500">Equipo:</span>
                                                 <span className="truncate" title={calibrationAudit.manufacturer}>
                                                     {calibrationAudit.manufacturer}
+                                                </span>
+                                                {calibrationAudit.reaxisedFrom && (
+                                                    <>
+                                                        <span className="text-slate-500">Re-ejado:</span>
+                                                        <span className="text-cyan-300">
+                                                            {calibrationAudit.reaxisedFrom} → Axial LPS
+                                                        </span>
+                                                    </>
+                                                )}
+                                                <span className="text-slate-500">Motor MPR:</span>
+                                                <span className={useGpuMpr ? "text-emerald-300" : "text-slate-300"}>
+                                                    {useGpuMpr ? "GPU WebGL2 Tricúbico" : "CPU 16-bit"}
+                                                </span>
+                                                <span className="text-slate-500">Origen:</span>
+                                                <span className={loadedFromCache ? "text-cyan-300" : "text-slate-300"}>
+                                                    {loadedFromCache ? "Caché local (Instantánea)" : "Red (Guardado en caché)"}
                                                 </span>
                                             </div>
                                         </div>
@@ -2102,9 +2405,37 @@ export function DicomViewerModalImpl({
                                 </>
                             )}
                         </div>
+                        {/* Reorientación 3D Plano Oclusal + Doble Arco Bimaxilar */}
+                        <ReorientationPopover
+                            reorientation={reorientation}
+                            onChangeReorientation={handleChangeReorientation}
+                            activeArchJaw={activeArchJaw}
+                            onSwitchArchJaw={handleSwitchArchJaw}
+                            disabled={loading || !!errorMsg || !clinicalVol}
+                        />
+
+                        {/* Simulador de Implantes Dentales Virtuales 3D */}
+                        <ImplantPlannerPopover
+                            implants={implants}
+                            selectedImplantId={selectedImplantId}
+                            onSelectImplant={setSelectedImplantId}
+                            isPlacingImplant={activeTool === "implant"}
+                            onTogglePlacingImplant={() =>
+                                setActiveTool((t) => (t === "implant" ? "navigate" : "implant"))
+                            }
+                            defaultDiameter={defaultImplantDiameter}
+                            setDefaultDiameter={setDefaultImplantDiameter}
+                            defaultLength={defaultImplantLength}
+                            setDefaultLength={setDefaultImplantLength}
+                            onUpdateImplant={handleUpdateImplant}
+                            onDeleteImplant={handleDeleteImplant}
+                            onJumpToImplant={handleJumpToImplant}
+                            nervePoints3D={nervePoints3D}
+                            disabled={loading || !!errorMsg || !clinicalVol}
+                        />
                     </div>
 
-                    {/* Grupo C: Cortes Preparados + Guardar Escena + Descarga + Pantalla Completa + Cerrar */}
+                    {/* Grupo C: Cortes Preparados + PDF Clínico + Descarga + Pantalla Completa + Cerrar */}
                     <div className="flex items-center gap-1 shrink-0">
                         {resultFileId && clinicalVol && (canEditScene || savedCuts.length > 0) && (
                             <SavedCutsMenu
@@ -2122,6 +2453,33 @@ export function DicomViewerModalImpl({
                                 onDeleteCut={handleDeleteSavedCut}
                                 onSaveScene={handleSaveClinicalScene}
                             />
+                        )}
+
+                        {clinicalVol && !loading && !errorMsg && viewMode !== "study_cuts" && (
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-[11px] gap-1 border-cyan-500/40 bg-cyan-950/50 text-cyan-200 hover:bg-cyan-900/70 hover:text-white font-medium rounded-lg"
+                                onClick={() =>
+                                    exportCbctClinicalPdf({
+                                        studyTitle: title,
+                                        calibration: calibrationAudit,
+                                        containerEl: workspaceContainerRef.current,
+                                        measurements: allMeasurementsFlat.map((x) => ({
+                                            viewTitle: x.viewTitle,
+                                            m: x.m,
+                                        })),
+                                        implants,
+                                        nervePoints3D,
+                                        savedCuts,
+                                        sectorLabel: selectedToothLabel,
+                                    })
+                                }
+                                title="Exportar lámina clínica radiológica en PDF con capturas, auditoría DICOM, mediciones e implantes"
+                            >
+                                <FileDown className="h-3 w-3" />
+                                <span className="hidden xl:inline">PDF</span>
+                            </Button>
                         )}
 
                         {downloadUrl && (
@@ -2188,7 +2546,10 @@ export function DicomViewerModalImpl({
                 )}
 
                 {/* 2. Área Principal de Espacios de Trabajo Clínicos */}
-                <div className="flex-1 relative flex items-center justify-center bg-black overflow-hidden select-none touch-none">
+                <div
+                    ref={workspaceContainerRef}
+                    className="flex-1 relative flex items-center justify-center bg-black overflow-hidden select-none touch-none"
+                >
                     {loading && (
                         <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 z-40 gap-3.5 p-6 text-center">
                             <div className="relative">
@@ -2250,8 +2611,10 @@ export function DicomViewerModalImpl({
                     {!loading && !errorMsg && viewMode === "invivo_mpr" && clinicalVol && (
                         <InVivoMprWorkspace
                             clinicalVol={clinicalVol}
+                            gpuRenderer={activeGpuRenderer}
                             renderVolume={renderVolume}
                             reconStatus={reconStatus}
+                            axialSpec={axialSpec}
                             axialImg={axialImg}
                             axialH={axialH}
                             setAxialH={setAxialH}
@@ -2273,6 +2636,10 @@ export function DicomViewerModalImpl({
                             nervePoints3D={nervePoints3D}
                             nervePointsNorm={nervePointsNorm}
                             onAddNervePoint3D={handleAddNervePoint3D}
+                            implants={implants}
+                            implantsNorm={implantsNorm}
+                            selectedImplantId={selectedImplantId}
+                            onPlaceImplantAt3D={handlePlaceImplantAt3D}
                             currentSliceIndex={currentSliceIndex}
                             totalSlices={totalSlices}
                             resetTrigger={resetTrigger}
@@ -2284,8 +2651,10 @@ export function DicomViewerModalImpl({
                     {!loading && !errorMsg && viewMode === "invivo_serial" && clinicalVol && archModel && (
                         <InVivoArchSerialWorkspace
                             clinicalVol={clinicalVol}
+                            gpuRenderer={activeGpuRenderer}
                             archModel={archModel}
                             panoramaImage={panoramaImage}
+                            axialSpec={axialSpec}
                             axialImg={axialImg}
                             archS={archS}
                             setArchS={setArchS}
@@ -2309,6 +2678,9 @@ export function DicomViewerModalImpl({
                             onMoveArchControlPoint={handleMoveArchControlPoint}
                             nervePoints3D={nervePoints3D}
                             onAddNervePoint3D={handleAddNervePoint3D}
+                            implants={implants}
+                            selectedImplantId={selectedImplantId}
+                            onPlaceImplantAt3D={handlePlaceImplantAt3D}
                             renderAxialOverlay={renderAxialOverlay}
                             resetTrigger={resetTrigger}
                             externalZoomStep={externalZoomStep}
@@ -2332,6 +2704,7 @@ export function DicomViewerModalImpl({
                                 >
                                     {/* PANEL 1: PANORAMA */}
                                     <div
+                                        data-cbct-capture-label={`Panorama CPR (${panoMode.toUpperCase()} ${panoThickness} mm)`}
                                         className={`min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-[#03060c] shadow-md flex flex-col ${
                                             viewMode === "multi"
                                                 ? "flex-[62]"
@@ -2473,6 +2846,12 @@ export function DicomViewerModalImpl({
                                                 const h = Math.max(0, Math.min(clinicalVol.heightMm, panoramaImage.hTop - yMm))
                                                 handleAddNervePoint3D([f.x, f.y, zFromH(clinicalVol, h)])
                                             }}
+                                            onPlaceImplantMm={(xMm, yMm) => {
+                                                if (!archModel || !clinicalVol || !panoramaImage) return
+                                                const f = archFrame(archModel, xMm)
+                                                const h = Math.max(0, Math.min(clinicalVol.heightMm, panoramaImage.hTop - yMm))
+                                                handlePlaceImplantAt3D([f.x, f.y, zFromH(clinicalVol, h)], xMm)
+                                            }}
                                             renderOverlay={renderPanoramaOverlay}
                                             scaleBarCm={1}
                                             bottomLeftBadge="R"
@@ -2484,6 +2863,7 @@ export function DicomViewerModalImpl({
 
                                     {/* PANEL 2: 3D VOLUMÉTRICO INTERACTIVO */}
                                     <div
+                                        data-cbct-capture-label="3D Volumétrico"
                                         className={`min-w-0 min-h-0 border border-slate-800 rounded-lg overflow-hidden bg-black shadow-md flex flex-col ${
                                             viewMode === "multi"
                                                 ? "flex-[38]"
@@ -2497,6 +2877,7 @@ export function DicomViewerModalImpl({
                                             status={reconStatus}
                                             focus={volumeFocus}
                                             nervePointsNorm={nervePointsNorm}
+                                            implantsNorm={implantsNorm}
                                             sliceIndex={currentSliceIndex}
                                             totalSlices={totalSlices}
                                             isExpanded={viewMode === "3d"}
@@ -2521,6 +2902,7 @@ export function DicomViewerModalImpl({
                                 >
                                     {/* PANEL 3: TANGENCIAL (Plano 3D Certificado vs Curvo + Inclinación) */}
                                     <div
+                                        data-cbct-capture-label={`Tangencial (${archD >= 0 ? "+" : ""}${archD.toFixed(1)} mm)`}
                                         onPointerDown={() => setFocusedPlane("tangential")}
                                         className={`min-w-0 min-h-0 border rounded-lg overflow-hidden bg-[#03060c] shadow-md flex flex-col relative ${
                                             focusedPlane === "tangential" && viewMode === "multi"
@@ -2607,6 +2989,9 @@ export function DicomViewerModalImpl({
                                             <MprViewport
                                                 viewId="tangential"
                                                 image={tangentialImg}
+                                                clinicalVol={clinicalVol}
+                                                planeSpec={tangentialMode === "flat" ? tangentialSpec : null}
+                                                gpuRenderer={tangentialMode === "flat" ? activeGpuRenderer : null}
                                                 slope={clinicalVol?.slope ?? 1}
                                                 intercept={clinicalVol?.intercept ?? 0}
                                                 windowLevel={sliceWl}
@@ -2625,14 +3010,14 @@ export function DicomViewerModalImpl({
                                                 onWheelStep={(steps) => stepFocusedPlane(steps, "tangential")}
                                                 onNavigateMm={handleNavigateTangential}
                                                 onAddNervePointMm={(xMm, yMm) => {
-                                                    if (!tangentialImg?.planeSpec) return
-                                                    const sp = tangentialImg.planeSpec
-                                                    const pt: Vec3 = [
-                                                        sp.origin[0] + sp.u[0] * xMm + sp.v[0] * yMm,
-                                                        sp.origin[1] + sp.u[1] * xMm + sp.v[1] * yMm,
-                                                        sp.origin[2] + sp.u[2] * xMm + sp.v[2] * yMm,
-                                                    ]
-                                                    handleAddNervePoint3D(pt)
+                                                    const sp = tangentialSpec || tangentialImg?.planeSpec
+                                                    if (!sp) return
+                                                    handleAddNervePoint3D(planeMmToWorld(sp, xMm, yMm))
+                                                }}
+                                                onPlaceImplantMm={(xMm, yMm) => {
+                                                    const sp = tangentialSpec || tangentialImg?.planeSpec
+                                                    if (!sp) return
+                                                    handlePlaceImplantAt3D(planeMmToWorld(sp, xMm, yMm))
                                                 }}
                                                 renderOverlay={renderTangentialOverlay}
                                                 scaleBarCm={1}
@@ -2670,6 +3055,7 @@ export function DicomViewerModalImpl({
 
                                     {/* PANEL 4: SECCIÓN TRANSVERSAL */}
                                     <div
+                                        data-cbct-capture-label={`Transversal (Arco ${archS.toFixed(1)} mm)`}
                                         onPointerDown={() => setFocusedPlane("cross")}
                                         className={`min-w-0 min-h-0 border rounded-lg overflow-hidden bg-[#03060c] shadow-md flex flex-col relative ${
                                             focusedPlane === "cross" && viewMode === "multi"
@@ -2725,6 +3111,9 @@ export function DicomViewerModalImpl({
                                             <MprViewport
                                                 viewId="cross"
                                                 image={crossImg}
+                                                clinicalVol={clinicalVol}
+                                                planeSpec={crossSpec}
+                                                gpuRenderer={activeGpuRenderer}
                                                 slope={clinicalVol?.slope ?? 1}
                                                 intercept={clinicalVol?.intercept ?? 0}
                                                 windowLevel={sliceWl}
@@ -2742,14 +3131,14 @@ export function DicomViewerModalImpl({
                                                 onWheelStep={(steps) => stepFocusedPlane(steps, "cross")}
                                                 onNavigateMm={handleNavigateCross}
                                                 onAddNervePointMm={(xMm, yMm) => {
-                                                    if (!crossImg?.planeSpec) return
-                                                    const sp = crossImg.planeSpec
-                                                    const pt: Vec3 = [
-                                                        sp.origin[0] + sp.u[0] * xMm + sp.v[0] * yMm,
-                                                        sp.origin[1] + sp.u[1] * xMm + sp.v[1] * yMm,
-                                                        sp.origin[2] + sp.u[2] * xMm + sp.v[2] * yMm,
-                                                    ]
-                                                    handleAddNervePoint3D(pt)
+                                                    const sp = crossSpec || crossImg?.planeSpec
+                                                    if (!sp) return
+                                                    handleAddNervePoint3D(planeMmToWorld(sp, xMm, yMm))
+                                                }}
+                                                onPlaceImplantMm={(xMm, yMm) => {
+                                                    const sp = crossSpec || crossImg?.planeSpec
+                                                    if (!sp) return
+                                                    handlePlaceImplantAt3D(planeMmToWorld(sp, xMm, yMm), archS)
                                                 }}
                                                 renderOverlay={renderCrossOverlay}
                                                 scaleBarCm={1}
@@ -2782,6 +3171,7 @@ export function DicomViewerModalImpl({
 
                                     {/* PANEL 5: AXIAL (Con Edición Interactiva de Nodos del Arco Dental) */}
                                     <div
+                                        data-cbct-capture-label={`Axial (H: ${axialH.toFixed(1)} mm)`}
                                         onPointerDown={() => setFocusedPlane("axial")}
                                         className={`min-w-0 min-h-0 border rounded-lg overflow-hidden bg-[#03060c] shadow-md flex flex-col relative ${
                                             focusedPlane === "axial" && viewMode === "multi"
@@ -2835,6 +3225,9 @@ export function DicomViewerModalImpl({
                                         <MprViewport
                                             viewId="axial"
                                             image={axialImg}
+                                            clinicalVol={clinicalVol}
+                                            planeSpec={axialSpec}
+                                            gpuRenderer={activeGpuRenderer}
                                             slope={clinicalVol?.slope ?? 1}
                                             intercept={clinicalVol?.intercept ?? 0}
                                             windowLevel={sliceWl}
@@ -2854,6 +3247,10 @@ export function DicomViewerModalImpl({
                                             onAddNervePointMm={(xMm, yMm) => {
                                                 if (!clinicalVol) return
                                                 handleAddNervePoint3D([xMm, yMm, zFromH(clinicalVol, axialH)])
+                                            }}
+                                            onPlaceImplantMm={(xMm, yMm) => {
+                                                if (!clinicalVol) return
+                                                handlePlaceImplantAt3D([xMm, yMm, zFromH(clinicalVol, axialH)])
                                             }}
                                             renderOverlay={renderAxialOverlay}
                                             scaleBarCm={5}
@@ -3007,11 +3404,17 @@ export function DicomViewerModalImpl({
                                     <Button
                                         size="sm"
                                         variant="ghost"
-                                        className="h-6 px-2 text-[11px] text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                        onClick={() =>
+                                        className={`h-6 px-2 text-[11px] rounded-md ${
+                                            activeArchJaw === "upper"
+                                                ? "bg-blue-950/60 text-blue-200 font-semibold"
+                                                : "text-slate-300 hover:text-white hover:bg-slate-800"
+                                        }`}
+                                        onClick={() => {
+                                            setActiveArchJaw("upper")
                                             setAxialH(Math.min(clinicalVol.heightMm * 0.88, dentalBaseH + 10))
-                                        }
+                                        }}
                                         disabled={loading}
+                                        title="Saltar al Maxilar Superior y activar curva de arco superior"
                                     >
                                         Maxilar Sup.
                                     </Button>
@@ -3032,11 +3435,17 @@ export function DicomViewerModalImpl({
                                     <Button
                                         size="sm"
                                         variant="ghost"
-                                        className="h-6 px-2 text-[11px] text-slate-300 hover:text-white hover:bg-slate-800 rounded-md"
-                                        onClick={() =>
+                                        className={`h-6 px-2 text-[11px] rounded-md ${
+                                            activeArchJaw === "lower"
+                                                ? "bg-cyan-950/60 text-cyan-200 font-semibold"
+                                                : "text-slate-300 hover:text-white hover:bg-slate-800"
+                                        }`}
+                                        onClick={() => {
+                                            setActiveArchJaw("lower")
                                             setAxialH(Math.max(clinicalVol.heightMm * 0.1, dentalBaseH - 9))
-                                        }
+                                        }}
                                         disabled={loading}
+                                        title="Saltar a la Mandíbula y activar curva de arco mandibular"
                                     >
                                         Mandíbula
                                     </Button>
