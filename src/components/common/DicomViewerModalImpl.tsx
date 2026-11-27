@@ -108,7 +108,7 @@ import {
     type SlabMode,
     type Vec3,
 } from "@/lib/cbct/mprEngine"
-import { WebGLMprRenderer } from "@/lib/cbct/webglMprRenderer"
+import { WebGLMprRenderer, volumeFitsGpuVramBudget } from "@/lib/cbct/webglMprRenderer"
 import { buildStudyCacheKey, getCachedStudyBlob, putCachedStudyBlob } from "@/lib/cbct/studyCache"
 import { drawImplantsOnPanorama, drawImplantsOnPlane } from "@/lib/cbct/implantOverlay"
 import { exportCbctClinicalPdf } from "@/lib/cbct/exportClinicalPdf"
@@ -224,9 +224,10 @@ export function DicomViewerModalImpl({
         return withReorientation(baseClinicalVol, reorientation)
     }, [baseClinicalVol, reorientation])
 
-    // Inicializar / liberar el motor GPU WebGL2 compartido (1 único contexto offscreen para todas las vistas)
+    // Inicializar el motor GPU WebGL2 compartido SOLO si el volumen cabe dentro del presupuesto seguro VRAM (<= 96 MB),
+    // garantizando prioridad absoluta de VRAM al visor 3D volumétrico para evitar pérdida de contexto en GPUs integradas.
     useEffect(() => {
-        if (!open) {
+        if (!open || !baseClinicalVol) {
             if (gpuRendererRef.current) {
                 gpuRendererRef.current.dispose()
                 gpuRendererRef.current = null
@@ -235,12 +236,34 @@ export function DicomViewerModalImpl({
             setGpuVolumeUploaded(false)
             return
         }
+
+        if (!volumeFitsGpuVramBudget(baseClinicalVol)) {
+            if (gpuRendererRef.current) {
+                gpuRendererRef.current.dispose()
+                gpuRendererRef.current = null
+            }
+            setGpuReady(false)
+            setGpuVolumeUploaded(false)
+            return
+        }
+
         const renderer = new WebGLMprRenderer(() => {
             setGpuReady(false)
             setGpuVolumeUploaded(false)
         })
+        const ok = renderer.isReady && renderer.uploadVolume(baseClinicalVol)
+        if (!ok) {
+            renderer.dispose()
+            gpuRendererRef.current = null
+            setGpuReady(false)
+            setGpuVolumeUploaded(false)
+            return
+        }
+
         gpuRendererRef.current = renderer
-        setGpuReady(renderer.isReady)
+        setGpuReady(true)
+        setGpuVolumeUploaded(true)
+
         return () => {
             renderer.dispose()
             if (gpuRendererRef.current === renderer) {
@@ -249,17 +272,7 @@ export function DicomViewerModalImpl({
             setGpuReady(false)
             setGpuVolumeUploaded(false)
         }
-    }, [open])
-
-    // Subir volumen base 16-bit a VRAM corte por corte una sola vez (reorientación Euler no re-sube textura)
-    useEffect(() => {
-        if (!open || !baseClinicalVol || !gpuReady || !gpuRendererRef.current) {
-            setGpuVolumeUploaded(false)
-            return
-        }
-        const ok = gpuRendererRef.current.uploadVolume(baseClinicalVol)
-        setGpuVolumeUploaded(ok)
-    }, [open, baseClinicalVol, gpuReady])
+    }, [open, baseClinicalVol])
 
     const activeGpuRenderer = gpuReady && gpuVolumeUploaded ? gpuRendererRef.current : null
 
@@ -803,10 +816,10 @@ export function DicomViewerModalImpl({
             setCalibrationAudit(cal)
             setActiveVolumeId(series.id)
 
-            // Mayor resolución 3D en escritorio (288^3) y óptima en pantallas táctiles (224^3)
+            // Resolución 3D equilibrada (240³ escritorio / 192³ móvil) para nitidez clínica sin riesgo de saturar VRAM
             const isMobilePointer =
                 typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches
-            const rv = await buildRenderVolume(series.volume, isMobilePointer ? 224 : 288, checkCancelled)
+            const rv = await buildRenderVolume(series.volume, isMobilePointer ? 192 : 240, checkCancelled)
             if (!rv || checkCancelled()) return
 
             const det = detectDentalArch(rv, series.volume)

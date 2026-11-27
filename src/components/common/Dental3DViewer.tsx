@@ -210,6 +210,8 @@ export function Dental3DViewer({
     const dragModeRef = useRef<"rotate" | "pan">("rotate")
 
     const [glError, setGlError] = useState<string | null>(null)
+    const [contextRetryKey, setContextRetryKey] = useState<number>(0)
+    const contextRetriesRef = useRef<number>(0)
     const [preset, setPreset] = useState<RenderPreset>("bone")
     const [threshold, setThreshold] = useState(0.4)
     const [viewAngleName, setViewAngleName] = useState("3D Volumétrico")
@@ -224,11 +226,11 @@ export function Dental3DViewer({
         needsRenderRef.current = true
     }
 
-    const highSteps = () => (isMobile() ? 260 : 460)
+    const highSteps = () => (isMobile() ? 220 : 320)
 
     const markInteracting = () => {
         const mat = materialRef.current
-        if (mat) mat.uniforms.uSteps.value = isMobile() ? 120 : 190
+        if (mat) mat.uniforms.uSteps.value = isMobile() ? 110 : 170
         requestRender()
         clearTimeout(interactingTimerRef.current)
         interactingTimerRef.current = setTimeout(() => {
@@ -237,11 +239,12 @@ export function Dental3DViewer({
         }, 160)
     }
 
-    // 1. Inicialización de escena WebGL2
+    // 1. Inicialización de escena WebGL2 con recuperación automática ante pérdida de contexto GPU
     useEffect(() => {
         const container = mountRef.current
         if (!container) return
 
+        setGlError(null)
         let renderer: THREE.WebGLRenderer
         try {
             renderer = new THREE.WebGLRenderer({
@@ -255,13 +258,40 @@ export function Dental3DViewer({
             setGlError("Su navegador no soporta WebGL2, necesario para el renderizado volumétrico 3D.")
             return
         }
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isMobile() ? 1.25 : 1.75))
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isMobile() ? 1.2 : 1.5))
         renderer.setClearColor(0x05070f, 1)
         rendererRef.current = renderer
         container.replaceChildren(renderer.domElement)
         renderer.domElement.style.width = "100%"
         renderer.domElement.style.height = "100%"
         renderer.domElement.style.display = "block"
+
+        let retryTimer: any = null
+        let contextLost = false
+        const handleContextLost = (ev: Event) => {
+            ev.preventDefault()
+            contextLost = true
+            console.warn("[Dental3DViewer] Contexto WebGL2 perdido; intentando recuperación automática...")
+            if (contextRetriesRef.current < 2) {
+                contextRetriesRef.current += 1
+                retryTimer = setTimeout(() => {
+                    setContextRetryKey((k) => k + 1)
+                }, 450)
+            } else {
+                setGlError("El acelerador gráfico reinició el contexto 3D. Pulse «Reintentar 3D» para restaurarlo.")
+            }
+        }
+        const handleContextRestored = () => {
+            contextLost = false
+            setGlError(null)
+            const mat = materialRef.current
+            if (mat?.uniforms?.uVolume?.value) {
+                mat.uniforms.uVolume.value.needsUpdate = true
+            }
+            requestRender()
+        }
+        renderer.domElement.addEventListener("webglcontextlost", handleContextLost)
+        renderer.domElement.addEventListener("webglcontextrestored", handleContextRestored)
 
         const scene = new THREE.Scene()
         sceneRef.current = scene
@@ -290,7 +320,7 @@ export function Dental3DViewer({
         let raf = 0
         const loop = () => {
             raf = requestAnimationFrame(loop)
-            if (!needsRenderRef.current) return
+            if (!needsRenderRef.current || contextLost) return
             needsRenderRef.current = false
             renderer.render(scene, camera)
         }
@@ -300,11 +330,14 @@ export function Dental3DViewer({
             cancelAnimationFrame(raf)
             ro.disconnect()
             clearTimeout(interactingTimerRef.current)
+            clearTimeout(retryTimer)
+            renderer.domElement.removeEventListener("webglcontextlost", handleContextLost)
+            renderer.domElement.removeEventListener("webglcontextrestored", handleContextRestored)
             renderer.dispose()
             rendererRef.current = null
             if (container) container.innerHTML = ""
         }
-    }, [])
+    }, [contextRetryKey])
 
     // 2. Construcción del volumen (textura 3D + shader + overlays)
     useEffect(() => {
@@ -429,7 +462,7 @@ export function Dental3DViewer({
             implantsGroupRef.current = null
             requestRender()
         }
-    }, [volume])
+    }, [volume, contextRetryKey])
 
     // 3. Sincronización de uniformes (umbral, preset y recorte 3D)
     useEffect(() => {
@@ -441,7 +474,7 @@ export function Dental3DViewer({
         mat.uniforms.uClipMin.value.set(clipX[0], clipY[0], clipZ[0])
         mat.uniforms.uClipMax.value.set(clipX[1], clipY[1], clipZ[1])
         requestRender()
-    }, [threshold, preset, clipX, clipY, clipZ, volume])
+    }, [threshold, preset, clipX, clipY, clipZ, volume, contextRetryKey])
 
     // 4. Plano axial según el corte activo
     useEffect(() => {
@@ -451,7 +484,7 @@ export function Dental3DViewer({
         const pz = volume.zUp ? tz : 1 - tz
         plane.position.z = pz - 0.5
         requestRender()
-    }, [sliceIndex, totalSlices, volume])
+    }, [sliceIndex, totalSlices, volume, contextRetryKey])
 
     // 5. Caja de la Ventana de cortes sincronizada en X, Y y altura Z [hBotNorm, hTopNorm]
     useEffect(() => {
@@ -495,7 +528,7 @@ export function Dental3DViewer({
         box.geometry = g
         box.visible = true
         requestRender()
-    }, [focus, volume])
+    }, [focus, volume, contextRetryKey])
 
     // 6. Canal del nervio dentario en 3D
     useEffect(() => {
@@ -516,7 +549,7 @@ export function Dental3DViewer({
         line.geometry = g
         line.visible = true
         requestRender()
-    }, [nervePointsNorm])
+    }, [nervePointsNorm, contextRetryKey])
 
     // 7. Implantes dentales virtuales en 3D
     useEffect(() => {
@@ -551,7 +584,7 @@ export function Dental3DViewer({
             }
         }
         requestRender()
-    }, [implantsNorm])
+    }, [implantsNorm, contextRetryKey])
 
     // Interacción táctil y ratón
     const handlePointerDown = (e: React.PointerEvent) => {
@@ -693,13 +726,27 @@ export function Dental3DViewer({
                 className="flex-1 w-full min-h-0 relative cursor-grab active:cursor-grabbing touch-none"
             />
 
-            {/* Estado de reconstrucción */}
+            {/* Estado de reconstrucción / recuperación de contexto WebGL2 */}
             {(!volume || glError || error) && (
-                <div className="absolute inset-0 top-7 flex flex-col items-center justify-center gap-2 bg-slate-950/90 z-20 text-center px-4 pointer-events-none">
+                <div className="absolute inset-0 top-7 flex flex-col items-center justify-center gap-2 bg-slate-950/95 z-20 text-center px-4">
                     {glError || error ? (
                         <>
                             <AlertCircle className="h-6 w-6 text-rose-400" />
                             <p className="text-xs text-slate-300 max-w-xs">{glError || error}</p>
+                            {glError && (
+                                <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    className="mt-1 h-7 px-3 text-[11px] bg-amber-600 hover:bg-amber-700 text-white"
+                                    onClick={() => {
+                                        contextRetriesRef.current = 0
+                                        setGlError(null)
+                                        setContextRetryKey((k) => k + 1)
+                                    }}
+                                >
+                                    Reintentar vista 3D
+                                </Button>
+                            )}
                         </>
                     ) : (
                         <>

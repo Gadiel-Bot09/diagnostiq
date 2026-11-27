@@ -17,7 +17,11 @@
 import type { ClinicalVolume, PlaneSpec, WindowLevel } from "./mprEngine"
 import type { ClinicalColorMap } from "@/components/common/MprViewport"
 
-const MAX_VRAM_BYTES_3D = 192 * 1024 * 1024 // Límite seguro de textura 3D R16F (192 MB)
+export const MAX_VRAM_BYTES_3D = 96 * 1024 * 1024 // Límite seguro de textura 3D R16F (96 MB) para no competir con el visor 3D volumétrico
+
+export function volumeFitsGpuVramBudget(vol: Pick<ClinicalVolume, "nx" | "ny" | "nz">): boolean {
+    return vol.nx * vol.ny * vol.nz * 2 <= MAX_VRAM_BYTES_3D
+}
 
 const QUAD_VERT_SRC = /* glsl */ `#version 300 es
 precision highp float;
